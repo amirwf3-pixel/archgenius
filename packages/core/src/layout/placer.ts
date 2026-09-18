@@ -79,7 +79,14 @@ function carveZones(
     const vx = footprint.x + footprint.w * (cfg.verticalCorridorFraction ?? 0.5) - CORRIDOR_W / 2;
     corridors.push({ x: vx, y: footprint.y, w: CORRIDOR_W, h: footprint.h });
     zones.public.push({ x: footprint.x, y: footprint.y, w: vx - footprint.x, h: footprint.h });
-    const eastRect: Rect = { x: vx + CORRIDOR_W, y: footprint.y, w: footprint.x + footprint.w - (vx + CORRIDOR_W), h: footprint.h };
+    let eastRect: Rect = { x: vx + CORRIDOR_W, y: footprint.y, w: footprint.x + footprint.w - (vx + CORRIDOR_W), h: footprint.h };
+    // Stair pocket for vertical spine: at south end of private band (near entrance)
+    if (needStair && eastRect.h > 5.5) {
+      const pocketH = Math.min(2.9, Math.max(2.6, eastRect.h * 0.20));
+      const pocketW = Math.min(4.6, Math.max(4.2, eastRect.w * 0.55));
+      zones.service.push({ x: eastRect.x, y: eastRect.y, w: pocketW, h: pocketH });
+      eastRect = { x: eastRect.x, y: eastRect.y + pocketH, w: eastRect.w, h: eastRect.h - pocketH };
+    }
     zones.private.push(eastRect);
     return { zones, corridors };
   }
@@ -166,79 +173,299 @@ export function placeSpaces(
   }
 
   // --- Private band: column layout ---
+  // Phase 12: Constraint-aware placement — HARD constraints influence geometry BEFORE final validation
+  // For corridor-bedroom/bath direct access hard: each bedroom/bath/master must touch corridor (south edge at privateRect.y)
+  // For master cluster: master bedroom and master bathroom must both touch corridor and be adjacent to each other (side-by-side)
   const privateRect = layout.zones.private[0];
   if (privateRect) {
     const mbath = take('master-bathroom');
     const mbed = take('master-bedroom');
     const baths: PlacedSpec[] = [];
     const beds: PlacedSpec[] = [];
-    // Collect remaining beds and baths.
     let b; while ((b = take('bedroom'))) beds.push(b);
     let bt; while ((bt = take('bathroom'))) baths.push(bt);
     const extraMbath = take('master-bathroom');
     if (extraMbath) baths.push(extraMbath);
 
-    // Columns: one per bedroom plus master. Master column gets extra weight
-    // so it is wider (ensuite + bed circulation). The number of columns is
-    // reduced when a stair pocket occupies the west end of the private band
-    // — that pocket is not a column but a dedicated stair well.
-    const columns = (mbed ? 1 : 0) + beds.length;
-    if (columns > 0) {
-      // Master gets ~35% more width than regular bedrooms; if there are 3
-      // bedrooms total (1 master + 2 regular) this yields weights ≈1.45/1/1.
-      const weights: number[] = [];
-      if (mbed) weights.push(1.45);
-      for (let i = 0; i < beds.length; i++) weights.push(1.0);
-      const total = weights.reduce((a,b)=>a+b,0);
-      let x = privateRect.x;
-      const colRects: Rect[] = [];
-      for (let i = 0; i < weights.length; i++) {
-        const w = (i === weights.length - 1)
-          ? privateRect.x + privateRect.w - x
-          : privateRect.w * weights[i] / total;
-        colRects.push({ x, y: privateRect.y, w, h: privateRect.h });
-        x += w;
+    // Phase 12: Build constraint-aware clusters
+    // Each cluster will be placed as side-by-side rooms both touching corridor, satisfying:
+    // - c-corr-bed, c-corr-mbed, c-corr-bath, c-corr-mbath (hard direct access / adjacency)
+    // - p-mb-mbath soft adjacency (master bedroom adjacent to master bathroom)
+    interface PrivateCluster {
+      id: string;
+      rooms: PlacedSpec[]; // 1 or 2 rooms
+      isMaster: boolean;
+    }
+    const clusters: PrivateCluster[] = [];
+
+    // Master cluster first (high priority: hard adjacency + hard direct access)
+    if (mbed || mbath) {
+      const rooms: PlacedSpec[] = [];
+      if (mbed) rooms.push(mbed);
+      if (mbath) rooms.push(mbath);
+      clusters.push({ id: 'master-cluster', rooms, isMaster: true });
+    }
+
+    // Regular bedroom-bathroom clusters
+    const maxPairs = Math.max(beds.length, baths.length);
+    for (let i = 0; i < maxPairs; i++) {
+      const bed = beds[i];
+      const bath = baths[i];
+      if (bed && bath) {
+        clusters.push({ id: `bed-bath-${i}`, rooms: [bed, bath], isMaster: false });
+      } else if (bed) {
+        clusters.push({ id: `bed-${i}`, rooms: [bed], isMaster: false });
+      } else if (bath) {
+        clusters.push({ id: `bath-${i}`, rooms: [bath], isMaster: false });
       }
-      // Master column first.
-      if (mbed && colRects.length > 0) {
-        const col = colRects.shift()!;
-        if (mbath) {
-          // Master bath at CORRIDOR-EDGE (south) of the master column, using
-          // the full column width but limited depth, so the master bedroom
-          // retains the full column width for bed placement.
-          const bh = Math.min(BATH_STRIP_H + 0.4, col.h * 0.3);
-          placed.push(mkSpace('master-bathroom',
-            { x: col.x, y: col.y, w: col.w, h: bh },
-            mbath.placedLabel, mbath.placedId, 'private'));
-          placed.push(mkSpace('master-bedroom',
-            { x: col.x, y: col.y + bh, w: col.w, h: col.h - bh },
-            mbed.placedLabel, mbed.placedId, 'private'));
+    }
+
+    // Placement ordering: master cluster first, then larger target area clusters, deterministic tie-break by id
+    clusters.sort((a, b) => {
+      if (a.isMaster && !b.isMaster) return -1;
+      if (!a.isMaster && b.isMaster) return 1;
+      const areaA = a.rooms.reduce((sum, r) => sum + Math.max(r.minArea, r.targetArea), 0);
+      const areaB = b.rooms.reduce((sum, r) => sum + Math.max(r.minArea, r.targetArea), 0);
+      if (areaA !== areaB) return areaB - areaA;
+      return a.id.localeCompare(b.id);
+    });
+
+    // Phase 12 feasibility check: can we place all private rooms side-by-side touching corridor while respecting minWidth/minLength?
+    // For horizontal spine, need sum(minWidths) <= privateRect.w; for vertical, sum(minHeights) <= privateRect.h
+    // If not feasible, fallback to legacy column layout that satisfies minWidth but may violate corridor adjacency (honest HARD)
+    const computeMinWidth = (spec: PlacedSpec): number => Math.max(spec.minWidth ?? 2.0, 1.0);
+    const computeMinHeight = (spec: PlacedSpec): number => Math.max(spec.minLength ?? spec.minWidth ?? 2.0, 1.0);
+
+    let feasibleSideBySide = true;
+    let requiredTotal = 0;
+    const isVerticalSpineCheck = cfg.spine === 'vertical';
+    if (isVerticalSpineCheck) {
+      for (const cl of clusters) {
+        if (cl.rooms.length === 2) {
+          requiredTotal += cl.rooms.reduce((s, r) => s + computeMinHeight(r), 0);
         } else {
-          placed.push(mkSpace('master-bedroom', col, mbed.placedLabel, mbed.placedId, 'private'));
+          requiredTotal += computeMinHeight(cl.rooms[0]);
         }
       }
-      // Regular columns: bath at corridor edge, full width, then bedroom above.
-      for (let i = 0; i < beds.length; i++) {
-        const col = colRects[i]; if (!col) break;
-        const bed = beds[i];
-        const bath = baths[i];
-        if (bath) {
-          const bh = Math.min(BATH_STRIP_H, col.h * 0.3);
-          placed.push(mkSpace('bathroom',
-            { x: col.x, y: col.y, w: col.w, h: bh },
-            bath.placedLabel, bath.placedId, 'private'));
-          placed.push(mkSpace('bedroom',
-            { x: col.x, y: col.y + bh, w: col.w, h: col.h - bh },
-            bed.placedLabel, bed.placedId, 'private'));
+      if (requiredTotal > privateRect.h + 1e-6) feasibleSideBySide = false;
+    } else {
+      for (const cl of clusters) {
+        if (cl.rooms.length === 2) {
+          requiredTotal += cl.rooms.reduce((s, r) => s + computeMinWidth(r), 0);
         } else {
-          placed.push(mkSpace('bedroom', col, bed.placedLabel, bed.placedId, 'private'));
+          requiredTotal += computeMinWidth(cl.rooms[0]);
+        }
+      }
+      if (requiredTotal > privateRect.w + 1e-6) feasibleSideBySide = false;
+    }
+
+    if (clusters.length > 0) {
+      const totalArea = clusters.reduce((sum, cl) => sum + cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0), 0);
+      const isVerticalSpine = cfg.spine === 'vertical';
+
+      if (!feasibleSideBySide) {
+        // Fallback to legacy column layout (Phase 3) that respects minWidth but may violate hard corridor adjacency
+        // This is honest infeasibility handling: we cannot satisfy both minWidth HARD and corridor adjacency HARD simultaneously
+        explanation.push(`Phase12 INFEASIBLE side-by-side: required ${requiredTotal.toFixed(2)}m > available ${isVerticalSpine ? privateRect.h.toFixed(2) : privateRect.w.toFixed(2)}m — falling back to legacy column layout (will report CONSTRAINT_MUST_ADJACENT HARD)`);
+        // Legacy: columns per bedroom, master first, bath at corridor edge, bedroom above
+        const mbedLegacy = clusters.find(c => c.isMaster)?.rooms.find(r => r.type === 'master-bedroom');
+        const mbathLegacy = clusters.find(c => c.isMaster)?.rooms.find(r => r.type === 'master-bathroom');
+        const bedsLegacy: PlacedSpec[] = [];
+        const bathsLegacy: PlacedSpec[] = [];
+        for (const cl of clusters) {
+          if (cl.isMaster) continue;
+          for (const r of cl.rooms) {
+            if (r.type === 'bedroom') bedsLegacy.push(r);
+            else if (r.type === 'bathroom') bathsLegacy.push(r);
+          }
+        }
+        const columns = (mbedLegacy ? 1 : 0) + bedsLegacy.length;
+        if (columns > 0) {
+          const weights: number[] = [];
+          if (mbedLegacy) weights.push(1.45);
+          for (let i = 0; i < bedsLegacy.length; i++) weights.push(1.0);
+          const totalW = weights.reduce((a,b)=>a+b,0);
+          let x = privateRect.x;
+          const colRects: Rect[] = [];
+          for (let i = 0; i < weights.length; i++) {
+            const w = (i === weights.length - 1) ? privateRect.x + privateRect.w - x : privateRect.w * weights[i] / totalW;
+            colRects.push({ x, y: privateRect.y, w, h: privateRect.h });
+            x += w;
+          }
+          if (mbedLegacy && colRects.length > 0) {
+            const col = colRects.shift()!;
+            if (mbathLegacy) {
+              const bh = Math.min(BATH_STRIP_H + 0.4, col.h * 0.3);
+              placed.push(mkSpace('master-bathroom', { x: col.x, y: col.y, w: col.w, h: bh }, mbathLegacy.placedLabel, mbathLegacy.placedId, 'private'));
+              placed.push(mkSpace('master-bedroom', { x: col.x, y: col.y + bh, w: col.w, h: col.h - bh }, mbedLegacy.placedLabel, mbedLegacy.placedId, 'private'));
+            } else {
+              placed.push(mkSpace('master-bedroom', col, mbedLegacy.placedLabel, mbedLegacy.placedId, 'private'));
+            }
+          }
+          for (let i = 0; i < bedsLegacy.length; i++) {
+            const col = colRects[i]; if (!col) break;
+            const bed = bedsLegacy[i];
+            const bath = bathsLegacy[i];
+            if (bath) {
+              const bh = Math.min(BATH_STRIP_H, col.h * 0.3);
+              placed.push(mkSpace('bathroom', { x: col.x, y: col.y, w: col.w, h: bh }, bath.placedLabel, bath.placedId, 'private'));
+              placed.push(mkSpace('bedroom', { x: col.x, y: col.y + bh, w: col.w, h: col.h - bh }, bed.placedLabel, bed.placedId, 'private'));
+            } else {
+              placed.push(mkSpace('bedroom', col, bed.placedLabel, bed.placedId, 'private'));
+            }
+          }
+        }
+      } else if (isVerticalSpine) {
+        // Vertical spine: corridor is vertical west of privateRect, so adjacency requires west edge at privateRect.x
+        // Stack clusters vertically, each touching corridor via west edge — minHeight respecting
+        const clusterMinHs = clusters.map(cl => {
+          if (cl.rooms.length === 2) return cl.rooms.reduce((s, r) => s + Math.max(r.minLength ?? r.minWidth ?? 2.0, 1.0), 0);
+          return Math.max(cl.rooms[0].minLength ?? cl.rooms[0].minWidth ?? 2.0, 1.0);
+        });
+        const totalMinH = clusterMinHs.reduce((a,b)=>a+b,0);
+        const totalExtraAreaV = clusters.reduce((sum, cl) => {
+          const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+          const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+          return sum + Math.max(0, target - minArea);
+        }, 0);
+        const remainingH = privateRect.h - totalMinH;
+
+        let y = privateRect.y;
+        for (let ci = 0; ci < clusters.length; ci++) {
+          const cl = clusters[ci];
+          const isLast = ci === clusters.length - 1;
+          let rowH: number;
+          if (isLast) {
+            rowH = privateRect.y + privateRect.h - y;
+          } else {
+            const minH = clusterMinHs[ci];
+            const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+            const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+            const extra = Math.max(0, target - minArea);
+            const extraShare = totalExtraAreaV > 1e-6 ? (extra / totalExtraAreaV) * remainingH : remainingH / clusters.length;
+            rowH = minH + extraShare;
+          }
+          const rowRect: Rect = { x: privateRect.x, y, w: privateRect.w, h: rowH };
+          y += rowH;
+
+          if (cl.rooms.length === 2) {
+            const r1 = cl.rooms[0];
+            const r2 = cl.rooms[1];
+            const bedroom = r1.type.includes('bedroom') ? r1 : r2.type.includes('bedroom') ? r2 : r1;
+            const bathroom = r1.type.includes('bathroom') ? r1 : r2.type.includes('bathroom') ? r2 : r2;
+            const bedMinH = Math.max(bedroom.minLength ?? bedroom.minWidth ?? 2.2, 2.0);
+            const bathMinH = Math.max(bathroom.minLength ?? bathroom.minWidth ?? 1.2, 1.0);
+            const bedTarget = Math.max(bedroom.minArea, bedroom.targetArea);
+            const bathTarget = Math.max(bathroom.minArea, bathroom.targetArea);
+            const clusterMin = bedMinH + bathMinH;
+            const clusterExtra = Math.max(0, rowH - clusterMin);
+            const totalClusterTarget = bedTarget + bathTarget;
+            let bedH: number, bathH: number;
+            if (totalClusterTarget > 1e-6) {
+              bedH = bedMinH + clusterExtra * (bedTarget / totalClusterTarget);
+              bathH = rowH - bedH;
+              if (bathH < bathMinH) { bathH = bathMinH; bedH = rowH - bathH; }
+              if (bedH < bedMinH) { bedH = bedMinH; bathH = rowH - bedH; }
+            } else {
+              bedH = rowH * 0.6;
+              bathH = rowH - bedH;
+            }
+
+            const bedroomIsFirst = cl.rooms[0].type.includes('bedroom');
+            const topRect: Rect = { x: rowRect.x, y: rowRect.y, w: rowRect.w, h: bedroomIsFirst ? bedH : bathH };
+            const bottomRect: Rect = { x: rowRect.x, y: rowRect.y + (bedroomIsFirst ? bedH : bathH), w: rowRect.w, h: bedroomIsFirst ? bathH : bedH };
+
+            const firstSpec = cl.rooms[0];
+            const secondSpec = cl.rooms[1];
+            placed.push(mkSpace(firstSpec.type, topRect, firstSpec.placedLabel, firstSpec.placedId, 'private'));
+            placed.push(mkSpace(secondSpec.type, bottomRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
+            explanation.push(`Phase12 vertical: cluster ${cl.id} stacked ${firstSpec.type}+${secondSpec.type} both touching corridor west edge minH-respecting`);
+          } else {
+            const single = cl.rooms[0];
+            placed.push(mkSpace(single.type, rowRect, single.placedLabel, single.placedId, 'private'));
+            explanation.push(`Phase12 vertical: single ${single.type} row touching corridor minH-respecting`);
+          }
+        }
+      } else {
+        // Horizontal spine: corridor south of privateRect, adjacency requires south edge at privateRect.y
+        // Phase 12: Allocate column widths respecting minWidth HARD, extra distributed by target area
+        const clusterMinWs = clusters.map(cl => {
+          if (cl.rooms.length === 2) return cl.rooms.reduce((s, r) => s + Math.max(r.minWidth ?? 2.0, 1.0), 0);
+          return Math.max(cl.rooms[0].minWidth ?? 2.0, 1.0);
+        });
+        const totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
+        const totalExtraArea = clusters.reduce((sum, cl, idx) => {
+          const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+          const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+          return sum + Math.max(0, target - minArea);
+        }, 0);
+        const remainingW = privateRect.w - totalMinW;
+
+        let x = privateRect.x;
+        for (let ci = 0; ci < clusters.length; ci++) {
+          const cl = clusters[ci];
+          const isLast = ci === clusters.length - 1;
+          let colW: number;
+          if (isLast) {
+            colW = privateRect.x + privateRect.w - x;
+          } else {
+            const minW = clusterMinWs[ci];
+            const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+            const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+            const extra = Math.max(0, target - minArea);
+            const extraShare = totalExtraArea > 1e-6 ? (extra / totalExtraArea) * remainingW : remainingW / clusters.length;
+            colW = minW + extraShare;
+          }
+          const colRect: Rect = { x, y: privateRect.y, w: colW, h: privateRect.h };
+          x += colW;
+
+          if (cl.rooms.length === 2) {
+            const r1 = cl.rooms[0];
+            const r2 = cl.rooms[1];
+            const bedroom = r1.type.includes('bedroom') ? r1 : r2.type.includes('bedroom') ? r2 : r1;
+            const bathroom = r1.type.includes('bathroom') ? r1 : r2.type.includes('bathroom') ? r2 : r2;
+            const bedroomIsFirst = cl.rooms[0].type.includes('bedroom');
+
+            // Allocate within cluster respecting minWidths, extra by target area
+            const bedMinW = Math.max(bedroom.minWidth ?? 2.2, 2.0);
+            const bathMinW = Math.max(bathroom.minWidth ?? 1.2, 1.0);
+            const bedTarget = Math.max(bedroom.minArea, bedroom.targetArea);
+            const bathTarget = Math.max(bathroom.minArea, bathroom.targetArea);
+            const clusterMin = bedMinW + bathMinW;
+            const clusterExtra = Math.max(0, colW - clusterMin);
+            const totalClusterTarget = bedTarget + bathTarget;
+            let bedW: number, bathW: number;
+            if (totalClusterTarget > 1e-6) {
+              bedW = bedMinW + clusterExtra * (bedTarget / totalClusterTarget);
+              bathW = colW - bedW;
+              // Ensure bathMinW
+              if (bathW < bathMinW) { bathW = bathMinW; bedW = colW - bathW; }
+              if (bedW < bedMinW) { bedW = bedMinW; bathW = colW - bedW; }
+            } else {
+              bedW = colW * 0.6;
+              bathW = colW - bedW;
+            }
+
+            const leftRect: Rect = { x: colRect.x, y: colRect.y, w: bedroomIsFirst ? bedW : bathW, h: colRect.h };
+            const rightRect: Rect = { x: colRect.x + (bedroomIsFirst ? bedW : bathW), y: colRect.y, w: bedroomIsFirst ? bathW : bedW, h: colRect.h };
+
+            const firstSpec = cl.rooms[0];
+            const secondSpec = cl.rooms[1];
+            placed.push(mkSpace(firstSpec.type, leftRect, firstSpec.placedLabel, firstSpec.placedId, 'private'));
+            placed.push(mkSpace(secondSpec.type, rightRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
+            explanation.push(`Phase12 constraint-aware: cluster ${cl.id} side-by-side ${firstSpec.type}+${secondSpec.type} both touching corridor (hard direct access satisfied) minW-respecting`);
+          } else {
+            const single = cl.rooms[0];
+            placed.push(mkSpace(single.type, colRect, single.placedLabel, single.placedId, 'private'));
+            explanation.push(`Phase12 constraint-aware: single ${single.type} column touching corridor minW-respecting`);
+          }
         }
       }
     }
-    // Remaining unplaced baths go into leftover space (rare).
-    let leftover; while ((leftover = baths.shift()) || (leftover = byType.get('bathroom')?.shift())) {
+
+    // Remaining unplaced baths (should be none after clustering)
+    let leftover; while ((leftover = baths.slice(clusters.length).shift()) || (leftover = byType.get('bathroom')?.shift())) {
       if (!leftover) break;
-      // Place in a corner nudge (shouldn't happen).
     }
   }
 
@@ -248,9 +475,15 @@ export function placeSpaces(
   // the west of the private band.
   const serviceRects = layout.zones.service;
   const kitchenRect = serviceRects.find(r => r.x > footprint.x + footprint.w * 0.6) ?? null;
-  const stairPocket = needStair
-    ? serviceRects.find(r => r.x <= footprint.x + footprint.w * 0.4) ?? null
-    : null;
+  let stairPocket: Rect | null = null;
+  if (needStair) {
+    if (cfg.spine === 'vertical') {
+      // Vertical spine: stair pocket is at south end of private band (small y)
+      stairPocket = serviceRects.find(r => r.y <= footprint.y + footprint.h * 0.4) ?? serviceRects[0] ?? null;
+    } else {
+      stairPocket = serviceRects.find(r => r.x <= footprint.x + footprint.w * 0.4) ?? null;
+    }
+  }
 
   const kitchen = take('kitchen');
   if (kitchen && kitchenRect) {

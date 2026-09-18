@@ -53,10 +53,17 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     'alternative-zoning',
   ];
   const all = generateLayouts(project.input, strategies);
-  const scored = all.map(c => ({ c, m: computeMetrics(c) }));
+  // Phase 12: Hard-first ranking (hard feasibility > quality), deterministic tie-break
+  // Use hard count as primary, then soft count, then quality
+  const scored = all.map(c => {
+    const m = computeMetrics(c);
+    const hardCount = c.findings.filter(f => f.severity === 'hard').length;
+    const softCount = c.findings.filter(f => f.severity === 'soft').length;
+    return { c, m, hardCount, softCount };
+  });
   scored.sort((a, b) => {
-    if (a.m.constraintViolations !== b.m.constraintViolations)
-      return a.m.constraintViolations - b.m.constraintViolations;
+    if (a.hardCount !== b.hardCount) return a.hardCount - b.hardCount;
+    if (a.softCount !== b.softCount) return a.softCount - b.softCount;
     const as = a.m.usableAreaRatio * 0.35 + a.m.daylightExposure * 0.35 + a.m.adjacencySatisfaction * 0.2 + a.m.privacySatisfaction * 0.1;
     const bs = b.m.usableAreaRatio * 0.35 + b.m.daylightExposure * 0.35 + b.m.adjacencySatisfaction * 0.2 + b.m.privacySatisfaction * 0.1;
     if (Math.abs(as - bs) > 1e-6) return bs - as;
