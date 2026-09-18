@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { margin: 0; font-family: 'Inter', system-ui, sans-serif; }
+
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0b1220; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+.panel {
+  @apply bg-ink-800 border border-ink-700 rounded-lg;
+}
+.panel-header {
+  @apply px-4 py-2 border-b border-ink-700 text-sm uppercase tracking-wider text-ink-400;
+}
+.field {
+  @apply flex flex-col gap-1;
+}
+.field label {
+  @apply text-xs text-ink-400 uppercase tracking-wider;
+}
+.field input, .field select {
+  @apply bg-ink-900 border border-ink-700 rounded px-2 py-1.5 text-sm text-slate-100 focus:outline-none focus:border-accent-500;
+}
+.btn {
+  @apply px-3 py-2 rounded text-sm font-medium transition;
+}
+.btn-primary {
+  @apply btn bg-accent-500 hover:bg-accent-600 text-white;
+}
+.btn-secondary {
+  @apply btn bg-ink-700 hover:bg-ink-600 text-slate-200;
+}
+.badge-hard { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-bad/20 text-bad border border-bad/40 uppercase tracking-wide; }
+.badge-soft { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-warn/20 text-warn border border-warn/40 uppercase tracking-wide; }
+.badge-adv { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-accent-500/20 text-accent-500 border border-accent-500/40 uppercase tracking-wide; }
+.badge-ok { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-ok/20 text-ok border border-ok/40 uppercase tracking-wide; }
