@@ -13,8 +13,26 @@ describe('Source registry integrity', () => {
     const ids = new Set(SOURCE_REGISTRY_DEFAULTS.map(s => s.id));
     expect(ids.has('t1-mabhas4-1399')).toBe(true);
     expect(ids.has('t1-mabhas4-1396')).toBe(true);
+    expect(ids.has('t1-mabhas4-96-pdf')).toBe(true);
     expect(ids.has('t1-mabhas15-1392')).toBe(true);
+    expect(ids.has('t1-mabhas15-92-pdf')).toBe(true);
     expect(ids.has('t1-tehran-tarh-tafsili')).toBe(true);
+  });
+
+  it('Phase 5 PDFs are recorded as not-obtained when not accessible in sandbox (honest reporting)', () => {
+    const m4 = SOURCE_REGISTRY_DEFAULTS.find(s=>s.id==='t1-mabhas4-96-pdf');
+    const m15 = SOURCE_REGISTRY_DEFAULTS.find(s=>s.id==='t1-mabhas15-92-pdf');
+    expect(m4).toBeDefined();
+    expect(m15).toBeDefined();
+    expect(m4!.verificationState).toBe('not-obtained');
+    expect(m15!.verificationState).toBe('not-obtained');
+    expect(m4!.documentPath).toBeUndefined();
+    expect(m15!.documentPath).toBeUndefined();
+    expect(m4!.tier).toBe(1);
+    expect(m15!.tier).toBe(1);
+    // Edition must match attached files per task description.
+    expect(m4!.edition).toContain('1396');
+    expect(m15!.edition).toContain('1392');
   });
 
   it('does not mark any Tier-1 source as authenticated without a documentPath+digest', () => {

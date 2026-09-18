@@ -2,27 +2,36 @@
 
 ## Status
 
-> **Last updated:** 2026-09-18 (Phase 2c — primary-source mechanism in
-> place, **0 VERIFIED rules**).
+> **Last updated:** 2026-09-18 (Phase 5 — Primary Source Integration & Verification,
+> **0 VERIFIED rules**).
 >
-> Every implemented rule has been audited against verbatim-clause
-> reproductions of the Iranian Mabhas (see
-> [REGULATION_AUDIT.md](./REGULATION_AUDIT.md)). No Tier-1 (official BHRC)
-> PDF was obtained in Phase 2c — network restrictions in the sandbox
-> blocked all *.ir hosts and no mirror was reachable over the allowed
-> egress. All active rules therefore carry
-> `status: REQUIRES_SOURCE_VERIFICATION`, and every surfaced finding shows
-> an exact clause reference. Findings must be read as **Automated
-> Regulation Checks / Potential Non-Compliance / Professional Review
-> Required**, NEVER as a guarantee of permit approval.
+> Phase 5 attached PDFs `mabhas4-96.pdf` (Mabhas 4, 3rd ed 1396, 128 pages) and
+> `mabhas-15.pdf` (Mabhas 15, 1392) were announced in UI as saved to
+> `/home/user/uploads/`, but filesystem inspection in sandbox shows:
+> - `ls /home/user/uploads/` → No such file or directory
+> - `find /home -name *.pdf` → none
+> - `sources/` contains only README.md + register-source.js
+> Therefore SHA-256 and exact clause/page verification could NOT be performed
+> in this session. Per task, limitation is honestly reported and no rule is
+> promoted to VERIFIED. Source registry entries `t1-mabhas4-96-pdf` and
+> `t1-mabhas15-92-pdf` added with `verificationState: 'not-obtained'`.
+>
+> Previous Phase 2c also had 0 VERIFIED due to network restrictions blocking
+> *.ir hosts. Every implemented rule has been audited against verbatim-clause
+> reproductions (see [REGULATION_AUDIT.md](./REGULATION_AUDIT.md)). All active
+> rules therefore carry `status: REQUIRES_SOURCE_VERIFICATION`, and every
+> surfaced finding shows an exact clause reference. Findings must be read as
+> **Automated Regulation Checks / Potential Non-Compliance / Professional
+> Review Required**, NEVER as a guarantee of permit approval.
 >
 > A machine-readable source registry lives at
 > `packages/core/src/regulations/packs/source-registry.ts`, and a helper
 > CLI at `sources/register-source.js` automates registering a PDF when the
 > user provides one. Integrity tests
-> (`source-registry.test.ts`) prevent any rule from being silently marked
-> `VERIFIED` without a Tier-1, hash-verified document with an exact page
-> number. See `sources/README.md` for the promotion procedure.
+> (`source-registry.test.ts` + `phase5-verification.test.ts`) prevent any
+> rule from being silently marked `VERIFIED` without a Tier-1, hash-verified
+> document with an exact page number. See `sources/README.md` for the
+> promotion procedure.
 
 ## Architecture
 

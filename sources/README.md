@@ -6,18 +6,25 @@ documents in their original PDF form. See
 trail and [`../packages/core/src/regulations/packs/source-registry.ts`](../packages/core/src/regulations/packs/source-registry.ts)
 for the machine-readable source registry.
 
-## Status at last audit (2026-09-18)
+## Status at last audit (2026-09-18 — Phase 5)
 
 | Source | Tier | Expected filename | Status |
 |--------|------|-------------------|--------|
 | **مبحث چهارم — الزامات عمومی ساختمان** (latest edition; 1399 / 4th rev. at audit date) | 1 | `mabhas-4-1399.pdf` | **NOT OBTAINED** — sandbox network restrictions prevented download from inbr.ir / bhrc.ac.ir. |
-| **مبحث چهارم — الزامات عمومی ساختمان** (1396 / 3rd rev., edition from which current clause numbers are transcribed) | 1 | `mabhas-4-1396.pdf` | **NOT OBTAINED** — mirror at fc.icivil.ir returned TLS error. |
-| **مبحث پانزدهم — آسانسورها و پلکان برقی** (1392 w/ amendments) | 1 | `mabhas-15.pdf` | **NOT OBTAINED** — same network restriction. |
+| **مبحث چهارم — الزامات عمومی ساختمان** (1396 / 3rd rev., edition from which current clause numbers are transcribed) | 1 | `mabhas-4-1396.pdf` / `mabhas4-96.pdf` (Phase 5 attachment, 128p) | **NOT OBTAINED in sandbox** — Phase 5 PDFs were attached in UI as `mabhas4-96.pdf` (arena-system-message says /home/user/uploads/mabhas4-96.pdf) but filesystem search `find / -name *.pdf` returns none; `/home/user/uploads/` does not exist. SHA-256 cannot be computed. Honest limitation per Phase 5 task. |
+| **مبحث پانزدهم — آسانسورها و پلکان برقی** (1392 w/ amendments) | 1 | `mabhas-15.pdf` (Phase 5 attachment) | **NOT OBTAINED in sandbox** — same limitation as above; attachment not accessible in agent filesystem. |
 | **طرح تفصیلی تهران** / دستور نقشه | 1 | (project-specific PDF supplied by user) | **NOT OBTAINED** — always supplied per-project by the architect from the municipality. |
+
+Phase 5 attempted verification:
+- Task attached `mabhas4-96.pdf` (مبحث چهارم ویرایش سوم ۱۳۹۶, 128 pages) and `mabhas-15.pdf` (مبحث پانزدهم ۱۳۹۲).
+- Agent searched: `ls /home/user/uploads/` → no such file, `find /home -name *.pdf` → none, `find / -maxdepth 4 -name *.pdf` → none.
+- Therefore SHA-256, page count from actual file, and exact clause/page verification could NOT be performed in this sandbox session.
+- Per Phase 5 instructions: DO NOT pretend files registered, DO NOT fabricate hashes/page numbers, report limitation clearly.
+- Source registry entries `t1-mabhas4-96-pdf` and `t1-mabhas15-92-pdf` added with `verificationState: 'not-obtained'` and explanatory note.
 
 No rule is marked `VERIFIED` until a matching PDF exists in this directory
 and a reviewer has verified the exact clause, page number, threshold, and
-conditions (see promotion procedure below).
+conditions (see promotion procedure below). Currently **0 VERIFIED**.
 
 ## Adding a new primary document
 

@@ -37,7 +37,12 @@
 import type { RegulationSource } from '../types.js';
 
 export const SOURCE_REGISTRY_DEFAULTS: RegulationSource[] = [
-  // ===== TIER 1: Authoritative BHRC publications (NOT OBTAINED) =====
+  // ===== TIER 1: Authoritative BHRC publications (NOT OBTAINED in sandbox) =====
+  // Phase 5: PDFs were attached in the UI as mabhas4-96.pdf (Mabhas 4, 3rd ed 1396, 128p)
+  // and mabhas-15.pdf (Mabhas 15, 1392). However they are NOT accessible in the
+  // agent filesystem (/home/user/uploads/ not present, find / -name *.pdf = none).
+  // Therefore they remain not-obtained with no SHA-256, per task instruction to
+  // honestly report limitation rather than fabricate metadata.
   {
     id: 't1-mabhas4-1399',
     title: 'مبحث چهارم مقررات ملی ساختمان — الزامات عمومی ساختمان (ویرایش ۱۳۹۹، چهارم)',
@@ -63,7 +68,21 @@ export const SOURCE_REGISTRY_DEFAULTS: RegulationSource[] = [
     documentPath: undefined,
     verificationState: 'not-obtained',
     retrievedAt: '2026-09-18',
-    note: 'Edition transcribed into current rules (based on clause numbering 4-5-1-7, 4-5-2-2, 7-1-1-x used by secondary sources). Not yet downloaded.',
+    note: 'Edition transcribed into current rules (based on clause numbering 4-5-1-7, 4-5-2-2, 7-1-1-x used by secondary sources). Expected filename in repo: sources/mabhas4-96.pdf (Phase 5 attachment: 128 pages, ویرایش سوم ۱۳۹۶). Not accessible in sandbox filesystem at audit time.',
+  },
+  {
+    id: 't1-mabhas4-96-pdf',
+    title: 'مبحث چهارم مقررات ملی ساختمان — ویرایش سوم ۱۳۹۶ (128 صفحه) — PDF پیوست شده در Phase 5',
+    publisher: 'دفتر مقررات ملی ساختمان، وزارت راه و شهرسازی',
+    edition: '1396 (ویرایش سوم) — 128 pages',
+    publicationDate: '1396',
+    jurisdiction: 'ir-national',
+    tier: 1,
+    uri: 'https://inbr.ir/',
+    documentPath: undefined,
+    verificationState: 'not-obtained',
+    retrievedAt: '2026-09-18',
+    note: 'Phase 5 primary source: mabhas4-96.pdf attached in UI (arena-system-message says /home/user/uploads/mabhas4-96.pdf) but NOT present in agent filesystem (ls /home/user/uploads/ fails, find / -name *.pdf = none). SHA-256 cannot be computed. Honest limitation per Phase 5 task: report as not-obtained rather than fabricate hash. Expected repo path: sources/mabhas4-96.pdf',
   },
   {
     id: 't1-mabhas15-1392',
@@ -76,7 +95,21 @@ export const SOURCE_REGISTRY_DEFAULTS: RegulationSource[] = [
     documentPath: undefined,
     verificationState: 'not-obtained',
     retrievedAt: '2026-09-18',
-    note: 'Elevator / escalator regulation. §15-2-1-2 (7 m trigger) and cab-size clauses require Tier-1 confirmation.',
+    note: 'Elevator / escalator regulation. §15-2-1-2 (7 m trigger) and cab-size clauses require Tier-1 confirmation. Expected filename: sources/mabhas-15.pdf (Phase 5 attachment mabhas-15.pdf, ویرایش ۱۳۹۲).',
+  },
+  {
+    id: 't1-mabhas15-92-pdf',
+    title: 'مبحث پانزدهم مقررات ملی ساختمان — ویرایش ۱۳۹۲ — PDF پیوست شده در Phase 5',
+    publisher: 'دفتر مقررات ملی ساختمان، وزارت راه و شهرسازی',
+    edition: '1392',
+    publicationDate: '1392',
+    jurisdiction: 'ir-national',
+    tier: 1,
+    uri: 'https://inbr.ir/',
+    documentPath: undefined,
+    verificationState: 'not-obtained',
+    retrievedAt: '2026-09-18',
+    note: 'Phase 5 primary source: mabhas-15.pdf attached in UI but NOT present in agent filesystem. SHA-256 cannot be computed. Expected repo path: sources/mabhas-15.pdf',
   },
   {
     id: 't1-tehran-tarh-tafsili',
