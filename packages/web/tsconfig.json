@@ -18,6 +18,7 @@
     "node_modules",
     "../core/src/**/*.test.ts",
     "../core/src/verify/**",
-    "../core/dist"
+    "../core/dist",
+    "../core/src/documentation/generate-samples.ts"
   ]
 }
