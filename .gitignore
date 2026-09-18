@@ -15,3 +15,4 @@ packages/web/dist
 packages/core/dist
 *.log
 verify-output/
+outputs/
