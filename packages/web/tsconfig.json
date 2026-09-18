@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "types": ["vite/client"],
+    "paths": {
+      "@archgenius/core": ["../core/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "../core/src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "../core/src/**/*.test.ts",
+    "../core/src/verify/**",
+    "../core/dist"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "archgenius",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ArchGenius — AI Architectural Planning & Professional AutoCAD System",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:core": "npm run test -w @archgenius/core",
+    "dev": "npm run dev -w @archgenius/web",
+    "typecheck": "tsc -p tsconfig.base.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
