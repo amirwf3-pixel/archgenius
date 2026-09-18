@@ -1,6 +1,7 @@
 /**
- * Geometric validation rules.
+ * Phase 11 — Geometric validation rules (polygon canonical)
  */
+
 import type { Floor } from '../model/floor.js';
 import type { Space } from '../model/space.js';
 import type { Finding } from './types.js';
@@ -9,26 +10,20 @@ import { segmentsIntersect, closestPointOnSegment } from '../geometry/line.js';
 import { EPS, ROOM_MIN_AREA, ROOM_MIN_SIDE } from '../units.js';
 import type { Wall } from '../model/wall.js';
 import { vDist } from '../geometry/vec2.js';
+import { polygonArea, polygonBoundingRect } from '../geometry/polygon-ops.js';
+import { validateRoomPolygon, roomPolygonsOverlap, roomPolygonToBoundingRect } from '../geometry/room-polygon.js';
 
-/** A crossing is "proper" if the segments intersect in their interiors
- *  (not at endpoints and not with an endpoint lying on the other segment
- *  within a generous wall-thickness epsilon). T-joints and corner joints
- *  are acceptable; X-crossings indicate genuine wall collisions. */
 function properCrossing(w1: Wall, w2: Wall, eps: number): boolean {
   const { a: p1, b: p2 } = { a: w1.start, b: w1.end };
   const { a: p3, b: p4 } = { a: w2.start, b: w2.end };
   const isEnd = (p: any, a: any, b: any) => vDist(p, a) <= eps || vDist(p, b) <= eps;
   const onSeg = (p: any, a: any, b: any) => vDist(p, closestPointOnSegment(p, a, b)) <= eps;
-  // If any endpoint of one wall lies on the other wall (and that endpoint
-  // is not an endpoint of that other wall), it is a T-joint — acceptable.
   if (onSeg(p1, p3, p4) && !isEnd(p1, p3, p4)) return false;
   if (onSeg(p2, p3, p4) && !isEnd(p2, p3, p4)) return false;
   if (onSeg(p3, p1, p2) && !isEnd(p3, p1, p2)) return false;
   if (onSeg(p4, p1, p2) && !isEnd(p4, p1, p2)) return false;
-  // Shared endpoints: accept.
   if (isEnd(p1, p3, p4) || isEnd(p2, p3, p4)) return false;
   if (isEnd(p3, p1, p2) || isEnd(p4, p1, p2)) return false;
-  // Otherwise: require a true crossing.
   return !!segmentsIntersect({ a: p1, b: p2 }, { a: p3, b: p4 }, false);
 }
 
@@ -36,17 +31,55 @@ export function validateGeometric(floor: Floor, footprintStrict = true): Finding
   const findings: Finding[] = [];
   const spaces = floor.spaces;
 
-  // Invalid rects / zero-area / tiny side
   for (const s of spaces) {
-    if (!rIsValid(s.rect, EPS)) {
+    // Phase 11: polygon is canonical
+    const poly = s.polygon;
+    if (!poly || poly.length < 4) {
       findings.push(f('GEO_INVALID_DIMENSION', 'hard',
-        `Space "${s.label}" has invalid dimensions (${s.rect.w.toFixed(2)} × ${s.rect.h.toFixed(2)} m).`,
+        `Space "${s.label}" has invalid polygon (verts ${poly?.length ?? 0}).`,
         [s.id]));
       continue;
     }
+
+    // Validate polygon geometry
+    const v = validateRoomPolygon(poly);
+    if (!v.valid) {
+      findings.push(f('GEO_INVALID_DIMENSION', 'hard',
+        `Space "${s.label}" polygon invalid: ${v.errors.join('; ')}.`,
+        [s.id], bbox(s)));
+      continue;
+    }
+
+    // Check rect is bounding rect of polygon (compatibility)
+    const bounding = polygonBoundingRect(poly);
+    if (Math.abs(bounding.x - s.rect.x) > 1e-3 || Math.abs(bounding.y - s.rect.y) > 1e-3 ||
+        Math.abs(bounding.w - s.rect.w) > 1e-3 || Math.abs(bounding.h - s.rect.h) > 1e-3) {
+      findings.push(f('GEO_INCONSISTENT_RECT', 'soft',
+        `Space "${s.label}" rect not equal to polygon bounding rect (canonical is polygon).`,
+        [s.id]));
+    }
+
+    // Area must derive from polygon, not bounding rect (except rectangle where they equal)
+    const polyArea = polygonArea(poly);
+    if (Math.abs(s.area - polyArea) > 1e-3) {
+      findings.push(f('GEO_INCONSISTENT_AREA', 'hard',
+        `Space "${s.label}" area mismatch (stored ${s.area.toFixed(2)} vs polygon ${polyArea.toFixed(2)}).`,
+        [s.id]));
+    }
+
+    // For rectangle shape, area should equal bounding rect area; for L-shape, area < bounding
+    if (s.shapeType === 'rectangle' || poly.length === 4) {
+      const rectArea = rArea(s.rect);
+      if (Math.abs(polyArea - rectArea) > 1e-3) {
+        findings.push(f('GEO_INCONSISTENT_AREA', 'hard',
+          `Space "${s.label}" rectangle area mismatch (polygon ${polyArea.toFixed(2)} vs rect ${rectArea.toFixed(2)}).`,
+          [s.id]));
+      }
+    }
+
     if (s.rect.w < ROOM_MIN_SIDE || s.rect.h < ROOM_MIN_SIDE) {
       findings.push(f('GEO_INVALID_DIMENSION', 'hard',
-        `Space "${s.label}" is too narrow (${Math.min(s.rect.w, s.rect.h).toFixed(2)} m < ${ROOM_MIN_SIDE} m).`,
+        `Space "${s.label}" bounding too narrow (${Math.min(s.rect.w, s.rect.h).toFixed(2)} m < ${ROOM_MIN_SIDE} m).`,
         [s.id], bbox(s)));
     }
     if (s.area < ROOM_MIN_AREA) {
@@ -54,40 +87,58 @@ export function validateGeometric(floor: Floor, footprintStrict = true): Finding
         `Space "${s.label}" has near-zero area (${s.area.toFixed(2)} m²).`,
         [s.id], bbox(s)));
     }
-    if (Math.abs(s.area - rArea(s.rect)) > 1e-3) {
-      findings.push(f('GEO_INCONSISTENT_AREA', 'hard',
-        `Space "${s.label}" area mismatch (polygon ${s.area.toFixed(2)} vs rect ${rArea(s.rect).toFixed(2)}).`,
-        [s.id]));
+
+    // Parametric constraints
+    if (s.constraints) {
+      if (s.constraints.minArea !== undefined && s.area < s.constraints.minArea - 1e-6) {
+        findings.push(f('ROOM_CONSTRAINT_MIN_AREA', 'hard',
+          `Space "${s.label}" area ${s.area.toFixed(2)} < minArea ${s.constraints.minArea}.`,
+          [s.id]));
+      }
+      if (s.constraints.maxArea !== undefined && s.area > s.constraints.maxArea + 1e-6) {
+        findings.push(f('ROOM_CONSTRAINT_MAX_AREA', 'hard',
+          `Space "${s.label}" area ${s.area.toFixed(2)} > maxArea ${s.constraints.maxArea}.`,
+          [s.id]));
+      }
+      if (s.constraints.minWidth !== undefined) {
+        const minSide = Math.min(s.rect.w, s.rect.h);
+        if (minSide < s.constraints.minWidth - 1e-6) {
+          findings.push(f('ROOM_CONSTRAINT_MIN_WIDTH', 'hard',
+            `Space "${s.label}" min side ${minSide.toFixed(2)} < minWidth ${s.constraints.minWidth}.`,
+            [s.id]));
+        }
+      }
     }
+
     if (footprintStrict && !rContains(floor.footprint, s.rect, 1e-3)) {
       findings.push(f('GEO_ROOM_OUTSIDE_FOOTPRINT', 'hard',
-        `Space "${s.label}" extends outside the buildable footprint.`,
+        `Space "${s.label}" bounding extends outside the buildable footprint.`,
         [s.id], bbox(s)));
     }
   }
 
-  // Pairwise overlap between spaces (HARD). Parking spaces overlap check
-  // is relaxed because they are in their own zone, but we still check overlap
-  // against parking stalls separately.
+  // Pairwise overlap — use polygon overlap for accuracy, fallback to rect
   const nonParking = spaces.filter(s => s.type !== 'parking');
   for (let i = 0; i < nonParking.length; i++) {
     for (let j = i + 1; j < nonParking.length; j++) {
       const a = nonParking[i], b = nonParking[j];
-      if (rIntersects(a.rect, b.rect, 1e-3)) {
+      // Quick rect check
+      if (!rIntersects(a.rect, b.rect, 1e-3)) continue;
+      // Accurate polygon overlap
+      if (roomPolygonsOverlap(a.polygon, b.polygon, 1e-3)) {
+        // Compute overlap area via bounding rect intersection as approximation
         const inter = rIntersection(a.rect, b.rect, 1e-3);
         const area = inter ? rArea(inter) : 0;
-        if (area > 1e-3) {
+        // For L-shape, rect overlap may be larger than actual polygon overlap, but we still flag if polygon overlap detected
+        if (area > 1e-3 || a.polygon.length !== 4 || b.polygon.length !== 4) {
           findings.push(f('GEO_OVERLAPPING_ROOMS', 'hard',
-            `Overlap between "${a.label}" and "${b.label}" (${area.toFixed(2)} m²).`,
+            `Overlap between "${a.label}" and "${b.label}" (bounding overlap ${area.toFixed(2)} m², polygon overlap detected).`,
             [a.id, b.id], inter ? [inter.x, inter.y, inter.x + inter.w, inter.y + inter.h] : undefined));
         }
       }
     }
   }
 
-  // Wall / wall segment proper-crossing (HARD). T-junctions (one endpoint
-  // lying on the other segment, within epsilon) and shared endpoints are
-  // legitimate construction joints. Only flag PROPER interior intersections.
   const walls = floor.walls;
   for (let i = 0; i < walls.length; i++) {
     for (let j = i + 1; j < walls.length; j++) {
@@ -100,7 +151,6 @@ export function validateGeometric(floor: Floor, footprintStrict = true): Finding
       }
     }
   }
-
 
   return findings;
 }

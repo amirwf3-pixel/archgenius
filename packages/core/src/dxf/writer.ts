@@ -304,10 +304,46 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
       }
     }
 
-    // Room labels + areas — floor-specific + generic for floor 0
+    // Room polygon geometry — Phase 11 canonical polygon, not just bounding rect
+    // Emit actual room polygon on A-ROOM layers (walls already from polygon, but explicit room polygon for DXF room geometry)
     for (const s of fl.spaces) {
-      const cx = s.rect.x + s.rect.w / 2;
-      const cy = s.rect.y + s.rect.h / 2 + yOff;
+      const poly = s.polygon;
+      if (poly && poly.length >= 3) {
+        const shiftedPoly = poly.map(p => ({ x: p.x, y: p.y + yOff }));
+        const flLayer = `A-FLOOR-${fi}-A-ROOM`;
+        emitPolyline(shiftedPoly, flLayer, true);
+        if (fi === 0 && includeGenericLayers) {
+          emitPolyline(shiftedPoly, 'A-ROOM', true);
+        }
+      }
+    }
+
+    // Room labels + areas — floor-specific + generic for floor 0, at polygon centroid for L-shaped rooms
+    for (const s of fl.spaces) {
+      // Use polygon centroid for label placement (more accurate for L-shape)
+      let cx: number, cy: number;
+      if (s.polygon && s.polygon.length >= 3) {
+        // Simple centroid via bounding rect center for rectangle, but for L-shape use polygon centroid approximation
+        // Compute centroid via area-weighted method
+        let cxx = 0, cyy = 0, a2 = 0;
+        const poly = s.polygon;
+        for (let i = 0, n = poly.length; i < n; i++) {
+          const p1 = poly[i];
+          const p2 = poly[(i + 1) % n];
+          const cross = p1.x * p2.y - p2.x * p1.y;
+          a2 += cross;
+          cxx += (p1.x + p2.x) * cross;
+          cyy += (p1.y + p2.y) * cross;
+        }
+        const a = a2 * 3 || 1;
+        cx = cxx / a;
+        cy = cyy / a + yOff;
+        // Fallback to rect center if centroid outside polygon (rare for concave)
+        // For simplicity, keep computed centroid
+      } else {
+        cx = s.rect.x + s.rect.w / 2;
+        cy = s.rect.y + s.rect.h / 2 + yOff;
+      }
       const h = Math.min(0.35, Math.max(0.18, Math.min(s.rect.w, s.rect.h) * 0.08));
       const flLayer = `A-FLOOR-${fi}-A-ROOM`;
       emitText(cx, cy + h * 0.5, `${s.label} [F${fi}]`, h, flLayer, 1);

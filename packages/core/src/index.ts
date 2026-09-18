@@ -22,4 +22,6 @@ export * as Documentation from './documentation/index.js';
 export * from './documentation/index.js';
 export * as Intelligence from './intelligence/index.js';
 export * from './intelligence/index.js';
+export * as Editing from './editing/index.js';
+export * from './editing/index.js';
 export * from './pipeline.js';

@@ -357,5 +357,5 @@ export interface IntelligenceModel {
   };
 }
 
-export const DOCUMENTATION_SCHEMA_VERSION = 5;
-export const SOFTWARE_VERSION = '0.10.0-phase10';
+export const DOCUMENTATION_SCHEMA_VERSION = 6;
+export const SOFTWARE_VERSION = '0.11.0-phase11';

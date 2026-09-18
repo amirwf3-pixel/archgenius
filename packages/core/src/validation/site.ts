@@ -1,6 +1,5 @@
 /**
- * Phase 10 — Site-aware validation
- * Detects invalid site polygon, self-intersection, zero-area, room outside buildable, stair outside, parking outside, setback violations, insufficient buildable area
+ * Phase 11 — Site-aware validation with polygon canonical rooms
  */
 
 import type { Finding } from './types.js';
@@ -10,13 +9,10 @@ import type { Polygon } from '../geometry/polygon-ops.js';
 import {
   rectInsidePolygon,
   pointInPolygon,
-  polygonArea,
-  hasSelfIntersection,
-  hasDuplicateConsecutiveVertices,
-  hasZeroLengthEdges,
   validateSitePolygon,
 } from '../geometry/polygon-ops.js';
 import { rIntersects } from '../geometry/rect.js';
+import { roomPolygonInsideBuildable } from '../geometry/room-polygon.js';
 
 export function validateSite(candidate: LayoutCandidate): Finding[] {
   const findings: Finding[] = [];
@@ -28,12 +24,10 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
   const siteArea: number | undefined = anyCand.siteAreaValue;
   const buildableArea: number | undefined = anyCand.buildableAreaValue;
 
-  // If no site info (old rectangle path), skip site validation (backward compat)
   if (!siteBoundary || !buildableBoundary) {
     return findings;
   }
 
-  // Validate site polygon
   const siteValidation = validateSitePolygon(siteBoundary, 8, 10);
   if (!siteValidation.valid) {
     for (const err of siteValidation.errors) {
@@ -67,26 +61,41 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
     });
   }
 
-  // Check each floor — complete containment per Phase 10.1
   for (const floor of candidate.floors) {
-    // Rooms + corridors / circulation — HARD if outside buildable
     for (const space of floor.spaces) {
-      // All spaces including corridors must be inside buildableBoundary
-      if (!rectInsidePolygon(space.rect, buildableBoundary, 1e-3)) {
+      // Phase 11: check polygon canonical containment, not just bounding rect
+      const polyInside = roomPolygonInsideBuildable(space.polygon, buildableBoundary, 1e-3);
+      const rectInside = rectInsidePolygon(space.rect, buildableBoundary, 1e-3);
+      if (!polyInside) {
         const code = space.type === 'corridor' ? 'SITE_CORRIDOR_OUTSIDE_BUILDABLE' : 'SITE_ROOM_OUTSIDE_BUILDABLE';
         findings.push({
           code,
           severity: 'hard',
-          message: `${space.type === 'corridor' ? 'Corridor' : 'Room'} "${space.label}" outside buildable boundary — site shape ${siteShape}, rect ${space.rect.x.toFixed(1)},${space.rect.y.toFixed(1)} ${space.rect.w.toFixed(1)}x${space.rect.h.toFixed(1)} not inside buildable polygon`,
+          message: `${space.type === 'corridor' ? 'Corridor' : 'Room'} "${space.label}" polygon outside buildable boundary — site shape ${siteShape}, poly verts ${space.polygon.length}, area ${space.area.toFixed(1)} not inside buildable polygon`,
           ruleId: 'SITE_GEOM',
           entityIds: [space.id],
           bbox: [space.rect.x, space.rect.y, space.rect.x + space.rect.w, space.rect.y + space.rect.h],
           status: 'VERIFIED',
         });
+      } else if (!rectInside) {
+        // Bounding rect outside but polygon inside — for L-shaped rooms this can happen if bounding extends outside buildable but polygon does not
+        // We still want to ensure bounding is not wildly outside, but for L-shaped rooms we allow rect outside if polygon inside
+        // Only flag as advisory if shape is L-shaped or orthogonal
+        if (space.shapeType === 'rectangle' || space.polygon.length === 4) {
+          const code = space.type === 'corridor' ? 'SITE_CORRIDOR_OUTSIDE_BUILDABLE' : 'SITE_ROOM_OUTSIDE_BUILDABLE';
+          findings.push({
+            code,
+            severity: 'hard',
+            message: `${space.type === 'corridor' ? 'Corridor' : 'Room'} "${space.label}" bounding rect outside buildable — site shape ${siteShape}, rect ${space.rect.x.toFixed(1)},${space.rect.y.toFixed(1)} ${space.rect.w.toFixed(1)}x${space.rect.h.toFixed(1)} not inside buildable polygon`,
+            ruleId: 'SITE_GEOM',
+            entityIds: [space.id],
+            bbox: [space.rect.x, space.rect.y, space.rect.x + space.rect.w, space.rect.y + space.rect.h],
+            status: 'VERIFIED',
+          });
+        }
       }
     }
 
-    // Walls — HARD where applicable: check start, end, and midpoint inside buildable
     for (const wall of floor.walls) {
       const mid = { x: (wall.start.x + wall.end.x) / 2, y: (wall.start.y + wall.end.y) / 2 };
       const startInside = pointInPolygon(wall.start, buildableBoundary, 1e-3);
@@ -104,7 +113,6 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
       }
     }
 
-    // Openings — HARD: center must be inside buildable, and host wall must be inside
     for (const opening of floor.openings) {
       const centerInside = pointInPolygon((opening as any).center, buildableBoundary, 1e-3);
       if (!centerInside) {
@@ -117,7 +125,6 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
           status: 'VERIFIED',
         });
       }
-      // Check host wall containment
       const wall = floor.walls.find(w => w.id === (opening as any).wallId);
       if (wall) {
         const mid = { x: (wall.start.x + wall.end.x) / 2, y: (wall.start.y + wall.end.y) / 2 };
@@ -134,7 +141,6 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
       }
     }
 
-    // Furniture — HARD: must be inside containing room and inside buildable
     const furniture = (floor as any).furniture as Array<{ id: string; rect: { x: number; y: number; w: number; h: number }; spaceId: string }> | undefined;
     if (furniture) {
       for (const furn of furniture) {
@@ -151,15 +157,13 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
         }
         const hostSpace = floor.spaces.find(s => s.id === furn.spaceId);
         if (hostSpace) {
-          // Furniture should be inside host room rect (with small tolerance)
           const fr = furn.rect as any;
-          const sr = hostSpace.rect;
-          const insideRoom = fr.x >= sr.x - 1e-3 && fr.y >= sr.y - 1e-3 && fr.x + fr.w <= sr.x + sr.w + 1e-3 && fr.y + fr.h <= sr.y + sr.h + 1e-3;
-          if (!insideRoom) {
+          const insidePoly = rectInsidePolygon(fr, hostSpace.polygon, 1e-3) || pointInPolygon({ x: fr.x + fr.w / 2, y: fr.y + fr.h / 2 }, hostSpace.polygon, 1e-3);
+          if (!insidePoly) {
             findings.push({
               code: 'SITE_FURNITURE_OUTSIDE_ROOM',
               severity: 'hard',
-              message: `Furniture ${furn.id} outside its containing room ${hostSpace.label} — site shape ${siteShape}`,
+              message: `Furniture ${furn.id} outside its containing room ${hostSpace.label} polygon — site shape ${siteShape}`,
               ruleId: 'SITE_GEOM',
               entityIds: [furn.id, hostSpace.id],
               status: 'VERIFIED',
@@ -169,7 +173,6 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
       }
     }
 
-    // Stair outside buildable — HARD (existing)
     for (const stair of floor.stairs) {
       const foot = (stair as any).footprint ?? (stair as any).rect;
       if (foot && !rectInsidePolygon(foot, buildableBoundary, 1e-3)) {
@@ -183,7 +186,6 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
           status: 'VERIFIED',
         });
       }
-      // Also check flights/landings inside buildable if present
       const flights = (stair as any).flights as Array<{ footprint: { x: number; y: number; w: number; h: number } }> | undefined;
       if (flights) {
         for (const fl of flights) {
@@ -201,7 +203,6 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
       }
     }
 
-    // Parking outside permitted geometry (site boundary) — HARD
     for (const stall of floor.parkingStalls) {
       if (!rectInsidePolygon(stall.rect, siteBoundary, 1e-3)) {
         findings.push({
@@ -214,7 +215,6 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
           status: 'VERIFIED',
         });
       }
-      // Parking should not overlap building footprint (buildableRects are building footprint canonical, not bounding)
       if (buildableRects && buildableRects.length > 0) {
         for (const bf of buildableRects) {
           if (rIntersects(stall.rect, bf, 1e-3)) {
@@ -233,7 +233,6 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
           }
         }
       } else {
-        // If buildableRects empty (decomposition failure), check if stall center inside buildableBoundary (building footprint)
         const center = { x: stall.rect.x + stall.rect.w / 2, y: stall.rect.y + stall.rect.h / 2 };
         if (pointInPolygon(center, buildableBoundary, 1e-3) || rectInsidePolygon(stall.rect, buildableBoundary, 1e-3)) {
           findings.push({

@@ -239,14 +239,14 @@ describe('Phase 7 — Reports', () => {
 });
 
 describe('Phase 7 — Manifest', () => {
-  it('serialization and versioning — Phase 10 v5', async () => {
+  it('serialization and versioning — Phase 11 v6', async () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
     const doc = buildDocumentation(prj, bestCandidate);
     const { buildManifest, validateManifest } = await import('./manifest.js');
     const manifest = buildManifest(doc, prj, bestCandidate);
     expect(manifest.manifestVersion).toBe('1.0.0');
-    expect(manifest.schemaVersion).toBe(5);
+    expect(manifest.schemaVersion).toBe(6);
     const json = JSON.stringify(manifest);
     expect(json.length).toBeGreaterThan(500);
     const res = validateManifest(manifest);

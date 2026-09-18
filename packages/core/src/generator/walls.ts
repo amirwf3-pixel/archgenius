@@ -1,49 +1,84 @@
 /**
- * Wall generation: from placed rooms, derive walls as axis-aligned segments
+ * Phase 11 — Wall generation from canonical room polygon
+ *
+ * From placed rooms (polygon canonical), derive walls as axis-aligned segments
  * with shared walls merged to avoid duplicate lines.
  *
- * Algorithm (V1):
- *   1. For each room rectangle, emit 4 candidate wall segments (N, S, E, W),
- *      each tagged with the room id on the interior side.
- *   2. Merge colinear candidate walls that share the same orientation and
- *      overlap within epsilon, combining their space-id sets.
- *   3. Determine wall kind (exterior if one side has no room, partition/interior
- *      otherwise) and assign thickness.
+ * Algorithm:
+ *   1. For each room polygon, emit candidate wall segments for each edge (orthogonal)
+ *      tagged with room id on interior side, using polygon orientation to determine interior.
+ *   2. Merge colinear candidates that share same orientation and overlap within epsilon.
+ *   3. Determine wall kind and thickness.
  */
+
 import type { Space } from '../model/space.js';
 import type { Wall } from '../model/wall.js';
-import type { Rect } from '../geometry/rect.js';
 import { EPS, WALL_EXT_THK, WALL_INT_THK, WALL_PARTITION_THK, WALL_CORE_THK, WALL_SERVICE_THK } from '../units.js';
-import { rEdges } from '../geometry/rect.js';
 import type { Vec2 } from '../geometry/vec2.js';
+import { polygonSignedArea } from '../geometry/polygon-ops.js';
 
 interface WallCandidate {
   axis: 'h' | 'v';
-  /** Fixed coordinate (y for h, x for v). */
   coord: number;
-  /** Range along the axis: [min, max]. */
   range0: number;
   range1: number;
-  /** For horizontal walls: is the room above (+Y) or below (-Y)? For vertical: left/right (+X / -X). */
   sideSign: 1 | -1;
   spaceId: string;
 }
 
 export function generateWalls(spaces: Space[], floorLevel: number): Wall[] {
   const candidates: WallCandidate[] = [];
+
   for (const s of spaces) {
-    const rect: Rect = s.rect;
-    // Directly use known edges with consistent (min,max) ranges to avoid
-    // direction-dependent ordering issues.
-    const x0 = rect.x, y0 = rect.y, x1 = rect.x + rect.w, y1 = rect.y + rect.h;
-    // S (south) edge: horizontal at y=y0, x from x0 to x1, room above -> plus (left of +X dir)
-    candidates.push({ axis: 'h', coord: y0, range0: x0, range1: x1, sideSign: 1, spaceId: s.id });
-    // N (north) edge: horizontal at y=y1, x from x0 to x1, room below -> minus
-    candidates.push({ axis: 'h', coord: y1, range0: x0, range1: x1, sideSign: -1, spaceId: s.id });
-    // W (west) edge: vertical at x=x0, y from y0 to y1, room on right (+X side = right of +Y dir)
-    candidates.push({ axis: 'v', coord: x0, range0: y0, range1: y1, sideSign: 1, spaceId: s.id });
-    // E (east) edge: vertical at x=x1, y from y0 to y1, room on left (-X side)
-    candidates.push({ axis: 'v', coord: x1, range0: y0, range1: y1, sideSign: -1, spaceId: s.id });
+    const poly = s.polygon;
+    if (!poly || poly.length < 3) continue;
+    const area = polygonSignedArea(poly);
+    const isCCW = area > 0;
+
+    for (let i = 0, n = poly.length; i < n; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % n];
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-6) continue;
+
+      const isHorizontal = Math.abs(dy) < 1e-6;
+      const isVertical = Math.abs(dx) < 1e-6;
+      if (!isHorizontal && !isVertical) {
+        // Phase 11 only supports orthogonal, skip non-orthogonal (should not happen)
+        continue;
+      }
+
+      // Interior normal: left if CCW, right if CW
+      // For edge vector (dx,dy), left normal = (-dy, dx), right = (dy, -dx)
+      let nx: number, ny: number;
+      if (isCCW) {
+        nx = -dy / len;
+        ny = dx / len;
+      } else {
+        nx = dy / len;
+        ny = -dx / len;
+      }
+
+      if (isHorizontal) {
+        const y = p1.y; // same as p2.y
+        const x0 = Math.min(p1.x, p2.x);
+        const x1 = Math.max(p1.x, p2.x);
+        if (x1 - x0 < 1e-6) continue;
+        // Interior north => sideSign 1, south => -1
+        const sideSign: 1 | -1 = ny > 0 ? 1 : -1;
+        candidates.push({ axis: 'h', coord: y, range0: x0, range1: x1, sideSign, spaceId: s.id });
+      } else {
+        const x = p1.x;
+        const y0 = Math.min(p1.y, p2.y);
+        const y1 = Math.max(p1.y, p2.y);
+        if (y1 - y0 < 1e-6) continue;
+        // Interior east => sideSign 1, west => -1
+        const sideSign: 1 | -1 = nx > 0 ? 1 : -1;
+        candidates.push({ axis: 'v', coord: x, range0: y0, range1: y1, sideSign, spaceId: s.id });
+      }
+    }
   }
 
   // Group by axis + coord (rounded to epsilon)
@@ -61,12 +96,8 @@ export function generateWalls(spaces: Space[], floorLevel: number): Wall[] {
   let wallIdx = 0;
 
   for (const [, group] of groups) {
-    // Sort along the range axis; then merge overlapping segments while tracking
-    // which space is on each side.
     group.sort((a, b) => a.range0 - b.range0);
 
-    // Break into "intervals" at every range0 and range1, so that in each
-    // interval we know which space(s) sit on each side.
     const events: Array<{ pos: number; add?: WallCandidate; remove?: WallCandidate }> = [];
     for (const c of group) {
       events.push({ pos: c.range0, add: c });
@@ -78,19 +109,13 @@ export function generateWalls(spaces: Space[], floorLevel: number): Wall[] {
     let prevPos = events[0]?.pos ?? 0;
     for (const ev of events) {
       if (ev.pos - prevPos > EPS) {
-        // Emit a wall segment [prevPos, ev.pos]
-        // For a wall to be valid, we need at least one space adjacent.
-        // Determine side spaces: space on + side and space on - side.
         let plus: string | null = null;
         let minus: string | null = null;
         for (const ac of active) {
           if (ac.sideSign === 1) {
-            // h: sideSign 1 means interior above (+Y); v: sideSign 1 means interior to right (+X)
             if (!plus) plus = ac.spaceId;
-            else if (plus !== ac.spaceId) { /* multiple rooms sharing same side on same wall line? shouldn't happen in V1 rectangles */ }
           } else {
             if (!minus) minus = ac.spaceId;
-            else if (minus !== ac.spaceId) { /* same caveat */ }
           }
         }
         if (plus || minus) {
@@ -101,15 +126,10 @@ export function generateWalls(spaces: Space[], floorLevel: number): Wall[] {
           let kind: Wall['kind'];
           let thickness: number;
           if (axis === 'h') {
-            // "left" of start→end is +Y side, "right" is -Y side.
-            // Convention: start at lower x, end at higher x.
             start = { x: prevPos, y: coord };
             end = { x: ev.pos, y: coord };
-            // left = +Y = plus, right = -Y = minus
             spaceIds = [plus, minus];
           } else {
-            // Vertical: start at lower y, end at higher y.
-            // "left" of up-direction is -X; "right" is +X.
             start = { x: coord, y: prevPos };
             end = { x: coord, y: ev.pos };
             spaceIds = [minus, plus];
@@ -125,9 +145,6 @@ export function generateWalls(spaces: Space[], floorLevel: number): Wall[] {
             const minusIsCore = minusType === 'stair-hall' || minusType === 'elevator-hall';
             const plusIsService = plusType === 'bathroom' || plusType === 'master-bathroom' || plusType === 'guest-wc' || plusType === 'storage' || plusType === 'utility';
             const minusIsService = minusType === 'bathroom' || minusType === 'master-bathroom' || minusType === 'guest-wc' || minusType === 'storage' || minusType === 'utility';
-            const plusIsPartition = plusIsService;
-            const minusIsPartition = minusIsService;
-
             if (plusIsCore || minusIsCore) {
               kind = 'core';
               thickness = WALL_CORE_THK;
@@ -137,9 +154,6 @@ export function generateWalls(spaces: Space[], floorLevel: number): Wall[] {
             } else if (plusIsService || minusIsService) {
               kind = 'service';
               thickness = WALL_SERVICE_THK;
-            } else if (plusIsPartition || minusIsPartition) {
-              kind = 'partition';
-              thickness = WALL_PARTITION_THK;
             } else {
               kind = 'interior';
               thickness = WALL_INT_THK;

@@ -4,6 +4,8 @@
 
 ArchGenius is an offline-first, deterministic architectural floor-plan generator for the Iranian market. It produces real, editable AutoCAD-compatible DXF files from structured parametric inputs.
 
+Phase 11 — PARAMETRIC PLANNING & CONSTRAINT-AWARE EDITING: Space.polygon canonical authoritative (rect 4, L-shape 6, concave up to 8 verts), parametric constraints (minArea/targetArea/maxArea/minWidth/minLength/preferredAspectRatio/MUST_ADJACENT/PREFER_ADJACENT/MUST_BE_SEPARATED/PREFER_SEPARATED/DIRECT_ACCESS_REQUIRED/PRIVACY_REQUIRED/zone/privacy), core-level locking (position/size/geometry/adjacency/all), bounded editing (move/resize/lock/unlock/setLShape) with deterministic repair (max 4 iter × 4 dirs 0.1m), site-aware buildableBoundary, DXF polygon canonical R12, deterministic offline-first.
+
 Phase 10.1 — SITE-AWARE HARDENING: rectangle, L-shape, orthogonal polygon (V1 3..8 verts, deterministic scanline decomposition up to 6 rects, no silent bbox fallback), canonical buildable geometry (siteBoundary/buildableBoundary/buildableRects canonical, siteBoundingRect/buildableBoundingRect/buildableRect compatibility), complete containment HARD (rooms, corridors, walls, openings, furniture, stairs, parking), DXF per-floor canonical site/buildable layers (A-FLOOR-n-A-SITE/A-SETBACK/A-BLDG-OUT use actual polygons for every floor, not bounding rect), area semantics actual vs bounding (buildingFootprint = actual buildable polygon area, not bounding), deterministic, bounded, offline-first.
 
 ```
@@ -150,9 +152,65 @@ Plus generic base layers for floor 0 only backward compat (still canonical polyg
 - Phase10.1: DXF per-floor canonical parsed polylines, 8-vertex C-shape 3 rects, staircase, containment every room, differs from bounding, deterministic repeat, invalid cases, decomposition failure null not bbox, complete containment HARD for rooms/corridors/walls/openings/furniture/stairs/parking, area semantics actual vs bounding, cross-output consistency, determinism, performance bounded
 - No reduction in validation strictness, Phase9 scoring weights unchanged, no accidental floors[0] regression (ground-floor-specific metrics documented as ground-floor-specific, not whole-building)
 
+## Phase 11 — Parametric & Editing Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    @archgenius/web (React UI)                  │
+│  Floor/Room Selector │ Move/Resize/L-Shape │ Lock/Unlock │ Canvas│
+│  Validation HARD/SOFT/ADVISORY │ Constraint/Lock State           │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │ Editing.moveRoom etc (thin)
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      @archgenius/core                          │
+│  Editing: moveRoom/resizeRoom/lockRoom/unlockRoom/setLShape     │
+│  cloneCandidate JSON deterministic, isLocked, boundedRepair     │
+│  tryNudge 4 dirs ×0.1m max 4 iter, regenerateFloor walls from   │
+│  polygon canonical, furniture, openings, validateLayout HARD    │
+│                                                                 │
+│  Geometry: Space.polygon canonical, rect derived bounding,      │
+│  room-polygon: rect 4, L-shape 6, concave up to 8, area from    │
+│  polygon, containment, overlap (positive-area), sharedWall      │
+│  insideBuildable, translate, centroid                           │
+│                                                                 │
+│  Constraints: minArea/targetArea/maxArea/minWidth/minLength/    │
+│  preferredAspectRatio/MUST_ADJACENT/PREFER_ADJACENT/            │
+│  MUST_BE_SEPARATED/PREFER_SEPARATED/DIRECT_ACCESS_REQUIRED/     │
+│  PRIVACY_REQUIRED/zone/privacy — hard vs heuristic separate     │
+│                                                                 │
+│  Locking: Space.locked {position,size,geometry,adjacency}       │
+│  survives repair, impossible edit → explicit failure            │
+└───────────────────────────────────────────────────────────────┘
+```
+
+- `packages/core/src/editing/room-editing.ts` — move/resize/lock/unlock/setLShape, boundedRepair, regenerateFloor, inferLNotch
+- `packages/core/src/geometry/room-polygon.ts` — canonical polygon, thresholds 0.9/1.0, overlap fixed positive-area, insideBuildable checks vertices+centroid+midpoints
+- `packages/core/src/model/space.ts` — locked, shapeType, constraints, minWidth/minLength/preferredAspectRatio
+- `packages/core/src/model/room-constraints.ts` — parametric constraints, RoomLock, validateRoomSizeConstraints
+- `documentation/builder.ts` — phase11 version 1.0.0-phase11, qaConfig phase11-v1, software 0.11.0-phase11 schema 6
+- `phase11.test.ts` — 47 tests A-J + canonical invariants
+
+### Pipeline Phase 11
+
+```
+ProjectInput (same as Phase10.1)
+  → computeBuildableGeometry canonical
+  → generateSpaceProgram with constraints (minArea etc stored per Space)
+  → generateCandidates bounded ≤12 (rect-only placer, L-shape via editing later)
+  → User selects candidate
+  → Editing operations (core):
+    moveRoom: translate polygon, validate, site containment, locked overlap, boundedRepair, regenerate walls/openings/furniture, validate HARD SITE_
+    resizeRoom: anchor, new polygon (preserve L notch), validate constraints, containment, locked overlap, repair, regenerate, validate
+    setLShape: create L-shape from bounding + notch, validate constraints, containment, locked overlap, repair, regenerate
+    lock/unlock: set flags, re-validate, recompute metrics
+  → DXF writer emits Space.polygon polylines on A-FLOOR-n-A-ROOM + generic A-ROOM, area from polygon
+  → PDF/XLSX/report/manifest same canonical candidate, checksum deterministic
+```
+
 ## Persistence
 
-- Projects serializable JSON, plain data, schema version 5, preserve saved projects
+- Projects serializable JSON, plain data, schema version 6 (Phase11), preserve saved projects, locked state persisted, polygon canonical
 
 ## Out of scope for V1
 

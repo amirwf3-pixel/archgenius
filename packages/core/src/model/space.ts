@@ -48,6 +48,8 @@ export interface SpaceSpec {
   targetArea: number;
   /** Minimum acceptable area (m²) — HARD constraint. */
   minArea: number;
+  /** Maximum acceptable area (m²) — HARD upper bound, Phase 11 */
+  maxArea?: number;
   /** Ideal width (m). */
   targetWidth?: number;
   minWidth?: number;
@@ -70,23 +72,50 @@ export interface SpaceSpec {
   separations?: Array<{ spaceType: SpaceType; weight: number }>;
 }
 
+/** Phase 11 — Room locking model (core-level) */
+export interface RoomLockState {
+  /** Position locked — cannot move */
+  position?: boolean;
+  /** Size locked — cannot resize */
+  size?: boolean;
+  /** Geometry locked — cannot change polygon shape */
+  geometry?: boolean;
+  /** Adjacency locked — cannot change adjacency relationships */
+  adjacency?: boolean;
+}
+
+/** Phase 11 — Room shape type, canonical polygon */
+export type RoomShapeType = 'rectangle' | 'l-shape' | 'orthogonal';
+
+/** Phase 11 — Parametric size constraint stored per space */
+export interface RoomSizeConstraint {
+  minArea?: number;
+  targetArea?: number;
+  maxArea?: number;
+  minWidth?: number;
+  minLength?: number;
+  preferredAspectRatio?: number;
+}
+
 export interface Space {
   id: string;
   type: SpaceType;
-  label: string; // display name, e.g. "Bedroom 1"
+  label: string; // display name, e.g. \"Bedroom 1\"
   privacy: PrivacyBand;
   /** Architectural zone this space belongs to. */
   zone: Zone;
   orientation?: OrientationPref;
   daylightRequired?: boolean;
-  /** Axis-aligned bounding rectangle (V1: the room is exactly this rect). */
-  rect: Rect;
-  /** Room polygon (same as rect corners in V1). */
+  /** Phase 11 canonical: polygon is authoritative geometry */
   polygon: Polygon;
-  /** Computed area m². */
+  /** Phase 11 derived compatibility: bounding rect of polygon */
+  rect: Rect;
+  /** Computed area m² — derived from polygon (canonical) */
   area: number;
   targetArea: number;
   minArea: number;
+  /** Maximum area — Phase 11 parametric constraint */
+  maxArea?: number;
   /** Ids of walls that bound this space. */
   wallIds: string[];
   /** Ids of opening (doors/windows) on this space's boundary. */
@@ -97,4 +126,15 @@ export interface Space {
   hasExteriorWall: boolean;
   /** Floor number (0 = ground). */
   floor: number;
+  /** Phase 11 — shape type */
+  shapeType?: RoomShapeType;
+  /** Phase 11 — locking state */
+  locked?: RoomLockState;
+  /** Phase 11 — parametric size constraints */
+  constraints?: RoomSizeConstraint;
+  /** Phase 11 — min width/length for validation (from spec) */
+  minWidth?: number;
+  minLength?: number;
+  /** Phase 11 — preferred aspect ratio */
+  preferredAspectRatio?: number;
 }

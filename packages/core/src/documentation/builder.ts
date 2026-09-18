@@ -342,10 +342,10 @@ export function buildDocumentationModel(project: Project, candidate: LayoutCandi
   };
 
   const revision = {
-    version: '1.0.0-phase10',
+    version: '1.0.0-phase11',
     date: now.toISOString(),
-    author: 'ArchGenius Phase 10 Site/Context Intelligence Engine',
-    description: 'Site/context intelligence & buildability — rectangle, L-shape, orthogonal polygon, buildable geometry, site-aware placement',
+    author: 'ArchGenius Phase 11 Parametric Architectural Planning Engine',
+    description: 'Canonical polygon rooms (rectangle, L-shape, orthogonal up to 8 verts), parametric constraints, locking, controlled editing, site-aware placement, wall generation from polygon',
     schemaVersion: DOCUMENTATION_SCHEMA_VERSION,
   };
 
@@ -357,7 +357,7 @@ export function buildDocumentationModel(project: Project, candidate: LayoutCandi
     strategy: candidate.metadata.strategy,
     deterministic: true,
     regulationPacks: candidate.metadata.regulationPacks,
-    qaConfig: { version: 'phase10-v1', checks: ['room_usability', 'circulation', 'opening', 'parking', 'furniture', 'privacy', 'service', 'residual', 'functional', 'daylight', 'kitchen', 'bedroom', 'entrance-service', 'vertical-circulation', 'stacking', 'inter-floor', 'whole-building', 'site-geometry', 'site-containment', 'site-parking', 'site-setback', 'site-buildable'] },
+    qaConfig: { version: 'phase11-v1', checks: ['room_usability', 'circulation', 'opening', 'parking', 'furniture', 'privacy', 'service', 'residual', 'functional', 'daylight', 'kitchen', 'bedroom', 'entrance-service', 'vertical-circulation', 'stacking', 'inter-floor', 'whole-building', 'site-geometry', 'site-containment', 'site-parking', 'site-setback', 'site-buildable', 'room-polygon', 'parametric-constraints', 'locking', 'editing'] },
   };
 
   const outputs = {

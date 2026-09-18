@@ -1,6 +1,39 @@
 # ArchGenius — AI Architectural Planning & Professional CAD System
 
-**Phase 10.1 — SITE-AWARE HARDENING** — rectangle, L-shape, orthogonal polygon (V1 3..8 verts, deterministic decomposition), canonical buildable geometry, site-aware placement, complete containment HARD, DXF per-floor canonical site/buildable layers, area semantics actual vs bounding, deterministic, offline-first, R12 DXF A-SITE/A-BLDG-OUT/A-SETBACK.
+**Phase 11 — PARAMETRIC PLANNING & CONSTRAINT-AWARE EDITING** — Space.polygon canonical authoritative (rect 4, L-shape 6, concave up to 8 verts), parametric constraints (minArea/targetArea/maxArea/minWidth/minLength/preferredAspectRatio/MUST_ADJACENT/PREFER_ADJACENT/MUST_BE_SEPARATED/PREFER_SEPARATED/DIRECT_ACCESS_REQUIRED/PRIVACY_REQUIRED/zone/privacy), core-level locking (position/size/geometry/adjacency/all), bounded editing (move/resize/lock/unlock/setLShape) with deterministic repair, site-aware buildableBoundary, DXF polygon canonical R12, deterministic offline-first.
+
+Phase 10.1 — SITE-AWARE HARDENING — rectangle, L-shape, orthogonal polygon (V1 3..8 verts, deterministic decomposition), canonical buildable geometry, site-aware placement, complete containment HARD, DXF per-floor canonical site/buildable layers, area semantics actual vs bounding, deterministic, offline-first, R12 DXF A-SITE/A-BLDG-OUT/A-SETBACK.
+
+## Phase 11 — Parametric Planning & Constraint-Aware Editing (Current)
+
+### Canonical Geometry
+- `Space.polygon` authoritative, `Space.rect` derived bounding compatibility, `Space.area` from polygonArea, no dual drift.
+- Rectangle 4-vert, L-shape 6-vert (notch), bounded orthogonal concave up to 8 verts, area/containment/intersection/adjacency, shared-wall, wall gen from polygon edges.
+- Unsupported (curved/non-orthogonal/self-intersect/>8) → explicit fail, no silent bbox fallback.
+
+### Constraint Model
+- Size: minArea/targetArea/maxArea/minWidth/minLength/preferredAspectRatio
+- Adjacency: MUST_ADJACENT/PREFER_ADJACENT/MUST_BE_SEPARATED/PREFER_SEPARATED/DIRECT_ACCESS_REQUIRED/PRIVACY_REQUIRED/zone/privacy
+- Hard vs heuristic separate, Phase 8 semantics compatible, no Pareto weighting.
+
+### Locking & Editing (Core, Bounded)
+- Locking: core-level locked position/size/geometry/adjacency/all, survives repair, impossible edit → deterministic failure, no silent violation.
+- Editing: move/resize/lock/unlock/setLShape in CORE, flow op → constraint-aware mutation → bounded repair unlocked (max 4 iter × 4 dirs 0.1m) → validation → intelligence, deterministic seed-stable no Math.random no unbounded search.
+- UI thin: select floor/room, move, resize safe, lock/unlock, show validation HARD/SOFT/ADVISORY, constraint/lock state, calls Core APIs.
+
+### Site-Aware
+- siteBoundary/buildableBoundary/buildableRects authoritative, placement respects actual buildable polygon, cannot fit → deterministic repair or explicit reject.
+
+### Outputs
+- Same canonical candidate, DXF actual polygon on A-FLOOR-n-A-ROOM + generic A-ROOM, site/buildable layers canonical per-floor, R12/AC1009/INSUNITS=4 mm, PDF/XLSX/report/manifest consistent.
+
+### Testing
+- 449 PASS (402 baseline + 47 Phase11), A-J behavioral + canonical invariants, deterministic repeat PASS, performance bounded candidates≤12 no 4^floors.
+
+### Build
+- `npm run test:core` 449 PASS
+- `npx tsc -p packages/core/tsconfig.json --noEmit` PASS
+- `vite build` PASS 309 modules
 
 ## Site Geometry First-Class — Not BBox Fallback (Phase 10.1 Hardened)
 

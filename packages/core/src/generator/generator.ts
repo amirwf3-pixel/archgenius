@@ -1,11 +1,11 @@
 /**
- * Phase 10 deterministic constraint-based layout generator — Site/Context Intelligence & Buildability
+ * Phase 11 — Deterministic constraint-based layout generator with canonical polygon rooms
  *
  * Pipeline:
- *   SITE GEOMETRY → BUILDABLE GEOMETRY → SITE-AWARE SPACE PLACEMENT → WALLS / OPENINGS / FURNITURE / STAIRS → VALIDATION → INTELLIGENCE → WHOLE-BUILDING → OPTIMIZATION → DXF/PDF/XLSX/REPORT/MANIFEST/UI
+ *   SITE GEOMETRY → BUILDABLE GEOMETRY → SITE-AWARE SPACE PLACEMENT (polygon canonical) → WALLS (from polygon) / OPENINGS / FURNITURE (polygon containment) / STAIRS → VALIDATION → INTELLIGENCE → WHOLE-BUILDING → OPTIMIZATION → DXF/PDF/XLSX/REPORT/MANIFEST/UI + EDITING
  *
  * Site shapes: rectangle, l-shape, polygon (orthogonal V1, 3..8 vertices)
- * Buildable geometry is canonical polygon used for placement/validation, not just bounding box.
+ * Room shapes: rectangle (4 verts), L-shape (6 verts), orthogonal concave up to 8 verts — polygon canonical, rect derived bounding compatibility
  */
 
 import type { ProjectInput } from '../model/project.js';
@@ -29,7 +29,7 @@ import { sortCandidates } from '../layout/ranking.js';
 import { DEFAULT_RESIDENTIAL_CONSTRAINTS } from '../layout/constraints.js';
 import { placeFurniture } from './furniture.js';
 import type { Rect } from '../geometry/rect.js';
-import { rArea, rCorners, rIntersects, rContains } from '../geometry/rect.js';
+import { rArea, rCorners, rIntersects } from '../geometry/rect.js';
 import { polygonArea } from '../geometry/polygon.js';
 import { EPS } from '../units.js';
 import { computeBuildableGeometry } from '../site/buildable.js';
@@ -45,6 +45,7 @@ import {
   hasSelfIntersection,
   isOrthogonal,
 } from '../geometry/polygon-ops.js';
+import { createRectangleRoomPolygon, roomPolygonToBoundingRect } from '../geometry/room-polygon.js';
 
 export const ALL_STRATEGIES: CandidateStrategy[] = [
   'area-efficiency',
@@ -60,7 +61,7 @@ export function generateLayouts(
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
-  const footprint: Rect = bfp.rect; // legacy compat
+  const footprint: Rect = bfp.rect;
   const buildableGeom = computeBuildableGeometry(input.site);
 
   const packFindings: Finding[] = [];
@@ -81,7 +82,6 @@ export function generateLayouts(
       });
     }
   }
-  // Site geometry validation findings
   if (!buildableGeom.isValid) {
     for (const err of buildableGeom.validationErrors) {
       packFindings.push({
@@ -106,15 +106,13 @@ export function generateLayouts(
       floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations));
     }
 
-    explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded.`);
+    explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
     const meta: LayoutMetadata = { strategy, seed, generatedAt: Date.now(), regulationPacks: packs.map(p => ({ id: p.id, edition: p.edition })) };
     const cand: LayoutCandidate = {
       id: `cand-${strategy}-${seed}`, buildableArea: footprint, floors,
       findings: [...packFindings], valid: false, metrics: zeroMetrics(),
       explanations: dedup(explanations), metadata: meta,
     };
-    // Attach site metadata to candidate for downstream outputs (via buildableArea is legacy rect, but we need site info)
-    // We store site geometry in candidate as extra property via (cand as any)
     (cand as any).siteBoundary = buildableGeom.siteBoundary;
     (cand as any).buildableBoundary = buildableGeom.buildableBoundary;
     (cand as any).buildableRects = buildableGeom.buildableRects;
@@ -147,11 +145,6 @@ export function generateLayouts(
   return candidates;
 }
 
-/**
- * Site-aware floor builder — uses canonical buildable geometry for placement.
- * For rectangle: uses existing placer with buildableRect.
- * For L-shape/polygon: uses buildableRects decomposition + repair to ensure containment within buildableBoundary polygon.
- */
 function buildFloorSiteAware(
   input: ProjectInput,
   buildableGeom: ReturnType<typeof computeBuildableGeometry>,
@@ -170,7 +163,6 @@ function buildFloorSiteAware(
   const siteBoundary = buildableGeom.siteBoundary;
   const buildableRects = buildableGeom.buildableRects;
 
-  // Parking — site-aware
   let parkingStalls: any[] = [];
   let parkingArea: any;
   if (level === 0 && input.building.parkingSpaces > 0) {
@@ -193,7 +185,6 @@ function buildFloorSiteAware(
     if (p.attempts && p.attempts.length > 0) explanations.push(`Parking attempts: ${p.attempts.slice(0,5).join(' | ')}`);
   }
 
-  // Program
   const specs = programForFloor(input.building, level, isOnlyFloor);
   const placedSpecs: PlacedSpec[] = [];
   let bedIdx = 0, bathIdx = 0, mbCount = 0, mbaCount = 0;
@@ -210,17 +201,38 @@ function buildFloorSiteAware(
   }
 
   const mkSpace = (type: Space['type'], r: Rect, label: string, id: string, zone: string): Space => {
-    const poly = rCorners(r);
+    // Phase 11 canonical: polygon is authoritative, rect is derived bounding compatibility
+    const poly = createRectangleRoomPolygon(r);
+    const area = polygonArea(poly);
     const daylight = ['living', 'dining', 'bedroom', 'master-bedroom', 'guest-room', 'family-room', 'kitchen'].includes(type);
+    // Find spec for constraints
+    const spec = specs.find(sp => sp.type === type);
+    const constraints = spec ? {
+      minArea: spec.minArea,
+      targetArea: spec.targetArea,
+      maxArea: spec.maxArea,
+      minWidth: spec.minWidth,
+      minLength: spec.minLength,
+      preferredAspectRatio: spec.preferredAspectRatio,
+    } : undefined;
     return {
       id, type, label,
       privacy: privacyOf(type),
       zone: zone as Space['zone'],
       orientation: orientationOf(type),
       daylightRequired: daylight,
-      rect: r, polygon: poly,
-      area: polygonArea(poly),
-      targetArea: rArea(r), minArea: 0,
+      polygon: poly, // canonical
+      rect: r, // derived bounding compatibility
+      area, // derived from polygon
+      targetArea: spec?.targetArea ?? rArea(r),
+      minArea: spec?.minArea ?? 0,
+      maxArea: spec?.maxArea,
+      minWidth: spec?.minWidth,
+      minLength: spec?.minLength,
+      preferredAspectRatio: spec?.preferredAspectRatio,
+      shapeType: 'rectangle',
+      constraints,
+      locked: {},
       wallIds: [], openingIds: [], adjacentSpaceIds: [],
       hasExteriorWall: false,
       floor: level,
@@ -229,27 +241,22 @@ function buildFloorSiteAware(
 
   const access = input.site.accessSide as 'north'|'south'|'east'|'west';
 
-  // Site-aware placement — canonical is buildableRects (decomposition), buildableRect is compatibility/bounding only
   let placedRooms: Space[] = [];
   let corridors: Space[] = [];
   let placeExpl: string[] = [];
 
   if (buildableRects.length === 0) {
-    // Decomposition failure — explicit bounded failure, no silent bbox as canonical
     explanations.push(`Decomposition failure for ${buildableBoundary.length}-vertex buildable polygon — cannot decompose safely into rectangles (bounded failure, no bbox fallback as canonical). Candidate will be marked SITE_GEOM_INVALID HARD.`);
-    // For placement attempt to avoid crash, use bounding rect as presentation fallback, but validation will flag rooms outside buildableBoundary as HARD
     const result = placeSpaces(buildableRect, placedSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation.map(e => `[DECOMPOSITION-FAILURE-FALLBACK bounding] ${e}`);
   } else if (buildableRects.length === 1 || input.site.shape === 'rectangle') {
-    // Rectangle path — existing placer, buildableRect is canonical for rectangle
     const result = placeSpaces(buildableRect, placedSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation;
   } else {
-    // L-shape or polygon — site-aware across rects, canonical
     const result = placeSpacesAcrossRects(buildableRects, buildableBoundary, placedSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
@@ -262,16 +269,12 @@ function buildFloorSiteAware(
   spaces.push(...placedRooms);
   spaces.push(...corridors);
 
-  // Repair to ensure containment within buildableBoundary polygon (site-aware)
   const repaired = repairSpacesToBuildable(spaces, buildableBoundary, buildableRects, buildableRect);
-  // Count repaired
   const movedCount = repaired.movedCount;
   if (movedCount > 0) explanations.push(`Site-aware repair: ${movedCount} room(s) moved to fit inside buildable polygon ${input.site.shape} — buildableArea ${buildableGeom.buildableArea.toFixed(1)} m²`);
 
-  // Snap and clamp to buildable geometry (not just bounding rect)
   snapCorridorsToRoomsSiteAware(repaired.spaces, buildableBoundary, buildableRect, buildableRects);
 
-  // Entrance fallback if needed
   if (!entrancePlaced) {
     const foyer = repaired.spaces.find(s => (s.type === 'foyer' || s.type === 'corridor') && s.rect.y <= buildableRect.y + EPS);
     if (foyer) {
@@ -280,9 +283,11 @@ function buildFloorSiteAware(
       const entrRect: Rect = { x: foyer.rect.x, y: foyer.rect.y, w: Math.min(1.8, foyer.rect.w), h: spurH };
       if (rectInsidePolygon(entrRect, buildableBoundary, 1e-3)) {
         repaired.spaces.push(mkSpace('entrance', entrRect, 'Entrance', entrId, 'public'));
-        foyer.rect = { x: foyer.rect.x, y: foyer.rect.y + spurH, w: foyer.rect.w, h: foyer.rect.h - spurH };
-        foyer.polygon = rCorners(foyer.rect);
-        foyer.area = rArea(foyer.rect);
+        // Update foyer rect/polygon canonical
+        const newFoyerRect: Rect = { x: foyer.rect.x, y: foyer.rect.y + spurH, w: foyer.rect.w, h: foyer.rect.h - spurH };
+        foyer.rect = newFoyerRect;
+        foyer.polygon = createRectangleRoomPolygon(newFoyerRect);
+        foyer.area = polygonArea(foyer.polygon);
         entrancePlaced = true;
         explanations.push('Entrance vestibule carved from corridor/foyer on the access facade — site-aware.');
       }
@@ -297,9 +302,10 @@ function buildFloorSiteAware(
       const r: Rect = { x: pub.rect.x, y: pub.rect.y, w: eW, h: eH };
       if (rectInsidePolygon(r, buildableBoundary, 1e-3)) {
         repaired.spaces.push(mkSpace('entrance', r, 'Entrance', entrId, 'public'));
-        pub.rect = { x: pub.rect.x, y: pub.rect.y + eH, w: pub.rect.w, h: pub.rect.h - eH };
-        pub.polygon = rCorners(pub.rect);
-        pub.area = rArea(pub.rect);
+        const newPubRect: Rect = { x: pub.rect.x, y: pub.rect.y + eH, w: pub.rect.w, h: pub.rect.h - eH };
+        pub.rect = newPubRect;
+        pub.polygon = createRectangleRoomPolygon(newPubRect);
+        pub.area = polygonArea(pub.polygon);
         entrancePlaced = true;
       }
     }
@@ -307,7 +313,6 @@ function buildFloorSiteAware(
 
   const finalSpaces = repaired.spaces;
 
-  // Stair hall
   const stairSpace = finalSpaces.find(s => s.type === 'stair-hall') || null;
   const stairRect = stairSpace ? stairSpace.rect : null;
 
@@ -316,22 +321,19 @@ function buildFloorSiteAware(
 
   const stairs: any[] = [];
   if (stairRect && needStairForFloor(input, level)) {
-    // Ensure stair rect inside buildable
     if (!rectInsidePolygon(stairRect, buildableBoundary, 1e-3)) {
       explanations.push(`Stair hall outside buildable polygon — attempting repair for level ${level}`);
-      // Try to find alternative stair position within buildableRects
       const repairedStairRect = findPositionForRect(stairRect, buildableBoundary, buildableRects, finalSpaces.filter(s => s.type !== 'stair-hall').map(s => s.rect));
       if (repairedStairRect) {
         stairSpace!.rect = repairedStairRect;
-        stairSpace!.polygon = rCorners(repairedStairRect);
-        stairSpace!.area = rArea(repairedStairRect);
+        stairSpace!.polygon = createRectangleRoomPolygon(repairedStairRect);
+        stairSpace!.area = polygonArea(stairSpace!.polygon);
       }
     }
     const corridorSide: 'south'|'north'|'east'|'west' = 'south';
     const cfg = { ...DEFAULT_STAIR_CONFIG, floorHeight: DEFAULT_FLOOR_HEIGHT };
     const sol = solveStair(stairSpace ? stairSpace.rect : stairRect!, cfg, corridorSide, 'core-main', level);
     if (sol.ok && sol.stair) {
-      // Validate stair footprint inside buildable
       const stFoot = sol.stair.footprint ?? sol.stair.rect;
       if (stFoot && !rectInsidePolygon(stFoot, buildableBoundary, 1e-3)) {
         explanations.push(`Stair footprint outside buildable — level ${level} — marking invalid`);
@@ -390,11 +392,10 @@ function buildFloorSiteAware(
   const floor: Floor = {
     level, floorHeight: DEFAULT_FLOOR_HEIGHT,
     elevation: level * DEFAULT_FLOOR_HEIGHT,
-    footprint: buildableRect, // legacy compat — bounding rect of buildable
+    footprint: buildableRect,
     spaces: finalSpaces, walls, openings: [],
     stairs, elevators: [], furniture, parkingStalls, parkingArea,
   };
-  // Attach site-aware geometry for validation/outputs
   (floor as any).siteBoundary = siteBoundary;
   (floor as any).buildableBoundary = buildableBoundary;
   (floor as any).buildableRects = buildableRects;
@@ -426,14 +427,10 @@ function buildFloorSiteAware(
   }
 
   if (level === 0) explanations.push(`Entrance placed on the ${access} facade — site shape ${input.site.shape}.`);
-  explanations.push(`Furniture footprints placed: ${furniture.length}.`);
+  explanations.push(`Furniture footprints placed: ${furniture.length}. Phase 11 polygon canonical, rect compatibility, shapeType rectangle default, editing/locking foundation.`);
   return floor;
 }
 
-/**
- * Place spaces across multiple buildable rects (for L-shape/polygon)
- * Deterministic: sorts rects by area descending, then by y (south to north) for public/private distribution
- */
 function placeSpacesAcrossRects(
   buildableRects: Rect[],
   buildableBoundary: Polygon,
@@ -446,11 +443,8 @@ function placeSpacesAcrossRects(
   const sortedRects = [...buildableRects].sort((a, b) => rArea(b) - rArea(a) || a.y - b.y || a.x - b.x);
   explanation.push(`Site-aware placement across ${sortedRects.length} buildable rect(s) — areas ${sortedRects.map(r => rArea(r).toFixed(1)).join(', ')} m² — strategy ${strategy}`);
 
-  // Group specs by zone
   const byZone: Record<string, PlacedSpec[]> = { public: [], 'semi-private': [], private: [], service: [], circulation: [] };
   for (const s of specs) {
-    const z = (s as any).zone ?? 'service';
-    // Map using zoneOf logic
     let zone: string;
     switch (s.type) {
       case 'entrance': case 'foyer': case 'living': case 'guest-room': case 'guest-wc': case 'yard': case 'balcony':
@@ -469,8 +463,6 @@ function placeSpacesAcrossRects(
     byZone[zone].push(s);
   }
 
-  // For L-shape with 2 rects, assign public + semi-private + service to southmost rect, private to northmost
-  // Sort rects by y (south to north)
   const rectsByY = [...sortedRects].sort((a, b) => a.y - b.y);
   const southRect = rectsByY[0];
   const northRect = rectsByY[rectsByY.length - 1];
@@ -478,9 +470,7 @@ function placeSpacesAcrossRects(
   const spaces: Space[] = [];
   const corridors: Space[] = [];
 
-  // If 2 rects, use dedicated logic
   if (sortedRects.length === 2) {
-    // South rect gets public, semi-private, service, plus entrance
     const southSpecs = [...byZone.public, ...byZone['semi-private'], ...byZone.service.filter(s => s.type !== 'stair-hall'), ...byZone.circulation.filter(s => s.type === 'corridor').slice(0,1)];
     const northSpecs = [...byZone.private, ...byZone.service.filter(s => s.type === 'stair-hall')];
 
@@ -497,11 +487,9 @@ function placeSpacesAcrossRects(
       explanation.push(...resNorth.explanation.map(e => `[North rect] ${e}`));
     }
   } else {
-    // More than 2 rects or 1 rect (fallback) — distribute proportionally
-    // For each rect, allocate specs proportionally to area
     const totalArea = sortedRects.reduce((sum, r) => sum + rArea(r), 0);
     let specIdx = 0;
-    const allSpecs = [...specs].sort((a, b) => (b.priority - a.priority) || (Math.max(b.minArea, b.targetArea) - Math.max(a.minArea, a.targetArea)));
+    const allSpecs = [...specs].sort((a, b) => (b.priority - a.priority) || (Math.max(b.minArea,b.targetArea) - Math.max(a.minArea,a.targetArea)));
     for (const rect of sortedRects) {
       const fraction = rArea(rect) / totalArea;
       const count = Math.max(1, Math.round(allSpecs.length * fraction));
@@ -514,7 +502,6 @@ function placeSpacesAcrossRects(
       explanation.push(...res.explanation.map(e => `[Rect ${rect.x.toFixed(1)},${rect.y.toFixed(1)}] ${e}`));
       if (specIdx >= allSpecs.length) break;
     }
-    // Any remaining specs
     if (specIdx < allSpecs.length) {
       const remaining = allSpecs.slice(specIdx);
       const largest = sortedRects[0];
@@ -527,7 +514,6 @@ function placeSpacesAcrossRects(
   return { spaces, corridors, explanation };
 }
 
-/** Find position for rect inside buildableBoundary and buildableRects without overlapping existing rects */
 function findPositionForRect(
   rect: Rect,
   buildableBoundary: Polygon,
@@ -555,7 +541,6 @@ function findPositionForRect(
   return null;
 }
 
-/** Repair spaces to ensure containment within buildableBoundary */
 function repairSpacesToBuildable(
   spaces: Space[],
   buildableBoundary: Polygon,
@@ -566,26 +551,23 @@ function repairSpacesToBuildable(
   const keptRects: Rect[] = [];
   const result: Space[] = [];
 
-  // First, keep spaces that are already inside
   for (const s of spaces) {
     if (rectInsidePolygon(s.rect, buildableBoundary, 1e-3)) {
       result.push(s);
       keptRects.push(s.rect);
     }
   }
-  // Then try to repair those outside
   for (const s of spaces) {
     if (result.includes(s)) continue;
     const repaired = findPositionForRect(s.rect, buildableBoundary, buildableRects, keptRects);
     if (repaired) {
       s.rect = repaired;
-      s.polygon = rCorners(repaired);
-      s.area = rArea(repaired);
+      s.polygon = createRectangleRoomPolygon(repaired);
+      s.area = polygonArea(s.polygon);
       result.push(s);
       keptRects.push(repaired);
       movedCount++;
     } else {
-      // Keep original even if outside — validation will flag HARD
       result.push(s);
       keptRects.push(s.rect);
     }
@@ -593,7 +575,6 @@ function repairSpacesToBuildable(
   return { spaces: result, movedCount };
 }
 
-/** Site-aware snap and clamp — uses buildableBoundary polygon and buildableRects */
 function snapCorridorsToRoomsSiteAware(
   spaces: Space[],
   buildableBoundary: Polygon,
@@ -605,8 +586,8 @@ function snapCorridorsToRoomsSiteAware(
     s.rect.y = Math.round(s.rect.y * 100) / 100;
     s.rect.w = Math.round(s.rect.w * 100) / 100;
     s.rect.h = Math.round(s.rect.h * 100) / 100;
-    s.polygon = rCorners(s.rect);
-    s.area = rArea(s.rect);
+    s.polygon = createRectangleRoomPolygon(s.rect);
+    s.area = polygonArea(s.polygon);
   }
   const eps = 0.02;
   const corridors = spaces.filter(s => s.type === 'corridor');
@@ -620,11 +601,10 @@ function snapCorridorsToRoomsSiteAware(
       if (Math.abs(s.rect.y + s.rect.h - edges.south) < eps) { s.rect.y = edges.south - s.rect.h; }
       if (Math.abs(s.rect.x - edges.east) < eps) { s.rect.x = edges.east; }
       if (Math.abs(s.rect.x + s.rect.w - edges.west) < eps) { s.rect.x = edges.west - s.rect.w; }
-      s.polygon = rCorners(s.rect);
-      s.area = rArea(s.rect);
+      s.polygon = createRectangleRoomPolygon(s.rect);
+      s.area = polygonArea(s.polygon);
     }
   }
-  // Clamp to buildableRect (bounding) and also ensure inside buildableBoundary via repair if needed
   const fx0 = buildableRect.x, fy0 = buildableRect.y;
   const fx1 = buildableRect.x + buildableRect.w;
   const fy1 = buildableRect.y + buildableRect.h;
@@ -649,18 +629,17 @@ function snapCorridorsToRoomsSiteAware(
     s.rect.y = Math.round(s.rect.y * 100) / 100;
     s.rect.w = Math.round(s.rect.w * 100) / 100;
     s.rect.h = Math.round(s.rect.h * 100) / 100;
-    s.polygon = rCorners(s.rect);
-    s.area = rArea(s.rect);
+    s.polygon = createRectangleRoomPolygon(s.rect);
+    s.area = polygonArea(s.polygon);
   }
-  // Final check: if any space still outside buildableBoundary, try to move it inside buildableRects
   for (const s of spaces) {
     if (!rectInsidePolygon(s.rect, buildableBoundary, 1e-3)) {
       const others = spaces.filter(o => o !== s).map(o => o.rect);
       const repaired = findPositionForRect(s.rect, buildableBoundary, buildableRects, others);
       if (repaired) {
         s.rect = repaired;
-        s.polygon = rCorners(repaired);
-        s.area = rArea(repaired);
+        s.polygon = createRectangleRoomPolygon(repaired);
+        s.area = polygonArea(s.polygon);
       }
     }
   }
@@ -695,13 +674,11 @@ export function validateInput(input: ProjectInput): void {
   else {
     const shape = (input.site as any).shape ?? 'rectangle';
     if (!['rectangle', 'l-shape', 'polygon'].includes(shape)) errs.push('site.shape must be one of rectangle, l-shape, polygon');
-    // Width/length checks for rectangle and l-shape overall
     if (shape === 'rectangle' || shape === 'l-shape') {
       if (!(input.site.width > 2)) errs.push('site.width must be > 2 m');
       if (!(input.site.length > 2)) errs.push('site.length must be > 2 m');
     }
     if (shape === 'polygon') {
-      // For polygon, width/length are bounding box hints, but still need >2 if provided, else compute from vertices
       if (input.site.width !== undefined && !(input.site.width > 2)) errs.push('site.width must be > 2 m for polygon bounding hint');
       if (input.site.length !== undefined && !(input.site.length > 2)) errs.push('site.length must be > 2 m for polygon bounding hint');
       const poly = (input.site as any).polygon;
@@ -710,11 +687,9 @@ export function validateInput(input: ProjectInput): void {
         const verts = poly.vertices;
         if (verts.length < 3) errs.push('polygon must have at least 3 vertices');
         if (verts.length > 8) errs.push(`polygon exceeds maximum vertices 8, got ${verts.length}`);
-        // Check finite
         for (const v of verts) {
           if (!Number.isFinite(v.x) || !Number.isFinite(v.y)) errs.push('polygon vertex must be finite');
         }
-        // Check duplicate consecutive, zero-length, self-intersection, orthogonal, area
         try {
           const polyPts = verts.map((v: any) => ({ x: v.x, y: v.y }));
           if (hasDuplicateConsecutiveVertices(polyPts)) errs.push('polygon has duplicate consecutive vertices');
@@ -741,15 +716,12 @@ export function validateInput(input: ProjectInput): void {
         if (!(ls.notchLength > 0)) errs.push('lShape.notchLength must be >0');
         if (ls.notchWidth >= ls.width) errs.push('lShape.notchWidth must be < width');
         if (ls.notchLength >= ls.length) errs.push('lShape.notchLength must be < length');
-        // Support both short and long forms for UI compatibility
         const cornerMap: Record<string, string> = { 'north-east': 'ne', 'north-west': 'nw', 'south-east': 'se', 'south-west': 'sw', 'ne': 'ne', 'nw': 'nw', 'se': 'se', 'sw': 'sw' };
         const normalizedCorner = cornerMap[ls.notchCorner] ?? ls.notchCorner;
         if (!['ne','nw','se','sw'].includes(normalizedCorner)) errs.push('lShape.notchCorner must be ne/nw/se/sw (or north-east etc)');
         else {
-          // Normalize for downstream
           ls.notchCorner = normalizedCorner as any;
         }
-        // Validate resulting polygon
         try {
           const poly = createLShapePolygon(ls.width, ls.length, ls.notchWidth, ls.notchLength, ls.notchCorner, 0, 0);
           const v = validateSitePolygon(poly, 8, 10);
@@ -778,5 +750,5 @@ export function validateInput(input: ProjectInput): void {
     if (input.building.masterBedrooms > input.building.bedrooms) errs.push('masterBedrooms cannot exceed bedrooms');
     if (input.building.parkingSpaces < 0) errs.push('parkingSpaces must be >= 0');
   }
-  if (errs.length) throw new Error('Invalid project input:\n  - ' + errs.join('\n  - '));
+  if (errs.length) throw new Error('Invalid project input:\\n  - ' + errs.join('\\n  - '));
 }

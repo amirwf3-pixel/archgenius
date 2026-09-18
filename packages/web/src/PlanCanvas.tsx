@@ -6,9 +6,11 @@ interface Props {
   floorIndex?: number;
   width?: number;
   height?: number;
+  selectedSpaceId?: string | null;
+  onSelectSpace?: (id: string | null) => void;
 }
 
-export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 600 }: Props) {
+export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 600, selectedSpaceId, onSelectSpace }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -35,9 +37,26 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
       if (x < minX) minX = x; if (y < minY) minY = y;
       if (x + w > maxX) maxX = x + w; if (y + h > maxY) maxY = y + h;
     };
+    const expandPt = (x: number, y: number) => {
+      if (x < minX) minX = x; if (y < minY) minY = y;
+      if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+    };
     expand(floor.footprint.x, floor.footprint.y, floor.footprint.w, floor.footprint.h);
     for (const s of floor.parkingStalls) expand(s.rect.x, s.rect.y, s.rect.w, s.rect.h);
     if (floor.parkingArea) expand(floor.parkingArea.aisleRect.x, floor.parkingArea.aisleRect.y, floor.parkingArea.aisleRect.w, floor.parkingArea.aisleRect.h);
+    // Expand to include polygons (canonical) — ensures L-shape fully visible
+    for (const sp of floor.spaces) {
+      if (sp.polygon) {
+        for (const p of sp.polygon) expandPt(p.x, p.y);
+      } else {
+        expand(sp.rect.x, sp.rect.y, sp.rect.w, sp.rect.h);
+      }
+    }
+    // Include buildable boundary if present
+    const anyFloor = floor as any;
+    if (anyFloor.buildableBoundary) {
+      for (const p of anyFloor.buildableBoundary) expandPt(p.x, p.y);
+    }
 
     const pad = 40;
     const worldW = maxX - minX;
@@ -58,6 +77,21 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
       }
     };
 
+    const drawPolygon = (poly: Array<{ x: number; y: number }>, fill: string, stroke?: string, lineWidth = 1) => {
+      if (poly.length < 3) return;
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.moveTo(tx(poly[0].x), ty(poly[0].y));
+      for (let i = 1; i < poly.length; i++) ctx.lineTo(tx(poly[i].x), ty(poly[i].y));
+      ctx.closePath();
+      ctx.fill();
+      if (stroke) {
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = lineWidth;
+        ctx.stroke();
+      }
+    };
+
     ctx.strokeStyle = '#1e293b';
     ctx.lineWidth = 1;
     const gridStep = 1;
@@ -66,6 +100,27 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
     }
     for (let gy = Math.floor(minY); gy <= Math.ceil(maxY); gy += gridStep) {
       ctx.beginPath(); ctx.moveTo(tx(minX), ty(gy)); ctx.lineTo(tx(maxX), ty(gy)); ctx.stroke();
+    }
+
+    // Buildable boundary (canonical) — draw as dashed polygon if available
+    if (anyFloor.buildableBoundary) {
+      drawPolygon(anyFloor.buildableBoundary, 'rgba(96,165,250,0.04)', '#60a5fa', 1.5);
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = '#60a5fa';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const bb = anyFloor.buildableBoundary;
+      ctx.moveTo(tx(bb[0].x), ty(bb[0].y));
+      for (let i = 1; i < bb.length; i++) ctx.lineTo(tx(bb[i].x), ty(bb[i].y));
+      ctx.closePath();
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      const b = candidate.buildableArea;
+      ctx.strokeStyle = '#60a5fa';
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(tx(b.x), ty(b.y + b.h), b.w * scale, b.h * scale);
+      ctx.setLineDash([]);
     }
 
     for (const stall of floor.parkingStalls) {
@@ -83,12 +138,6 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
       ctx.setLineDash([]);
     }
 
-    const b = candidate.buildableArea;
-    ctx.strokeStyle = '#60a5fa';
-    ctx.setLineDash([6, 4]);
-    ctx.strokeRect(tx(b.x), ty(b.y + b.h), b.w * scale, b.h * scale);
-    ctx.setLineDash([]);
-
     const roomFill: Record<string, string> = {
       living: 'rgba(59,130,246,0.08)',
       dining: 'rgba(59,130,246,0.08)',
@@ -104,9 +153,28 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
       foyer: 'rgba(244,63,94,0.08)',
       storage: 'rgba(100,116,139,0.18)',
     };
+
+    // Draw spaces using canonical polygon
     for (const s of floor.spaces) {
-      const fill = roomFill[s.type] ?? 'rgba(100,116,139,0.08)';
-      drawRect(s.rect.x, s.rect.y, s.rect.w, s.rect.h, fill);
+      const baseFill = roomFill[s.type] ?? 'rgba(100,116,139,0.08)';
+      const isSelected = selectedSpaceId === s.id;
+      const fill = isSelected ? 'rgba(251,191,36,0.18)' : baseFill;
+      const stroke = isSelected ? '#fbbf24' : '#334155';
+      const lw = isSelected ? 2.5 : 1;
+      if (s.polygon && s.polygon.length >= 4) {
+        drawPolygon(s.polygon, fill, stroke, lw);
+      } else {
+        drawRect(s.rect.x, s.rect.y, s.rect.w, s.rect.h, fill, stroke);
+      }
+      // Locked indicator
+      if (s.locked?.position || s.locked?.geometry || s.locked?.size) {
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = '11px Inter, sans-serif';
+        ctx.textAlign = 'left';
+        const rx = s.rect.x;
+        const ry = s.rect.y + s.rect.h;
+        ctx.fillText('🔒', tx(rx) + 2, ty(ry) + 12);
+      }
     }
 
     ctx.lineCap = 'square';
@@ -176,10 +244,12 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
       ctx.font = `${fs}px Inter, sans-serif`;
       const cx = s.rect.x + s.rect.w / 2;
       const cy = s.rect.y + s.rect.h / 2;
+      const isSel = selectedSpaceId === s.id;
+      ctx.fillStyle = isSel ? '#fbbf24' : '#e2e8f0';
       ctx.fillText(s.label, tx(cx), ty(cy) + fs * 0.2);
       ctx.font = `${fs * 0.75}px Inter, sans-serif`;
-      ctx.fillStyle = '#94a3b8';
-      ctx.fillText(`${s.area.toFixed(1)} m²`, tx(cx), ty(cy) + fs * 1.1);
+      ctx.fillStyle = isSel ? '#fde68a' : '#94a3b8';
+      ctx.fillText(`${s.area.toFixed(1)} m² ${s.polygon.length}v`, tx(cx), ty(cy) + fs * 1.1);
       ctx.fillStyle = '#e2e8f0';
     }
 
@@ -189,7 +259,7 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
     const nx = tx(minX) + 12, ny = ty(maxY) + 18;
     ctx.beginPath(); ctx.moveTo(nx, ny - 10); ctx.lineTo(nx - 4, ny + 2); ctx.lineTo(nx + 4, ny + 2); ctx.closePath(); ctx.fill();
     ctx.fillText('N', nx - 3, ny + 18);
-    ctx.fillText(`Floor ${fi} / ${candidate.floors.length - 1} — ${floor.spaces.length} spaces — Whole-Building ${candidate.floors.length}F`, tx(minX), ty(minY) - 8);
+    ctx.fillText(`Floor ${fi} / ${candidate.floors.length - 1} — ${floor.spaces.length} spaces — Polygon Canonical — Click to select`, tx(minX), ty(minY) - 8);
 
     const barLen = 5;
     const bx = tx(maxX) - barLen * scale - 20;
@@ -202,7 +272,70 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
     ctx.textAlign = 'center';
     ctx.fillText(`0`, bx, by + 14);
     ctx.fillText(`${barLen}m`, bx + barLen * scale, by + 14);
-  }, [candidate, floorIndex, width, height]);
+  }, [candidate, floorIndex, width, height, selectedSpaceId]);
 
-  return <canvas ref={canvasRef} width={width} height={height} className="w-full h-full rounded bg-ink-900" style={{ display: 'block' }} />;
+  // Click handling for room selection
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!candidate || !onSelectSpace) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    // Map back to world coordinates — we need to recompute transform (same as in draw)
+    const fi = Math.max(0, Math.min(floorIndex, candidate.floors.length - 1));
+    const floor = candidate.floors[fi];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const expandPt = (px: number, py: number) => {
+      if (px < minX) minX = px; if (py < minY) minY = py;
+      if (px > maxX) maxX = px; if (py > maxY) maxY = py;
+    };
+    const expand = (rx: number, ry: number, rw: number, rh: number) => {
+      expandPt(rx, ry); expandPt(rx + rw, ry + rh);
+    };
+    expand(floor.footprint.x, floor.footprint.y, floor.footprint.w, floor.footprint.h);
+    for (const sp of floor.spaces) {
+      if (sp.polygon) for (const p of sp.polygon) expandPt(p.x, p.y);
+      else expand(sp.rect.x, sp.rect.y, sp.rect.w, sp.rect.h);
+    }
+    const anyFloor = floor as any;
+    if (anyFloor.buildableBoundary) for (const p of anyFloor.buildableBoundary) expandPt(p.x, p.y);
+
+    const pad = 40;
+    const worldW = maxX - minX;
+    const worldH = maxY - minY;
+    const scale = Math.min((canvas.width - pad * 2) / worldW, (canvas.height - pad * 2) / worldH);
+    const ox = pad + (canvas.width - pad * 2 - worldW * scale) / 2;
+    const oy = pad + (canvas.height - pad * 2 - worldH * scale) / 2;
+    // inverse of tx,ty
+    const worldX = (x - ox) / scale + minX;
+    const worldY = (canvas.height - y - oy) / scale + minY;
+
+    // Find space containing point (use polygon if available)
+    for (const sp of floor.spaces) {
+      const poly = sp.polygon;
+      if (poly) {
+        // point in polygon simple winding
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const xi = poly[i].x, yi = poly[i].y;
+          const xj = poly[j].x, yj = poly[j].y;
+          const intersect = ((yi > worldY) !== (yj > worldY)) && (worldX < (xj - xi) * (worldY - yi) / (yj - yi + 1e-9) + xi);
+          if (intersect) inside = !inside;
+        }
+        if (inside) {
+          onSelectSpace(sp.id);
+          return;
+        }
+      } else {
+        if (worldX >= sp.rect.x && worldX <= sp.rect.x + sp.rect.w && worldY >= sp.rect.y && worldY <= sp.rect.y + sp.rect.h) {
+          onSelectSpace(sp.id);
+          return;
+        }
+      }
+    }
+    onSelectSpace(null);
+  };
+
+  return <canvas ref={canvasRef} width={width} height={height} onClick={handleClick} className="w-full h-full rounded bg-ink-900 cursor-pointer" style={{ display: 'block' }} />;
 }

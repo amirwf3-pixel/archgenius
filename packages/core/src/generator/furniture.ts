@@ -1,27 +1,18 @@
 /**
- * Minimal furniture placement for usability / clearance QA.
- *
- * Furniture is placed deterministically inside each room rectangle after
- * room rectangles are fixed but before wall openings, so that door-swing
- * and clearance checks can use furniture footprints. Placement is heuristic
- * (corners / walls) and conservative: it never places furniture outside the
- * room, and it never overlaps another piece in the same room.
- *
- * The placement deliberately places ONLY the minimum footprints required
- * for clearance QA (one bed per bedroom, one toilet+sink per bathroom,
- * one kitchen counter in kitchen, one sofa set + dining table in living/
- * dining), per the Phase 3 spec.
+ * Phase 11 — Minimal furniture placement with polygon canonical containment
  */
+
 import type { Space } from '../model/space.js';
 import type { Furniture, FurnitureType } from '../model/furniture.js';
 import { FURNITURE_SIZES } from '../model/furniture.js';
 import type { Rect } from '../geometry/rect.js';
-import { rContains, rOverlapArea, rArea } from '../geometry/rect.js';
+import { rContains, rOverlapArea } from '../geometry/rect.js';
+import { pointInPolygon, rectInsidePolygon } from '../geometry/polygon-ops.js';
+import { roomPolygonCentroid } from '../geometry/room-polygon.js';
 
 let idCounter = 0;
 const nextId = () => `f-${(idCounter++).toString(36)}`;
 
-/** Place furniture for a whole floor. */
 export function placeFurniture(spaces: Space[]): Furniture[] {
   idCounter = 0;
   const out: Furniture[] = [];
@@ -61,9 +52,6 @@ function placeInRoom(s: Space, existing: Furniture[]): Furniture[] {
       pieces.push({ type: 'toilet', at: 'ne-corner' });
       pieces.push({ type: 'sink', at: 'nw-corner' });
       break;
-    case 'parking':
-      // Cars are placed by parking module, not furniture.
-      break;
     default:
       break;
   }
@@ -79,6 +67,7 @@ function placeInRoom(s: Space, existing: Furniture[]): Furniture[] {
 function makePiece(type: FurnitureType, s: Space, where: string, others: Furniture[]): Furniture | null {
   const size = FURNITURE_SIZES[type];
   const r = s.rect;
+  const poly = s.polygon;
   if (r.w < size.w + 0.1 || r.h < size.d + 0.1) return null;
 
   let cand: Rect;
@@ -112,7 +101,6 @@ function makePiece(type: FurnitureType, s: Space, where: string, others: Furnitu
       cand = { x: r.x + (r.w - size.w) / 2, y: r.y + (r.h - size.d) / 2, w: size.w, h: size.d };
       break;
   }
-  // Clamp inside room.
   if (cand.x < r.x) cand.x = r.x + 0.05;
   if (cand.y < r.y) cand.y = r.y + 0.05;
   if (cand.x + cand.w > r.x + r.w) cand.x = r.x + r.w - cand.w - 0.05;
@@ -120,7 +108,16 @@ function makePiece(type: FurnitureType, s: Space, where: string, others: Furnitu
   if (cand.w <= 0 || cand.h <= 0) return null;
   if (!rContains(r, cand, 1e-3)) return null;
 
-  // Avoid overlap with other furniture in the same room.
+  // Phase 11: check inside actual room polygon (canonical)
+  if (poly && poly.length >= 4) {
+    // Check if furniture rect is inside polygon
+    if (!rectInsidePolygon(cand, poly, 1e-3)) {
+      // Try center inside as fallback for L-shape corner cases
+      const center = { x: cand.x + cand.w / 2, y: cand.y + cand.h / 2 };
+      if (!pointInPolygon(center, poly, 1e-3)) return null;
+    }
+  }
+
   for (const o of others) {
     if (o.spaceId !== s.id) continue;
     if (rOverlapArea(cand, o.rect) > 1e-3) return null;
