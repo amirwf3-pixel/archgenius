@@ -609,21 +609,28 @@ function snapCorridorsToRoomsSiteAware(
   const fx1 = buildableRect.x + buildableRect.w;
   const fy1 = buildableRect.y + buildableRect.h;
   for (const s of spaces) {
+    const minW = s.minWidth ?? 0.9;
+    const minH = s.minLength ?? s.minWidth ?? 0.9;
     if (s.rect.x < fx0) {
       const over = fx0 - s.rect.x;
       s.rect.x = fx0;
-      s.rect.w = Math.max(0.01, s.rect.w - over);
+      const newW = s.rect.w - over;
+      if (newW >= minW - 1e-6) s.rect.w = Math.max(0.01, newW);
+      // else preserve min and allow GEO outside
     }
     if (s.rect.y < fy0) {
       const over = fy0 - s.rect.y;
       s.rect.y = fy0;
-      s.rect.h = Math.max(0.01, s.rect.h - over);
+      const newH = s.rect.h - over;
+      if (newH >= minH - 1e-6) s.rect.h = Math.max(0.01, newH);
     }
     if (s.rect.x + s.rect.w > fx1) {
-      s.rect.w = Math.max(0.01, fx1 - s.rect.x);
+      const maxW = fx1 - s.rect.x;
+      if (maxW >= minW - 1e-6) s.rect.w = Math.max(0.01, maxW);
     }
     if (s.rect.y + s.rect.h > fy1) {
-      s.rect.h = Math.max(0.01, fy1 - s.rect.y);
+      const maxH = fy1 - s.rect.y;
+      if (maxH >= minH - 1e-6) s.rect.h = Math.max(0.01, maxH);
     }
     s.rect.x = Math.round(s.rect.x * 100) / 100;
     s.rect.y = Math.round(s.rect.y * 100) / 100;

@@ -204,6 +204,15 @@ export interface FeasibilityResult {
   violatedConstraints: string[];
 }
 
+export const REASON_CODES = {
+  FEASIBLE: 'FEASIBLE',
+  TIGHT_FIT: 'HARD_CONSTRAINT_TIGHT_FIT',
+  INFEASIBLE_DIMENSION: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
+  INFEASIBLE_ADJACENCY: 'HARD_CONSTRAINT_INFEASIBLE_ADJACENCY',
+  INFEASIBLE_SEPARATION: 'HARD_CONSTRAINT_INFEASIBLE_SEPARATION',
+  BLOCKED_BY_LOCK: 'HARD_CONSTRAINT_BLOCKED_BY_LOCK',
+} as const;
+
 /**
  * Classify feasibility of placing a set of rooms with given available dimension vs required min
  */
@@ -216,7 +225,7 @@ export function classifyFeasibility(
   if (required <= available + eps) {
     return {
       status: 'satisfied',
-      reasonCode: 'FEASIBLE',
+      reasonCode: REASON_CODES.FEASIBLE,
       message: `Required ${required.toFixed(2)}m <= available ${available.toFixed(2)}m`,
       violatedConstraints: [],
     };
@@ -225,7 +234,7 @@ export function classifyFeasibility(
   if (required <= available + 0.5) {
     return {
       status: 'violated_repairable',
-      reasonCode: 'HARD_CONSTRAINT_TIGHT_FIT',
+      reasonCode: REASON_CODES.TIGHT_FIT,
       message: `Required ${required.toFixed(2)}m > available ${available.toFixed(2)}m by <0.5m — repairable via bounded resize, but will report HARD if not repaired`,
       violatedConstraints: constraintIds,
     };
@@ -233,8 +242,71 @@ export function classifyFeasibility(
   // Genuinely infeasible
   return {
     status: 'genuinely_infeasible',
-    reasonCode: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
+    reasonCode: REASON_CODES.INFEASIBLE_DIMENSION,
     message: `Required ${required.toFixed(2)}m > available ${available.toFixed(2)}m — genuinely infeasible to satisfy all HARD constraints simultaneously`,
     violatedConstraints: constraintIds,
+  };
+}
+
+export function classifyAdjacencyFeasibility(
+  canSatisfy: boolean,
+  constraintId: string,
+  reason: string
+): FeasibilityResult {
+  if (canSatisfy) {
+    return {
+      status: 'satisfied',
+      reasonCode: REASON_CODES.FEASIBLE,
+      message: `Adjacency feasible: ${reason}`,
+      violatedConstraints: [],
+    };
+  }
+  return {
+    status: 'genuinely_infeasible',
+    reasonCode: REASON_CODES.INFEASIBLE_ADJACENCY,
+    message: `Adjacency infeasible: ${reason} — constraint ${constraintId} cannot be satisfied without violating higher-priority HARD (dimension/site/lock)`,
+    violatedConstraints: [constraintId],
+  };
+}
+
+export function classifySeparationFeasibility(
+  canSatisfy: boolean,
+  constraintId: string,
+  reason: string
+): FeasibilityResult {
+  if (canSatisfy) {
+    return {
+      status: 'satisfied',
+      reasonCode: REASON_CODES.FEASIBLE,
+      message: `Separation feasible: ${reason}`,
+      violatedConstraints: [],
+    };
+  }
+  return {
+    status: 'genuinely_infeasible',
+    reasonCode: REASON_CODES.INFEASIBLE_SEPARATION,
+    message: `Separation infeasible: ${reason} — constraint ${constraintId} would require moving locked or out-of-bounds`,
+    violatedConstraints: [constraintId],
+  };
+}
+
+export function classifyLockFeasibility(
+  blocked: boolean,
+  constraintId: string,
+  lockedId: string
+): FeasibilityResult {
+  if (!blocked) {
+    return {
+      status: 'satisfied',
+      reasonCode: REASON_CODES.FEASIBLE,
+      message: `Lock not blocking`,
+      violatedConstraints: [],
+    };
+  }
+  return {
+    status: 'genuinely_infeasible',
+    reasonCode: REASON_CODES.BLOCKED_BY_LOCK,
+    message: `Hard constraint ${constraintId} blocked by locked room ${lockedId} — explicit HARD infeasibility, no silent unlock`,
+    violatedConstraints: [constraintId],
   };
 }

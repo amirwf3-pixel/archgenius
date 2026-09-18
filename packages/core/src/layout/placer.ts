@@ -1,17 +1,28 @@
 /**
- * Constraint-based deterministic placer (Phase 3).
+ * Constraint-based deterministic placer — Phase 13 Generic Graph-Driven
  *
- * Carves footprint into architectural zones (public / service / circulation
- * / private). For the public band we use a recursive binary splitter. For
- * the private band we use a COLUMN layout: X is split into bedroom-bath
- * columns, each column Y-split into a corridor-edge bath/closet strip and
- * a bedroom above — the canonical Iranian residential section. For
- * vertical-spine strategies (daylight-orientation) we mirror the logic.
+ * Pipeline:
+ *  canonical DEFAULT_RESIDENTIAL_CONSTRAINTS
+ *  → HardConstraintGraph (buildHardConstraintGraph)
+ *  → deterministic placement ordering/clustering (placementOrderForTypes, graph.clusters)
+ *  → bounded candidate generation (MAX_CANDIDATE_POSITIONS, MAX_CONSTRAINT_PLACEMENT_ATTEMPTS)
+ *  → constraint-aware geometry (sharedWallEdges polygon-aware)
+ *  → validation
+ *
+ * Carves footprint into architectural zones (public / service / circulation / private).
+ * For the public band we use a recursive binary splitter.
+ * For the private band we use a GENERIC cluster layout driven by the hard graph:
+ *  - Graph clusters influence placement (not hard-coded bedroom branches)
+ *  - Corridor-dependent types (hard DIRECT_ACCESS or MUST_ADJACENT to corridor) must touch corridor
+ *  - Separation actively evaluated via polygon-aware adjacency
+ *  - Bounded search with MAX_CONSTRAINT_PLACEMENT_ATTEMPTS=8, repair iter 4, candidate positions 12
  */
 import type { Rect } from '../geometry/rect.js';
 import { rSplitX, rSplitY, rArea, rCorners } from '../geometry/rect.js';
 import type { Space, SpaceSpec, Zone, SpaceType } from '../model/space.js';
 import type { CandidateStrategy } from '../model/layout.js';
+import { buildHardConstraintGraph, placementOrderForTypes, classifyFeasibility, MAX_CONSTRAINT_PLACEMENT_ATTEMPTS, MAX_LOCAL_REPAIR_ITERATIONS, MAX_CANDIDATE_POSITIONS } from './constraint-graph.js';
+import { sharedWallEdges } from '../geometry/room-polygon.js';
 
 const CORRIDOR_W = 1.5;
 const MIN_SIDE = 1.0;
@@ -106,12 +117,11 @@ function carveZones(
   }
 
   // Kitchen strip on EAST of public band (only when the floor has a kitchen
-  // — upper residential floors typically don't). Shrink strip to fit narrow
-  // sites (minimum 1.50 m) so the rest of the plan doesn't collapse.
+  // — upper residential floors typically don't). Preserve minWidth 2.0 for kitchen where feasible, allow 1.5 only for very narrow sites.
   let publicMain: Rect = publicWork;
   if (hasKitchen) {
-    const kw = Math.max(1.5, Math.min(KITCHEN_W, publicWork.w * 0.25));
-    if (publicWork.w > kw + 2.5) {
+    const kw = Math.max(1.5, Math.min(KITCHEN_W, Math.max(2.0, publicWork.w * 0.25)));
+    if (publicWork.w > kw + 2.0) {
       zones.service.push({ x: publicWork.x + publicWork.w - kw, y: publicWork.y, w: kw, h: publicWork.h });
       publicMain = { x: publicWork.x, y: publicWork.y, w: publicWork.w - kw, h: publicWork.h };
     }
@@ -143,11 +153,20 @@ export function placeSpaces(
   mkSpace: (type: SpaceType, r: Rect, label: string, id: string, zone: Zone) => Space,
 ): { spaces: Space[]; corridors: Space[]; explanation: string[] } {
   void accessSide;
+
+  // Phase 13: Build hard constraint graph from canonical source — single source of truth
+  const graph = buildHardConstraintGraph();
+
   const cfg = strategyConfig(strategy);
   const needStair = specs.some(s => s.type === 'stair-hall');
   const hasKitchen = specs.some(s => s.type === 'kitchen');
   const layout = carveZones(footprint, cfg, needStair, hasKitchen);
-  const explanation: string[] = [`Strategy ${strategy}: ${cfg.spine} spine, corridor @ ${Math.round(cfg.corridorOffsetFraction*100)}% depth.`];
+  const explanation: string[] = [
+    `Strategy ${strategy}: ${cfg.spine} spine, corridor @ ${Math.round(cfg.corridorOffsetFraction*100)}% depth.`,
+    `Phase13 generic graph: ${graph.hardEdges.length} hard edges, ${graph.clusters.length} hard clusters, ${graph.nodes.size} types — canonical source DEFAULT_RESIDENTIAL_CONSTRAINTS`,
+    `Phase13 clusters: ${graph.clusters.map(c=>`[${c.join(',')}]`).join(' | ')}`,
+    `Phase13 placement order: ${placementOrderForTypes([...new Set(specs.map(s=>s.type))], graph).join(' > ')}`,
+  ];
 
   const byType = new Map<SpaceType, PlacedSpec[]>();
   for (const s of specs) {
@@ -160,7 +179,7 @@ export function placeSpaces(
   };
   const placed: Space[] = [];
 
-  // --- Entrance spur ---
+  // --- Entrance spur — satisfies MUST_BE_ADJACENT entrance-foyer via graph cluster ---
   if (layout.entrancePatch) {
     const patch = layout.entrancePatch;
     const entH = Math.min(1.8, patch.h * 0.4);
@@ -168,71 +187,174 @@ export function placeSpaces(
       placed.push(mkSpace('entrance', { x: patch.x, y: patch.y, w: patch.w, h: entH }, ent.placedLabel, ent.placedId, 'public'));
     const foy = take('foyer'); if (foy)
       placed.push(mkSpace('foyer', { x: patch.x, y: patch.y + entH, w: patch.w, h: patch.h - entH }, foy.placedLabel, foy.placedId, 'public'));
-  } else {
-    // No spur: entrance placed against facade in public rect in the recursive pass below.
+    explanation.push(`Phase13 public: entrance-foyer MUST_BE_ADJACENT from graph cluster satisfied via entrancePatch shared edge`);
   }
 
-  // --- Private band: column layout ---
-  // Phase 12: Constraint-aware placement — HARD constraints influence geometry BEFORE final validation
-  // For corridor-bedroom/bath direct access hard: each bedroom/bath/master must touch corridor (south edge at privateRect.y)
-  // For master cluster: master bedroom and master bathroom must both touch corridor and be adjacent to each other (side-by-side)
+  // --- Generic helper: get hard adjacency requirements for a type from graph ---
+  const getHardAdjacents = (type: string): string[] => {
+    const result: string[] = [];
+    for (const e of graph.hardEdges) {
+      if (e.kind === 'MUST_BE_ADJACENT' || e.kind === 'DIRECT_ACCESS_REQUIRED') {
+        if (e.fromType === type) result.push(e.toType);
+        else if (e.toType === type) result.push(e.fromType);
+      }
+    }
+    return [...new Set(result)];
+  };
+  const getHardSeparated = (type: string): string[] => {
+    const result: string[] = [];
+    for (const e of graph.hardEdges) {
+      if (e.kind === 'MUST_BE_SEPARATED') {
+        if (e.fromType === type) result.push(e.toType);
+        else if (e.toType === type) result.push(e.fromType);
+      }
+    }
+    return [...new Set(result)];
+  };
+  const mustTouchCorridor = (type: string): boolean => {
+    const adj = getHardAdjacents(type);
+    return adj.includes('corridor') || adj.includes('stair-hall');
+  };
+
+  // --- Private band: GENERIC graph-driven placement ---
+  // Phase 13: Actually consume graph.clusters and placement ordering, not hard-coded bedroom branches
   const privateRect = layout.zones.private[0];
   if (privateRect) {
-    const mbath = take('master-bathroom');
-    const mbed = take('master-bedroom');
-    const baths: PlacedSpec[] = [];
-    const beds: PlacedSpec[] = [];
-    let b; while ((b = take('bedroom'))) beds.push(b);
-    let bt; while ((bt = take('bathroom'))) baths.push(bt);
-    const extraMbath = take('master-bathroom');
-    if (extraMbath) baths.push(extraMbath);
+    // Collect all private specs generically from byType (not hard-coded beds/baths)
+    const privateTypes = [...byType.keys()].filter(t => zoneOf({ type: t } as any) === 'private');
+    const orderedPrivateTypes = placementOrderForTypes(privateTypes, graph);
+    explanation.push(`Phase13 private types ordered: ${orderedPrivateTypes.join(' > ')}`);
 
-    // Phase 12: Build constraint-aware clusters
-    // Each cluster will be placed as side-by-side rooms both touching corridor, satisfying:
-    // - c-corr-bed, c-corr-mbed, c-corr-bath, c-corr-mbath (hard direct access / adjacency)
-    // - p-mb-mbath soft adjacency (master bedroom adjacent to master bathroom)
-    interface PrivateCluster {
+    // Build generic clusters for private zone based on graph clusters
+    // For each graph cluster, extract private types present, then create instance clusters
+    interface GenericCluster {
       id: string;
-      rooms: PlacedSpec[]; // 1 or 2 rooms
-      isMaster: boolean;
-    }
-    const clusters: PrivateCluster[] = [];
-
-    // Master cluster first (high priority: hard adjacency + hard direct access)
-    if (mbed || mbath) {
-      const rooms: PlacedSpec[] = [];
-      if (mbed) rooms.push(mbed);
-      if (mbath) rooms.push(mbath);
-      clusters.push({ id: 'master-cluster', rooms, isMaster: true });
+      rooms: PlacedSpec[];
+      types: string[];
+      mustTouchCorridor: boolean;
+      separationConstraints: string[]; // types that must be separated from this cluster
     }
 
-    // Regular bedroom-bathroom clusters
-    const maxPairs = Math.max(beds.length, baths.length);
-    for (let i = 0; i < maxPairs; i++) {
-      const bed = beds[i];
-      const bath = baths[i];
-      if (bed && bath) {
-        clusters.push({ id: `bed-bath-${i}`, rooms: [bed, bath], isMaster: false });
-      } else if (bed) {
-        clusters.push({ id: `bed-${i}`, rooms: [bed], isMaster: false });
-      } else if (bath) {
-        clusters.push({ id: `bath-${i}`, rooms: [bath], isMaster: false });
+    const genericClusters: GenericCluster[] = [];
+
+    // First, handle types that are in the same hard graph cluster and have soft PREFER_ADJACENT between them (e.g., master-bedroom ↔ master-bathroom)
+    // We will pair types that have soft adjacency within same graph cluster
+    const usedSpecIds = new Set<string>();
+
+    // Build instance-level pairing based on graph soft adjacency within private zone
+    // Example: master-bedroom and master-bathroom have PREFER_ADJACENT soft, and are in same hard cluster via corridor
+    // So we pair them generically by checking soft edges
+    const softAdjMap = new Map<string, Set<string>>();
+    for (const e of graph.softEdges) {
+      if (e.kind === 'PREFER_ADJACENT') {
+        if (!softAdjMap.has(e.fromType)) softAdjMap.set(e.fromType, new Set());
+        if (!softAdjMap.has(e.toType)) softAdjMap.set(e.toType, new Set());
+        softAdjMap.get(e.fromType)!.add(e.toType);
+        softAdjMap.get(e.toType)!.add(e.fromType);
       }
     }
 
-    // Placement ordering: master cluster first, then larger target area clusters, deterministic tie-break by id
-    clusters.sort((a, b) => {
-      if (a.isMaster && !b.isMaster) return -1;
-      if (!a.isMaster && b.isMaster) return 1;
+    // Collect all private specs into list
+    const allPrivateSpecs: PlacedSpec[] = [];
+    for (const t of orderedPrivateTypes) {
+      const list = byType.get(t as SpaceType) ?? [];
+      allPrivateSpecs.push(...list);
+    }
+
+    // Generic pairing: try to pair specs whose types have soft adjacency and are in same graph hard cluster
+    // Deterministic: sort specs by type order, then by placedId
+    allPrivateSpecs.sort((a, b) => {
+      const orderA = orderedPrivateTypes.indexOf(a.type);
+      const orderB = orderedPrivateTypes.indexOf(b.type);
+      if (orderA !== orderB) return orderA - orderB;
+      return a.placedId.localeCompare(b.placedId);
+    });
+
+    // Pairing algorithm generic: iterate specs, if spec type has soft adjacency to another unpaired spec type in same hard cluster, pair them
+    const paired = new Set<string>();
+    for (let i = 0; i < allPrivateSpecs.length; i++) {
+      const spec = allPrivateSpecs[i];
+      if (paired.has(spec.placedId)) continue;
+      const softAdjTypes = softAdjMap.get(spec.type) ?? new Set();
+      // Find partner in remaining unpaired specs whose type is in softAdjTypes and shares hard cluster
+      let partner: PlacedSpec | undefined;
+      for (let j = i + 1; j < allPrivateSpecs.length; j++) {
+        const cand = allPrivateSpecs[j];
+        if (paired.has(cand.placedId)) continue;
+        if (!softAdjTypes.has(cand.type)) continue;
+        // Check if they are in same graph hard cluster
+        const inSameCluster = graph.clusters.some(cl => cl.includes(spec.type) && cl.includes(cand.type));
+        if (inSameCluster) {
+          partner = cand;
+          break;
+        }
+      }
+      if (partner) {
+        // Create cluster with 2 rooms
+        const types = [spec.type, partner.type];
+        const mustTouch = mustTouchCorridor(spec.type) || mustTouchCorridor(partner.type);
+        const sep = [...new Set([...getHardSeparated(spec.type), ...getHardSeparated(partner.type)])];
+        genericClusters.push({
+          id: `cluster-${spec.type}-${partner.type}-${i}`,
+          rooms: [spec, partner],
+          types,
+          mustTouchCorridor: mustTouch,
+          separationConstraints: sep,
+        });
+        paired.add(spec.placedId);
+        paired.add(partner.placedId);
+        // Remove from byType so they are not placed again
+        const arr1 = byType.get(spec.type as SpaceType);
+        if (arr1) { const idx = arr1.findIndex(s => s.placedId === spec.placedId); if (idx >= 0) arr1.splice(idx, 1); }
+        const arr2 = byType.get(partner.type as SpaceType);
+        if (arr2) { const idx = arr2.findIndex(s => s.placedId === partner.placedId); if (idx >= 0) arr2.splice(idx, 1); }
+      } else {
+        // Single room cluster
+        const mustTouch = mustTouchCorridor(spec.type);
+        const sep = getHardSeparated(spec.type);
+        genericClusters.push({
+          id: `cluster-${spec.type}-${i}`,
+          rooms: [spec],
+          types: [spec.type],
+          mustTouchCorridor: mustTouch,
+          separationConstraints: sep,
+        });
+        paired.add(spec.placedId);
+        const arr = byType.get(spec.type as SpaceType);
+        if (arr) { const idx = arr.findIndex(s => s.placedId === spec.placedId); if (idx >= 0) arr.splice(idx, 1); }
+      }
+    }
+
+    // Also handle any remaining private specs that were not in orderedPrivateTypes (e.g., extra master-bathroom)
+    for (const [type, list] of byType) {
+      if (zoneOf({ type } as any) !== 'private') continue;
+      for (const spec of [...list]) {
+        if (paired.has(spec.placedId)) continue;
+        genericClusters.push({
+          id: `cluster-${type}-remaining-${spec.placedId}`,
+          rooms: [spec],
+          types: [type],
+          mustTouchCorridor: mustTouchCorridor(type),
+          separationConstraints: getHardSeparated(type),
+        });
+        const arr = byType.get(type);
+        if (arr) { const idx = arr.findIndex(s => s.placedId === spec.placedId); if (idx >= 0) arr.splice(idx, 1); }
+      }
+    }
+
+    // Sort generic clusters deterministically: mustTouchCorridor true first (hard adjacency > separation), then larger area, then ID
+    genericClusters.sort((a, b) => {
+      if (a.mustTouchCorridor && !b.mustTouchCorridor) return -1;
+      if (!a.mustTouchCorridor && b.mustTouchCorridor) return 1;
       const areaA = a.rooms.reduce((sum, r) => sum + Math.max(r.minArea, r.targetArea), 0);
       const areaB = b.rooms.reduce((sum, r) => sum + Math.max(r.minArea, r.targetArea), 0);
       if (areaA !== areaB) return areaB - areaA;
       return a.id.localeCompare(b.id);
     });
 
-    // Phase 12 feasibility check: can we place all private rooms side-by-side touching corridor while respecting minWidth/minLength?
-    // For horizontal spine, need sum(minWidths) <= privateRect.w; for vertical, sum(minHeights) <= privateRect.h
-    // If not feasible, fallback to legacy column layout that satisfies minWidth but may violate corridor adjacency (honest HARD)
+    explanation.push(`Phase13 generic private clusters: ${genericClusters.map(c=>`${c.id}[${c.types.join('+')}] mustTouchCorridor=${c.mustTouchCorridor} sep=[${c.separationConstraints.join(',')}]`).join(' | ')}`);
+
+    // Feasibility check: sum min widths/heights vs available
     const computeMinWidth = (spec: PlacedSpec): number => Math.max(spec.minWidth ?? 2.0, 1.0);
     const computeMinHeight = (spec: PlacedSpec): number => Math.max(spec.minLength ?? spec.minWidth ?? 2.0, 1.0);
 
@@ -240,245 +362,289 @@ export function placeSpaces(
     let requiredTotal = 0;
     const isVerticalSpineCheck = cfg.spine === 'vertical';
     if (isVerticalSpineCheck) {
-      for (const cl of clusters) {
-        if (cl.rooms.length === 2) {
-          requiredTotal += cl.rooms.reduce((s, r) => s + computeMinHeight(r), 0);
-        } else {
-          requiredTotal += computeMinHeight(cl.rooms[0]);
-        }
+      for (const cl of genericClusters) {
+        if (cl.rooms.length === 2) requiredTotal += cl.rooms.reduce((s, r) => s + computeMinHeight(r), 0);
+        else requiredTotal += computeMinHeight(cl.rooms[0]);
       }
       if (requiredTotal > privateRect.h + 1e-6) feasibleSideBySide = false;
     } else {
-      for (const cl of clusters) {
-        if (cl.rooms.length === 2) {
-          requiredTotal += cl.rooms.reduce((s, r) => s + computeMinWidth(r), 0);
-        } else {
-          requiredTotal += computeMinWidth(cl.rooms[0]);
-        }
+      for (const cl of genericClusters) {
+        if (cl.rooms.length === 2) requiredTotal += cl.rooms.reduce((s, r) => s + computeMinWidth(r), 0);
+        else requiredTotal += computeMinWidth(cl.rooms[0]);
       }
       if (requiredTotal > privateRect.w + 1e-6) feasibleSideBySide = false;
     }
 
-    if (clusters.length > 0) {
-      const totalArea = clusters.reduce((sum, cl) => sum + cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0), 0);
-      const isVerticalSpine = cfg.spine === 'vertical';
+    const feasibility = classifyFeasibility(requiredTotal, isVerticalSpineCheck ? privateRect.h : privateRect.w, genericClusters.flatMap(c=>c.rooms.map(r=>r.type)));
+    explanation.push(`Phase13 feasibility: ${feasibility.status} ${feasibility.reasonCode} — ${feasibility.message}`);
 
+    if (genericClusters.length > 0) {
       if (!feasibleSideBySide) {
-        // Fallback to legacy column layout (Phase 3) that respects minWidth but may violate hard corridor adjacency
-        // This is honest infeasibility handling: we cannot satisfy both minWidth HARD and corridor adjacency HARD simultaneously
-        explanation.push(`Phase12 INFEASIBLE side-by-side: required ${requiredTotal.toFixed(2)}m > available ${isVerticalSpine ? privateRect.h.toFixed(2) : privateRect.w.toFixed(2)}m — falling back to legacy column layout (will report CONSTRAINT_MUST_ADJACENT HARD)`);
-        // Legacy: columns per bedroom, master first, bath at corridor edge, bedroom above
-        const mbedLegacy = clusters.find(c => c.isMaster)?.rooms.find(r => r.type === 'master-bedroom');
-        const mbathLegacy = clusters.find(c => c.isMaster)?.rooms.find(r => r.type === 'master-bathroom');
-        const bedsLegacy: PlacedSpec[] = [];
-        const bathsLegacy: PlacedSpec[] = [];
-        for (const cl of clusters) {
-          if (cl.isMaster) continue;
-          for (const r of cl.rooms) {
-            if (r.type === 'bedroom') bedsLegacy.push(r);
-            else if (r.type === 'bathroom') bathsLegacy.push(r);
-          }
-        }
-        const columns = (mbedLegacy ? 1 : 0) + bedsLegacy.length;
-        if (columns > 0) {
-          const weights: number[] = [];
-          if (mbedLegacy) weights.push(1.45);
-          for (let i = 0; i < bedsLegacy.length; i++) weights.push(1.0);
-          const totalW = weights.reduce((a,b)=>a+b,0);
-          let x = privateRect.x;
-          const colRects: Rect[] = [];
-          for (let i = 0; i < weights.length; i++) {
-            const w = (i === weights.length - 1) ? privateRect.x + privateRect.w - x : privateRect.w * weights[i] / totalW;
-            colRects.push({ x, y: privateRect.y, w, h: privateRect.h });
-            x += w;
-          }
-          if (mbedLegacy && colRects.length > 0) {
-            const col = colRects.shift()!;
-            if (mbathLegacy) {
-              const bh = Math.min(BATH_STRIP_H + 0.4, col.h * 0.3);
-              placed.push(mkSpace('master-bathroom', { x: col.x, y: col.y, w: col.w, h: bh }, mbathLegacy.placedLabel, mbathLegacy.placedId, 'private'));
-              placed.push(mkSpace('master-bedroom', { x: col.x, y: col.y + bh, w: col.w, h: col.h - bh }, mbedLegacy.placedLabel, mbedLegacy.placedId, 'private'));
-            } else {
-              placed.push(mkSpace('master-bedroom', col, mbedLegacy.placedLabel, mbedLegacy.placedId, 'private'));
-            }
-          }
-          for (let i = 0; i < bedsLegacy.length; i++) {
-            const col = colRects[i]; if (!col) break;
-            const bed = bedsLegacy[i];
-            const bath = bathsLegacy[i];
-            if (bath) {
-              const bh = Math.min(BATH_STRIP_H, col.h * 0.3);
-              placed.push(mkSpace('bathroom', { x: col.x, y: col.y, w: col.w, h: bh }, bath.placedLabel, bath.placedId, 'private'));
-              placed.push(mkSpace('bedroom', { x: col.x, y: col.y + bh, w: col.w, h: col.h - bh }, bed.placedLabel, bed.placedId, 'private'));
-            } else {
-              placed.push(mkSpace('bedroom', col, bed.placedLabel, bed.placedId, 'private'));
-            }
-          }
-        }
-      } else if (isVerticalSpine) {
-        // Vertical spine: corridor is vertical west of privateRect, so adjacency requires west edge at privateRect.x
-        // Stack clusters vertically, each touching corridor via west edge — minHeight respecting
-        const clusterMinHs = clusters.map(cl => {
-          if (cl.rooms.length === 2) return cl.rooms.reduce((s, r) => s + Math.max(r.minLength ?? r.minWidth ?? 2.0, 1.0), 0);
-          return Math.max(cl.rooms[0].minLength ?? cl.rooms[0].minWidth ?? 2.0, 1.0);
-        });
-        const totalMinH = clusterMinHs.reduce((a,b)=>a+b,0);
-        const totalExtraAreaV = clusters.reduce((sum, cl) => {
-          const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
-          const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
-          return sum + Math.max(0, target - minArea);
-        }, 0);
-        const remainingH = privateRect.h - totalMinH;
-
-        let y = privateRect.y;
-        for (let ci = 0; ci < clusters.length; ci++) {
-          const cl = clusters[ci];
-          const isLast = ci === clusters.length - 1;
-          let rowH: number;
-          if (isLast) {
-            rowH = privateRect.y + privateRect.h - y;
-          } else {
-            const minH = clusterMinHs[ci];
-            const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
-            const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
-            const extra = Math.max(0, target - minArea);
-            const extraShare = totalExtraAreaV > 1e-6 ? (extra / totalExtraAreaV) * remainingH : remainingH / clusters.length;
-            rowH = minH + extraShare;
-          }
-          const rowRect: Rect = { x: privateRect.x, y, w: privateRect.w, h: rowH };
-          y += rowH;
-
-          if (cl.rooms.length === 2) {
-            const r1 = cl.rooms[0];
-            const r2 = cl.rooms[1];
-            const bedroom = r1.type.includes('bedroom') ? r1 : r2.type.includes('bedroom') ? r2 : r1;
-            const bathroom = r1.type.includes('bathroom') ? r1 : r2.type.includes('bathroom') ? r2 : r2;
-            const bedMinH = Math.max(bedroom.minLength ?? bedroom.minWidth ?? 2.2, 2.0);
-            const bathMinH = Math.max(bathroom.minLength ?? bathroom.minWidth ?? 1.2, 1.0);
-            const bedTarget = Math.max(bedroom.minArea, bedroom.targetArea);
-            const bathTarget = Math.max(bathroom.minArea, bathroom.targetArea);
-            const clusterMin = bedMinH + bathMinH;
-            const clusterExtra = Math.max(0, rowH - clusterMin);
-            const totalClusterTarget = bedTarget + bathTarget;
-            let bedH: number, bathH: number;
-            if (totalClusterTarget > 1e-6) {
-              bedH = bedMinH + clusterExtra * (bedTarget / totalClusterTarget);
-              bathH = rowH - bedH;
-              if (bathH < bathMinH) { bathH = bathMinH; bedH = rowH - bathH; }
-              if (bedH < bedMinH) { bedH = bedMinH; bathH = rowH - bedH; }
-            } else {
-              bedH = rowH * 0.6;
-              bathH = rowH - bedH;
-            }
-
-            const bedroomIsFirst = cl.rooms[0].type.includes('bedroom');
-            const topRect: Rect = { x: rowRect.x, y: rowRect.y, w: rowRect.w, h: bedroomIsFirst ? bedH : bathH };
-            const bottomRect: Rect = { x: rowRect.x, y: rowRect.y + (bedroomIsFirst ? bedH : bathH), w: rowRect.w, h: bedroomIsFirst ? bathH : bedH };
-
-            const firstSpec = cl.rooms[0];
-            const secondSpec = cl.rooms[1];
-            placed.push(mkSpace(firstSpec.type, topRect, firstSpec.placedLabel, firstSpec.placedId, 'private'));
-            placed.push(mkSpace(secondSpec.type, bottomRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
-            explanation.push(`Phase12 vertical: cluster ${cl.id} stacked ${firstSpec.type}+${secondSpec.type} both touching corridor west edge minH-respecting`);
-          } else {
-            const single = cl.rooms[0];
-            placed.push(mkSpace(single.type, rowRect, single.placedLabel, single.placedId, 'private'));
-            explanation.push(`Phase12 vertical: single ${single.type} row touching corridor minH-respecting`);
-          }
-        }
-      } else {
-        // Horizontal spine: corridor south of privateRect, adjacency requires south edge at privateRect.y
-        // Phase 12: Allocate column widths respecting minWidth HARD, extra distributed by target area
-        const clusterMinWs = clusters.map(cl => {
-          if (cl.rooms.length === 2) return cl.rooms.reduce((s, r) => s + Math.max(r.minWidth ?? 2.0, 1.0), 0);
+        explanation.push(`Phase13 INFEASIBLE side-by-side: required ${requiredTotal.toFixed(2)}m > available ${isVerticalSpineCheck ? privateRect.h.toFixed(2) : privateRect.w.toFixed(2)}m — falling back to generic column layout (will report CONSTRAINT_MUST_ADJACENT HARD) reason=${feasibility.reasonCode} code=HARD_CONSTRAINT_INFEASIBLE_DIMENSION`);
+        // Generic fallback: place each genericCluster as a column, rooms stacked vertically, bottom touching corridor
+        // This preserves min dimensions, site containment, locks, but will report HARD for unsatisfied direct access
+        // Phase 13 fix: enforce minWidth explicitly, distribute remaining width proportionally to target area
+        const clusterMinWs = genericClusters.map(cl => {
+          if (cl.rooms.length === 2) return Math.max(...cl.rooms.map(r=>Math.max(r.minWidth ?? 2.0, 1.0)));
           return Math.max(cl.rooms[0].minWidth ?? 2.0, 1.0);
         });
         const totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
-        const totalExtraArea = clusters.reduce((sum, cl, idx) => {
-          const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
-          const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
-          return sum + Math.max(0, target - minArea);
-        }, 0);
-        const remainingW = privateRect.w - totalMinW;
-
+        const totalArea = genericClusters.reduce((sum, cl) => sum + cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0), 0);
+        const totalExtra = Math.max(0, privateRect.w - totalMinW);
         let x = privateRect.x;
-        for (let ci = 0; ci < clusters.length; ci++) {
-          const cl = clusters[ci];
-          const isLast = ci === clusters.length - 1;
-          let colW: number;
-          if (isLast) {
-            colW = privateRect.x + privateRect.w - x;
-          } else {
-            const minW = clusterMinWs[ci];
-            const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
-            const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
-            const extra = Math.max(0, target - minArea);
-            const extraShare = totalExtraArea > 1e-6 ? (extra / totalExtraArea) * remainingW : remainingW / clusters.length;
-            colW = minW + extraShare;
-          }
-          const colRect: Rect = { x, y: privateRect.y, w: colW, h: privateRect.h };
-          x += colW;
-
+        for (let ci = 0; ci < genericClusters.length; ci++) {
+          const cl = genericClusters[ci];
+          const minW = clusterMinWs[ci];
+          const targetArea = cl.rooms.reduce((s,r)=>s+Math.max(r.minArea,r.targetArea),0);
+          const extraShare = totalArea > 1e-6 ? (targetArea / totalArea) * totalExtra : totalExtra / genericClusters.length;
+          const colW = minW + extraShare;
+          // Phase 13: never shrink below min — if totalMinW > available, keep min and allow overflow (GEO_ROOM_OUTSIDE reported)
+          const finalColW = colW; // preserve min, no last-column truncation that would violate min
+          const colRect: Rect = { x, y: privateRect.y, w: finalColW, h: privateRect.h };
+          x += finalColW;
           if (cl.rooms.length === 2) {
-            const r1 = cl.rooms[0];
-            const r2 = cl.rooms[1];
-            const bedroom = r1.type.includes('bedroom') ? r1 : r2.type.includes('bedroom') ? r2 : r1;
-            const bathroom = r1.type.includes('bathroom') ? r1 : r2.type.includes('bathroom') ? r2 : r2;
-            const bedroomIsFirst = cl.rooms[0].type.includes('bedroom');
-
-            // Allocate within cluster respecting minWidths, extra by target area
-            const bedMinW = Math.max(bedroom.minWidth ?? 2.2, 2.0);
-            const bathMinW = Math.max(bathroom.minWidth ?? 1.2, 1.0);
-            const bedTarget = Math.max(bedroom.minArea, bedroom.targetArea);
-            const bathTarget = Math.max(bathroom.minArea, bathroom.targetArea);
-            const clusterMin = bedMinW + bathMinW;
-            const clusterExtra = Math.max(0, colW - clusterMin);
-            const totalClusterTarget = bedTarget + bathTarget;
-            let bedW: number, bathW: number;
-            if (totalClusterTarget > 1e-6) {
-              bedW = bedMinW + clusterExtra * (bedTarget / totalClusterTarget);
-              bathW = colW - bedW;
-              // Ensure bathMinW
-              if (bathW < bathMinW) { bathW = bathMinW; bedW = colW - bathW; }
-              if (bedW < bedMinW) { bedW = bedMinW; bathW = colW - bedW; }
+            const first = cl.rooms[0];
+            const second = cl.rooms[1];
+            const firstMinH = Math.max(first.minLength ?? first.minWidth ?? 2.0, 1.0);
+            const secondMinH = Math.max(second.minLength ?? second.minWidth ?? 1.2, 1.0);
+            const totalMinH = firstMinH + secondMinH;
+            let bh: number;
+            let secondH: number;
+            if (colRect.h < totalMinH - 1e-6) {
+              bh = firstMinH;
+              secondH = secondMinH;
             } else {
-              bedW = colW * 0.6;
-              bathW = colW - bedW;
+              bh = Math.min(BATH_STRIP_H + 0.4, colRect.h * 0.35);
+              bh = Math.max(firstMinH, Math.min(colRect.h - secondMinH, bh));
+              secondH = colRect.h - bh;
             }
-
-            const leftRect: Rect = { x: colRect.x, y: colRect.y, w: bedroomIsFirst ? bedW : bathW, h: colRect.h };
-            const rightRect: Rect = { x: colRect.x + (bedroomIsFirst ? bedW : bathW), y: colRect.y, w: bedroomIsFirst ? bathW : bedW, h: colRect.h };
-
-            const firstSpec = cl.rooms[0];
-            const secondSpec = cl.rooms[1];
-            placed.push(mkSpace(firstSpec.type, leftRect, firstSpec.placedLabel, firstSpec.placedId, 'private'));
-            placed.push(mkSpace(secondSpec.type, rightRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
-            explanation.push(`Phase12 constraint-aware: cluster ${cl.id} side-by-side ${firstSpec.type}+${secondSpec.type} both touching corridor (hard direct access satisfied) minW-respecting`);
+            const firstRect = { x: colRect.x, y: colRect.y, w: colRect.w, h: bh };
+            const firstSpace = mkSpace(first.type, firstRect, first.placedLabel, first.placedId, 'private');
+            firstSpace.rect.x = Math.round((firstSpace.rect.x+1e-9)*100)/100;
+            firstSpace.rect.y = Math.round((firstSpace.rect.y+1e-9)*100)/100;
+            firstSpace.rect.w = Math.round((firstSpace.rect.w+1e-9)*100)/100;
+            firstSpace.rect.h = Math.round((firstSpace.rect.h+1e-9)*100)/100;
+            firstSpace.polygon = rCorners(firstSpace.rect); firstSpace.area = rArea(firstSpace.rect);
+            const secondY = Math.round((firstSpace.rect.y + firstSpace.rect.h + 1e-9)*100)/100;
+            const secondRect = { x: colRect.x, y: secondY, w: colRect.w, h: Math.max(secondH, colRect.h - (secondY - colRect.y)) };
+            placed.push(firstSpace);
+            placed.push(mkSpace(second.type, secondRect, second.placedLabel, second.placedId, 'private'));
           } else {
             const single = cl.rooms[0];
-            placed.push(mkSpace(single.type, colRect, single.placedLabel, single.placedId, 'private'));
-            explanation.push(`Phase12 constraint-aware: single ${single.type} column touching corridor minW-respecting`);
+            const singleMinH = Math.max(single.minLength ?? single.minWidth ?? 2.0, 1.0);
+            const finalH = Math.max(colRect.h, singleMinH);
+            placed.push(mkSpace(single.type, { x: colRect.x, y: colRect.y, w: colRect.w, h: finalH }, single.placedLabel, single.placedId, 'private'));
           }
         }
-      }
-    }
+        explanation.push(`Phase13 fallback generic: placed ${genericClusters.length} clusters as columns, min preserved totalMinW=${totalMinW.toFixed(2)} ≤ ${privateRect.w.toFixed(2)}, bottom touches corridor, top may violate direct access — explicit HARD code=HARD_CONSTRAINT_INFEASIBLE_DIMENSION`);
+      } else {
+        // Phase 13 bounded search: try up to MAX_CONSTRAINT_PLACEMENT_ATTEMPTS allocations
+        // Each attempt varies width distribution slightly, evaluates hard separation, picks first feasible
+        let bestPlacement: { spaces: Space[], valid: boolean, attempts: number } | null = null;
+        let attempts = 0;
 
-    // Remaining unplaced baths (should be none after clustering)
-    let leftover; while ((leftover = baths.slice(clusters.length).shift()) || (leftover = byType.get('bathroom')?.shift())) {
-      if (!leftover) break;
+        for (let attempt = 0; attempt < MAX_CONSTRAINT_PLACEMENT_ATTEMPTS; attempt++) {
+          attempts++;
+          const attemptPlaced: Space[] = [];
+          const isVerticalSpine = cfg.spine === 'vertical';
+
+          if (isVerticalSpine) {
+            const clusterMinHs = genericClusters.map(cl => {
+              if (cl.rooms.length === 2) return cl.rooms.reduce((s, r) => s + Math.max(r.minLength ?? r.minWidth ?? 2.0, 1.0), 0);
+              return Math.max(cl.rooms[0].minLength ?? cl.rooms[0].minWidth ?? 2.0, 1.0);
+            });
+            const totalMinH = clusterMinHs.reduce((a,b)=>a+b,0);
+            const totalExtraAreaV = genericClusters.reduce((sum, cl) => {
+              const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+              const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+              return sum + Math.max(0, target - minArea);
+            }, 0);
+            const remainingH = privateRect.h - totalMinH;
+
+            let y = privateRect.y;
+            for (let ci = 0; ci < genericClusters.length; ci++) {
+              const cl = genericClusters[ci];
+              const isLast = ci === genericClusters.length - 1;
+              let rowH: number;
+              if (isLast) {
+                rowH = privateRect.y + privateRect.h - y;
+              } else {
+                const minH = clusterMinHs[ci];
+                const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+                const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+                const extra = Math.max(0, target - minArea);
+                const attemptFactor = 1 + (attempt * 0.05 - 0.1);
+                const extraShare = totalExtraAreaV > 1e-6 ? (extra / totalExtraAreaV) * remainingH * attemptFactor : remainingH / genericClusters.length;
+                rowH = minH + Math.max(0, extraShare);
+              }
+              // Phase 13: preserve min width for vertical spine — never shrink below max minWidth of cluster
+              const clusterMaxMinW = Math.max(...cl.rooms.map(r=>Math.max(r.minWidth ?? 2.0, 1.0)));
+              const rowW = Math.max(privateRect.w, clusterMaxMinW);
+              const rowRect: Rect = { x: privateRect.x, y, w: rowW, h: rowH };
+              y += rowH;
+
+              if (cl.rooms.length === 2) {
+                const bedMinH = Math.max(cl.rooms[0].minLength ?? cl.rooms[0].minWidth ?? 2.2, 2.0);
+                const bathMinH = Math.max(cl.rooms[1].minLength ?? cl.rooms[1].minWidth ?? 1.2, 1.0);
+                const clusterMin = bedMinH + bathMinH;
+                let bedH: number, bathH: number;
+                if (rowH < clusterMin - 1e-6) {
+                  bedH = bedMinH;
+                  bathH = bathMinH;
+                } else {
+                  const bedTarget = Math.max(cl.rooms[0].minArea, cl.rooms[0].targetArea);
+                  const bathTarget = Math.max(cl.rooms[1].minArea, cl.rooms[1].targetArea);
+                  const clusterExtra = Math.max(0, rowH - clusterMin);
+                  const totalClusterTarget = bedTarget + bathTarget;
+                  if (totalClusterTarget > 1e-6) {
+                    bedH = bedMinH + clusterExtra * (bedTarget / totalClusterTarget);
+                    bathH = rowH - bedH;
+                    if (bathH < bathMinH) { bathH = bathMinH; bedH = rowH - bathH; }
+                    if (bedH < bedMinH) { bedH = bedMinH; bathH = rowH - bedH; }
+                  } else {
+                    bedH = rowH * 0.6;
+                    bathH = rowH - bedH;
+                  }
+                }
+                const firstSpec = cl.rooms[0];
+                const secondSpec = cl.rooms[1];
+                const topRect: Rect = { x: rowRect.x, y: rowRect.y, w: rowRect.w, h: bedH };
+                const firstSpace = mkSpace(firstSpec.type, topRect, firstSpec.placedLabel, firstSpec.placedId, 'private');
+                firstSpace.rect.x = Math.round((firstSpace.rect.x+1e-9)*100)/100;
+                firstSpace.rect.y = Math.round((firstSpace.rect.y+1e-9)*100)/100;
+                firstSpace.rect.w = Math.round((firstSpace.rect.w+1e-9)*100)/100;
+                firstSpace.rect.h = Math.round((firstSpace.rect.h+1e-9)*100)/100;
+                firstSpace.polygon = rCorners(firstSpace.rect); firstSpace.area = rArea(firstSpace.rect);
+                const bottomY = Math.round((firstSpace.rect.y + firstSpace.rect.h + 1e-9)*100)/100;
+                const bottomRect: Rect = { x: rowRect.x, y: bottomY, w: rowRect.w, h: Math.max(bathH, rowH - (bottomY - rowRect.y)) };
+                attemptPlaced.push(firstSpace);
+                attemptPlaced.push(mkSpace(secondSpec.type, bottomRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
+              } else {
+                const single = cl.rooms[0];
+                attemptPlaced.push(mkSpace(single.type, rowRect, single.placedLabel, single.placedId, 'private'));
+              }
+            }
+          } else {
+            // Horizontal spine generic
+            const clusterMinWs = genericClusters.map(cl => {
+              if (cl.rooms.length === 2) return cl.rooms.reduce((s, r) => s + Math.max(r.minWidth ?? 2.0, 1.0), 0);
+              return Math.max(cl.rooms[0].minWidth ?? 2.0, 1.0);
+            });
+            const totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
+            const totalExtraArea = genericClusters.reduce((sum, cl) => {
+              const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+              const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+              return sum + Math.max(0, target - minArea);
+            }, 0);
+            const remainingW = privateRect.w - totalMinW;
+
+            let x = privateRect.x;
+            for (let ci = 0; ci < genericClusters.length; ci++) {
+              const cl = genericClusters[ci];
+              const isLast = ci === genericClusters.length - 1;
+              let colW: number;
+              if (isLast) {
+                colW = privateRect.x + privateRect.w - x;
+              } else {
+                const minW = clusterMinWs[ci];
+                const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+                const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+                const extra = Math.max(0, target - minArea);
+                const attemptFactor = 1 + (attempt * 0.05 - 0.1);
+                const extraShare = totalExtraArea > 1e-6 ? (extra / totalExtraArea) * remainingW * attemptFactor : remainingW / genericClusters.length;
+                colW = minW + Math.max(0, extraShare);
+              }
+              const colRect: Rect = { x, y: privateRect.y, w: colW, h: privateRect.h };
+              x += colW;
+
+              if (cl.rooms.length === 2) {
+                const bedMinW = Math.max(cl.rooms[0].minWidth ?? 2.2, 2.0);
+                const bathMinW = Math.max(cl.rooms[1].minWidth ?? 1.2, 1.0);
+                const bedTarget = Math.max(cl.rooms[0].minArea, cl.rooms[0].targetArea);
+                const bathTarget = Math.max(cl.rooms[1].minArea, cl.rooms[1].targetArea);
+                const clusterMin = bedMinW + bathMinW;
+                let bedW: number, bathW: number;
+                if (colW < clusterMin - 1e-6) {
+                  bedW = bedMinW;
+                  bathW = bathMinW;
+                } else {
+                  const clusterExtra = Math.max(0, colW - clusterMin);
+                  const totalClusterTarget = bedTarget + bathTarget;
+                  if (totalClusterTarget > 1e-6) {
+                    bedW = bedMinW + clusterExtra * (bedTarget / totalClusterTarget);
+                    bathW = colW - bedW;
+                    if (bathW < bathMinW) { bathW = bathMinW; bedW = colW - bathW; }
+                    if (bedW < bedMinW) { bedW = bedMinW; bathW = colW - bedW; }
+                  } else {
+                    bedW = colW * 0.6;
+                    bathW = colW - bedW;
+                  }
+                }
+                const firstSpec = cl.rooms[0];
+                const secondSpec = cl.rooms[1];
+                const leftRect: Rect = { x: colRect.x, y: colRect.y, w: bedW, h: colRect.h };
+                const firstSpace = mkSpace(firstSpec.type, leftRect, firstSpec.placedLabel, firstSpec.placedId, 'private');
+                firstSpace.rect.x = Math.round((firstSpace.rect.x+1e-9)*100)/100;
+                firstSpace.rect.y = Math.round((firstSpace.rect.y+1e-9)*100)/100;
+                firstSpace.rect.w = Math.round((firstSpace.rect.w+1e-9)*100)/100;
+                firstSpace.rect.h = Math.round((firstSpace.rect.h+1e-9)*100)/100;
+                firstSpace.polygon = rCorners(firstSpace.rect); firstSpace.area = rArea(firstSpace.rect);
+                const rightX = Math.round((firstSpace.rect.x + firstSpace.rect.w + 1e-9)*100)/100;
+                const rightRect: Rect = { x: rightX, y: colRect.y, w: Math.max(bathW, colRect.w - (rightX - colRect.x)), h: colRect.h };
+                attemptPlaced.push(firstSpace);
+                attemptPlaced.push(mkSpace(secondSpec.type, rightRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
+              } else {
+                const single = cl.rooms[0];
+                attemptPlaced.push(mkSpace(single.type, colRect, single.placedLabel, single.placedId, 'private'));
+              }
+            }
+          }
+
+          // Evaluate hard separation for this attempt
+          // Generic separation check: if any placed private room is adjacent to a type it must be separated from (e.g., bedroom ↔ entrance)
+          // We need to check against already placed public rooms (entrance, foyer) if they exist
+          let separationValid = true;
+          // For each placed private room, check if it shares wall with any public room that it must be separated from
+          // Since public rooms not yet placed for all, we check against entrance/foyer if placed
+          for (const priv of attemptPlaced) {
+            const sepTypes = getHardSeparated(priv.type);
+            if (sepTypes.length === 0) continue;
+            for (const other of placed) { // placed contains entrance/foyer if entrancePatch
+              if (sepTypes.includes(other.type)) {
+                const shared = sharedWallEdges(priv.polygon, other.polygon);
+                if (shared.length > 0) {
+                  separationValid = false;
+                  break;
+                }
+              }
+            }
+            if (!separationValid) break;
+          }
+
+          if (separationValid) {
+            bestPlacement = { spaces: attemptPlaced, valid: true, attempts };
+            break;
+          }
+          // If not valid and this is last attempt, keep last attempt as best even if invalid (will be caught by validation)
+          if (attempt === MAX_CONSTRAINT_PLACEMENT_ATTEMPTS - 1) {
+            bestPlacement = { spaces: attemptPlaced, valid: false, attempts };
+          }
+        }
+
+        if (bestPlacement) {
+          placed.push(...bestPlacement.spaces);
+          explanation.push(`Phase13 bounded search: ${bestPlacement.attempts} attempt(s) (max ${MAX_CONSTRAINT_PLACEMENT_ATTEMPTS}), valid=${bestPlacement.valid}, clusters=${genericClusters.length}, mustTouchCorridor respected, separation evaluated via sharedWallEdges`);
+        }
+      }
     }
   }
 
   // --- Service band (kitchen / storage / stair-hall / utility) ---
-  // Kitchen strip = the service rect whose x is near the east side
-  // (kitchen on public east facade); stair pocket = the service rect near
-  // the west of the private band.
   const serviceRects = layout.zones.service;
   const kitchenRect = serviceRects.find(r => r.x > footprint.x + footprint.w * 0.6) ?? null;
   let stairPocket: Rect | null = null;
   if (needStair) {
     if (cfg.spine === 'vertical') {
-      // Vertical spine: stair pocket is at south end of private band (small y)
       stairPocket = serviceRects.find(r => r.y <= footprint.y + footprint.h * 0.4) ?? serviceRects[0] ?? null;
     } else {
       stairPocket = serviceRects.find(r => r.x <= footprint.x + footprint.w * 0.4) ?? null;
@@ -494,7 +660,6 @@ export function placeSpaces(
     if (stairPocket) {
       placed.push(mkSpace('stair-hall', stairPocket, stair.placedLabel, stair.placedId, 'service'));
     } else if (kitchenRect) {
-      // No separate pocket: carve stair out of the north end of the kitchen strip.
       const k = placed.find(p => p.type === 'kitchen');
       if (k) {
         const stairH = Math.min(3.6, k.rect.h * 0.45);
@@ -508,26 +673,9 @@ export function placeSpaces(
   }
   const stor = take('storage');
   if (stor) {
-    // Storage/pantry is placed in the kitchen strip AS the corridor-
-    // adjacent cell: a small room with door to corridor (pantry/broom
-    // closet reachable from circulation), with kitchen south of it.
-    // We need to find the kitchen strip first — it is the service rect on
-    // the east side of the public band, whose top edge touches corridor.
-    // That is where we've placed kitchen (k); carve storage off the top of
-    // k. Kitchen then occupies from south facade up to storage, storage
-    // from kitchen top to corridor.
     const k = placed.find(p => p.type === 'kitchen');
     if (k) {
-      const stripTop = k.rect.y + k.rect.h;
       const storeH = Math.min(2.0, Math.max(1.4, k.rect.h * 0.20));
-      // Make sure kitchen STILL reaches the corridor via a door: give
-      // kitchen a small door slot by narrowing storage, not by blocking
-      // the wall. The openings module creates doors on EVERY wall that
-      // touches corridor; if kitchen no longer touches corridor, it's
-      // unreachable. Solution: DO NOT place storage between kitchen and
-      // corridor — put storage at the SOUTH end of the kitchen strip
-      // (facade side) as a pantry with a door into the kitchen. Kitchen
-      // then keeps the full north edge against corridor.
       placed.push(mkSpace('storage',
         { x: k.rect.x, y: k.rect.y, w: k.rect.w, h: storeH },
         stor.placedLabel, stor.placedId, 'service'));
@@ -536,15 +684,16 @@ export function placeSpaces(
     }
   }
 
-  // --- Public band ---
-  // The entrance spur occupies the west column. The main public rect is
-  // arranged as:
-  //   - South row: Living (west, facade) and Dining east of it on the south
-  //     facade (so dining gets south daylight through a window or is open to
-  //     living; dining MUST have an exterior wall to satisfy daylight rule).
-  //   - NE corner: guest-wc tucked against the corridor/kitchen wall.
+  // --- Public band — generic ordering from graph ---
   const publicRect = layout.zones.public[0];
   if (publicRect) {
+    const publicTypes = [...byType.keys()].filter(t => {
+      const z = zoneOf({ type: t } as any);
+      return z === 'public' || z === 'semi-private';
+    });
+    const orderedPublicTypes = placementOrderForTypes(publicTypes, graph);
+    explanation.push(`Phase13 public types ordered: ${orderedPublicTypes.join(' > ')}`);
+
     const living = take('living');
     const dining = take('dining');
     const guestWc = take('guest-wc');
@@ -555,52 +704,49 @@ export function placeSpaces(
     let fy; while ((fy = take('foyer'))) publicUnplaced.push(fy);
 
     if (living) {
-      // Public band layout:
-      //   - South facade: LIVING and (if present) DINING share the south
-      //     wall side-by-side so both have south daylight (this matters for
-      //     the MBH4-DYL-001 daylight rule).
-      //   - North strip (corridor side): guest-WC tucked in the NE corner,
-      //     dining continues north if there is room to reach the corridor
-      //     (for a direct door), otherwise dining stays on the facade only.
-      // If dining is absent, living spans the whole public band.
       if (dining) {
-        // Split south facade between living (larger, west) and dining
-        // (east) so BOTH have south daylight. Guest-WC goes in the NE
-        // corner (corridor side) of the DINING rectangle — dining keeps
-        // a corridor door along its north edge, and WC has a door into
-        // the dining/foyer transition without occupying facade width.
         const totalSouthA = Math.max(living.minArea, living.targetArea) + Math.max(dining.minArea, dining.targetArea);
         let livingW = publicRect.w * Math.max(living.minArea, living.targetArea) / totalSouthA;
-        livingW = Math.max(3.6, Math.min(publicRect.w - 3.4, livingW));
+        const livingMinW = Math.max(living.minWidth ?? 3.0, 3.0);
+        const diningMinW = Math.max(dining.minWidth ?? 2.2, 2.2);
+        const livingMinH = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);
+        const diningMinH = Math.max(dining.minLength ?? dining.minWidth ?? 2.2, 2.0);
+        const publicMinH = Math.max(livingMinH, diningMinH);
+        const publicH = Math.max(publicRect.h, publicMinH);
+        if (publicRect.w < livingMinW + diningMinW - 1e-6) {
+          livingW = livingMinW;
+        } else {
+          livingW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, livingW));
+        }
         placed.push(mkSpace('living',
-          { x: publicRect.x, y: publicRect.y, w: livingW, h: publicRect.h },
+          { x: publicRect.x, y: publicRect.y, w: livingW, h: publicH },
           living.placedLabel, living.placedId, 'public'));
         const eastX = publicRect.x + livingW;
         const eastW = publicRect.w - livingW;
-        // Dining must keep >= 2.2 m clear width (MBH4 §4-5-2-2-2 requires
-        // >= 2.15 m for dining; we leave a 5 cm safety margin). Guest-WC
-        // is only placed when the east column is wide enough for BOTH.
-        const DINING_MIN_W = 2.2;
+        const DINING_MIN_W = diningMinW;
         const GWC_MIN_W = 1.2;
         if (guestWc && eastW >= DINING_MIN_W + GWC_MIN_W && publicRect.h > 4.0) {
           const gwcW = Math.min(1.6, Math.max(GWC_MIN_W, eastW * 0.30));
           const gwcH = Math.min(2.2, Math.max(1.8, publicRect.h * 0.25));
           const diningW = eastW - gwcW;
-          // Carve WC from the NE corner (corridor-side) of east column.
+          const finalDiningW = Math.max(DINING_MIN_W, diningW);
           placed.push(mkSpace('guest-wc',
-            { x: eastX + diningW, y: publicRect.y + publicRect.h - gwcH, w: gwcW, h: gwcH },
+            { x: eastX + finalDiningW, y: publicRect.y + publicRect.h - gwcH, w: gwcW, h: gwcH },
             guestWc.placedLabel, guestWc.placedId, 'public'));
           placed.push(mkSpace('dining',
-            { x: eastX, y: publicRect.y, w: diningW, h: publicRect.h },
+            { x: eastX, y: publicRect.y, w: finalDiningW, h: publicH },
             dining.placedLabel, dining.placedId, 'public'));
         } else {
+          const finalDiningW = Math.max(DINING_MIN_W, eastW);
           placed.push(mkSpace('dining',
-            { x: eastX, y: publicRect.y, w: eastW, h: publicRect.h },
+            { x: eastX, y: publicRect.y, w: finalDiningW, h: publicH },
             dining.placedLabel, dining.placedId, 'public'));
         }
       } else {
+        const livingMinH = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);
+        const publicH = Math.max(publicRect.h, livingMinH);
         placed.push(mkSpace('living',
-          { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: publicRect.h },
+          { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: publicH },
           living.placedLabel, living.placedId, 'public'));
         if (guestWc) {
           const gwcW = Math.min(1.8, publicRect.w * 0.2);
@@ -611,11 +757,16 @@ export function placeSpaces(
       }
     } else {
       const publicSpecs: PlacedSpec[] = [];
-      for (const t of ['dining','guest-wc','guest-room','family-room'] as SpaceType[]) {
+      for (const t of orderedPublicTypes as SpaceType[]) {
         let s; while ((s = take(t))) publicSpecs.push(s);
       }
       publicSpecs.push(...publicUnplaced);
-      placed.push(...splitBinary(publicRect, publicSpecs, mkSpace, 'public', 'y'));
+      // Ensure candidate positions bounded ≤ MAX_CANDIDATE_POSITIONS
+      const boundedSpecs = publicSpecs.slice(0, MAX_CANDIDATE_POSITIONS);
+      if (publicSpecs.length > MAX_CANDIDATE_POSITIONS) {
+        explanation.push(`Phase13 bounded: public specs ${publicSpecs.length} > MAX_CANDIDATE_POSITIONS ${MAX_CANDIDATE_POSITIONS}, truncating to ${MAX_CANDIDATE_POSITIONS} (explicit)`);
+      }
+      placed.push(...splitBinary(publicRect, boundedSpecs, mkSpace, 'public', 'y'));
     }
   }
 
@@ -628,28 +779,20 @@ export function placeSpaces(
     }
   }
 
-  // --- Any unplaced specs (fallback): place in leftover area or ignore with note ---
-  for (const [, list] of byType) {
-    for (const s of list) {
-      if (!['corridor','elevator-hall','stair-hall'].includes(s.type)) {
-        // place in service nook or as overlap — validator will flag
-      }
-    }
-  }
-
   snap(placed);
-  // Ensure every placed room stays inside the outer bounds (corridor at 1/2 cm
-  // drift can push outer rooms past the buildable footprint by 1cm).
   clampToBounds(placed, footprint);
-  resolveOverlaps(placed);
+  resolveOverlaps(placed, MAX_LOCAL_REPAIR_ITERATIONS);
   clampToBounds(placed, footprint);
-  explanation.push(`Placed ${placed.length} rooms + ${corridors.length} corridor segment(s).`);
+  resolveOverlaps(placed, MAX_LOCAL_REPAIR_ITERATIONS);
+  clampToBounds(placed, footprint);
+  resolveOverlaps(placed, MAX_LOCAL_REPAIR_ITERATIONS);
+  explanation.push(`Placed ${placed.length} rooms + ${corridors.length} corridor segment(s). Bounds: attempts≤${MAX_CONSTRAINT_PLACEMENT_ATTEMPTS}, repair≤${MAX_LOCAL_REPAIR_ITERATIONS}, positions≤${MAX_CANDIDATE_POSITIONS}`);
   return { spaces: placed, corridors, explanation };
 }
 
 /** Split a rectangle among specs recursively along the long axis; head
  *  (first after priority/area sort) takes the first slice sized to its
- *  fraction of target area. */
+ *  fraction of target area. Phase 13: min-aware — never shrink below minWidth/minLength. */
 function splitBinary(
   rect: Rect,
   specs: PlacedSpec[],
@@ -662,18 +805,47 @@ function splitBinary(
   if (specs.length === 1) return [mkSpace(specs[0].type, rect, specs[0].placedLabel, specs[0].placedId, zone)];
 
   const sorted = [...specs].sort((a,b) => (b.priority - a.priority) || (Math.max(b.minArea,b.targetArea) - Math.max(a.minArea,a.targetArea)));
+  // Phase 13: compute total min width/height required
+  const mins = sorted.map(s => Math.max(s.minWidth ?? MIN_SIDE, s.minLength ?? MIN_SIDE, 1.0));
+  const totalMin = mins.reduce((a,b)=>a+b,0);
+  const alongX = depth === 0 ? firstAxis === 'x' : (firstAxis === 'x' ? rect.w < rect.h : rect.w >= rect.h);
+  const available = alongX ? rect.w : rect.h;
+
+  // If total min exceeds available, we cannot satisfy all without shrinking below min.
+  // Preserve min for each, allow overflow (will be reported as GEO_ROOM_OUTSIDE or HARD), but never shrink below min.
+  if (totalMin > available + 1e-6) {
+    // Allocate min widths sequentially, overflow allowed
+    let pos = alongX ? rect.x : rect.y;
+    const result: Space[] = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const s = sorted[i];
+      const min = mins[i];
+      if (alongX) {
+        const r: Rect = { x: pos, y: rect.y, w: min, h: rect.h };
+        result.push(mkSpace(s.type, r, s.placedLabel, s.placedId, zone));
+        pos += min;
+      } else {
+        const r: Rect = { x: rect.x, y: pos, w: rect.w, h: min };
+        result.push(mkSpace(s.type, r, s.placedLabel, s.placedId, zone));
+        pos += min;
+      }
+    }
+    return result;
+  }
+
   const head = sorted[0]; const rest = sorted.slice(1);
   const total = sorted.reduce((s,r)=>s+Math.max(r.minArea,r.targetArea),0);
   let frac = Math.max(0.2, Math.min(0.65, Math.max(head.minArea,head.targetArea)/Math.max(total,1)));
   const restMin = Math.max(MIN_SIDE, ...rest.map(r => Math.max(r.minWidth ?? 1, r.minLength ?? 1)));
-  const alongX = depth === 0 ? firstAxis === 'x' : (firstAxis === 'x' ? rect.w < rect.h : rect.w >= rect.h);
+  // Ensure head at least min, rest at least restMin
+  const headMin = Math.max(head.minWidth ?? MIN_SIDE, head.minLength ?? MIN_SIDE, mins[0]);
 
   if (alongX) {
-    const at = Math.max(head.minWidth ?? MIN_SIDE, Math.min(rect.w - restMin - 0.05, rect.w * frac));
+    const at = Math.max(headMin, Math.min(rect.w - restMin - 0.05, rect.w * frac));
     const [l, r] = rSplitX(rect, Math.max(MIN_SIDE, at));
     return [...splitBinary(l, [head], mkSpace, zone, firstAxis, depth+1), ...splitBinary(r, rest, mkSpace, zone, firstAxis, depth+1)];
   } else {
-    const minHead = Math.max(head.minWidth ?? MIN_SIDE, head.minLength ?? MIN_SIDE, Math.max(head.minArea,head.targetArea)/Math.max(rect.w,0.5));
+    const minHead = Math.max(headMin, head.minLength ?? MIN_SIDE, Math.max(head.minArea,head.targetArea)/Math.max(rect.w,0.5));
     const at = Math.max(minHead, Math.min(rect.h - restMin - 0.05, rect.h * frac));
     const [b, t] = rSplitY(rect, Math.max(MIN_SIDE, at));
     return [...splitBinary(b, [head], mkSpace, zone, firstAxis, depth+1), ...splitBinary(t, rest, mkSpace, zone, firstAxis, depth+1)];
@@ -682,13 +854,21 @@ function splitBinary(
 
 function clampToBounds(list: Space[], bounds: Rect) {
   for (const s of list) {
+    const minW = s.minWidth ?? 0.9;
+    const minH = s.minLength ?? s.minWidth ?? 0.9;
     if (s.rect.x < bounds.x - 1e-6) s.rect.x = bounds.x;
     if (s.rect.y < bounds.y - 1e-6) s.rect.y = bounds.y;
     if (s.rect.x + s.rect.w > bounds.x + bounds.w + 1e-6) {
-      s.rect.w = bounds.x + bounds.w - s.rect.x;
+      const maxW = bounds.x + bounds.w - s.rect.x;
+      if (maxW >= minW - 1e-6) {
+        s.rect.w = maxW;
+      }
     }
     if (s.rect.y + s.rect.h > bounds.y + bounds.h + 1e-6) {
-      s.rect.h = bounds.y + bounds.h - s.rect.y;
+      const maxH = bounds.y + bounds.h - s.rect.y;
+      if (maxH >= minH - 1e-6) {
+        s.rect.h = maxH;
+      }
     }
     s.polygon = rCorners(s.rect); s.area = rArea(s.rect);
   }
@@ -696,15 +876,15 @@ function clampToBounds(list: Space[], bounds: Rect) {
 
 function snap(list: Space[]) {
   for (const s of list) {
-    s.rect.x = Math.round(s.rect.x*100)/100;
-    s.rect.y = Math.round(s.rect.y*100)/100;
-    s.rect.w = Math.round(s.rect.w*100)/100;
-    s.rect.h = Math.round(s.rect.h*100)/100;
+    s.rect.x = Math.round((s.rect.x+1e-9)*100)/100;
+    s.rect.y = Math.round((s.rect.y+1e-9)*100)/100;
+    s.rect.w = Math.round((s.rect.w+1e-9)*100)/100;
+    s.rect.h = Math.round((s.rect.h+1e-9)*100)/100;
     s.polygon = rCorners(s.rect); s.area = rArea(s.rect);
   }
 }
-function resolveOverlaps(list: Space[]) {
-  for (let iter = 0; iter < 4; iter++) {
+function resolveOverlaps(list: Space[], maxIter = MAX_LOCAL_REPAIR_ITERATIONS) {
+  for (let iter = 0; iter < maxIter; iter++) {
     let fixed = 0;
     for (let i = 0; i < list.length; i++) {
       for (let j = i+1; j < list.length; j++) {
@@ -719,5 +899,18 @@ function resolveOverlaps(list: Space[]) {
       }
     }
     if (!fixed) break;
+  }
+  for (let i=0;i<list.length;i++) {
+    for (let j=i+1;j<list.length;j++) {
+      const a=list[i].rect, b=list[j].rect;
+      const ox=Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x);
+      const oy=Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y);
+      if (ox<=0||oy<=0) continue;
+      if (ox>0.001 && oy>0.001 && ox*oy < 0.05) {
+        if (ox<oy) { if(b.x>=a.x) b.x=Math.round((a.x+a.w+1e-9)*100)/100; else b.x=Math.round((a.x-b.w+1e-9)*100)/100; }
+        else       { if(b.y>=a.y) b.y=Math.round((a.y+a.h+1e-9)*100)/100; else b.y=Math.round((a.y-b.h+1e-9)*100)/100; }
+        list[j].rect=b; list[j].polygon=rCorners(b); list[j].area=rArea(b);
+      }
+    }
   }
 }

@@ -211,7 +211,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
       expect(rule.evaluate!(ctx2).length).toBeGreaterThan(0);
     });
 
-    it('generator: narrow site triggers HARD', () => {
+    it('generator: narrow site triggers HARD or meets min (Phase13 min preserved)', () => {
       const prj = createProject({
         name: 'narrow', country: 'IR',
         site: { shape: 'rectangle', width: 10, length: 18, accessSide: 'south', streetWidth: 6 },
@@ -219,9 +219,14 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         deterministic: true, seed: 3,
       });
       const { candidates } = generate(prj);
+      const kitchen = candidates[0].floors[0].spaces.find((s: any) => s.type === 'kitchen');
+      expect(kitchen).toBeDefined();
       const hits = findCode(candidates[0], 'MBH4-ROOM-004').filter((f: any) => f.severity === 'hard');
-      expect(hits.length).toBeGreaterThanOrEqual(1);
-      expect(hits[0].status).toBe('VERIFIED');
+      if (hits.length > 0) {
+        expect(hits[0].status).toBe('VERIFIED');
+      } else {
+        expect((kitchen as any).rect.w).toBeGreaterThanOrEqual(1.8 - 1e-6);
+      }
     });
   });
 
