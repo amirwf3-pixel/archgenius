@@ -465,17 +465,20 @@ export function placeSpaces(
             for (let ci = 0; ci < genericClusters.length; ci++) {
               const cl = genericClusters[ci];
               const isLast = ci === genericClusters.length - 1;
+              const minH = clusterMinHs[ci];
               let rowH: number;
               if (isLast) {
-                rowH = privateRect.y + privateRect.h - y;
+                const remaining = privateRect.y + privateRect.h - y;
+                rowH = remaining >= minH - 1e-6 ? remaining : minH;
+                if (rowH <= 0) rowH = minH;
               } else {
-                const minH = clusterMinHs[ci];
                 const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
                 const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
                 const extra = Math.max(0, target - minArea);
                 const attemptFactor = 1 + (attempt * 0.05 - 0.1);
                 const extraShare = totalExtraAreaV > 1e-6 ? (extra / totalExtraAreaV) * remainingH * attemptFactor : remainingH / genericClusters.length;
                 rowH = minH + Math.max(0, extraShare);
+                if (rowH <= 0) rowH = minH;
               }
               // Phase 13: preserve min width for vertical spine — never shrink below max minWidth of cluster
               const clusterMaxMinW = Math.max(...cl.rooms.map(r=>Math.max(r.minWidth ?? 2.0, 1.0)));
@@ -542,17 +545,21 @@ export function placeSpaces(
             for (let ci = 0; ci < genericClusters.length; ci++) {
               const cl = genericClusters[ci];
               const isLast = ci === genericClusters.length - 1;
+              const minW = clusterMinWs[ci];
               let colW: number;
               if (isLast) {
-                colW = privateRect.x + privateRect.w - x;
+                const remaining = privateRect.x + privateRect.w - x;
+                // Phase 13.1: never negative, preserve min
+                colW = remaining >= minW - 1e-6 ? remaining : minW;
+                if (colW <= 0) colW = minW;
               } else {
-                const minW = clusterMinWs[ci];
                 const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
                 const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
                 const extra = Math.max(0, target - minArea);
                 const attemptFactor = 1 + (attempt * 0.05 - 0.1);
                 const extraShare = totalExtraArea > 1e-6 ? (extra / totalExtraArea) * remainingW * attemptFactor : remainingW / genericClusters.length;
                 colW = minW + Math.max(0, extraShare);
+                if (colW <= 0) colW = minW;
               }
               const colRect: Rect = { x, y: privateRect.y, w: colW, h: privateRect.h };
               x += colW;
@@ -713,40 +720,63 @@ export function placeSpaces(
         const diningMinH = Math.max(dining.minLength ?? dining.minWidth ?? 2.2, 2.0);
         const publicMinH = Math.max(livingMinH, diningMinH);
         const publicH = Math.max(publicRect.h, publicMinH);
-        if (publicRect.w < livingMinW + diningMinW - 1e-6) {
-          livingW = livingMinW;
+        const requiredMinW = livingMinW + diningMinW;
+        // Phase 13.1: feasibility-first — if not enough width for side-by-side, stack vertically preserving min
+        if (publicRect.w < requiredMinW - 1e-6) {
+          // Not enough width side-by-side — check if we can stack vertically (tall publicRect)
+          if (publicRect.h >= livingMinH + diningMinH - 1e-6) {
+            const livingH = Math.max(livingMinH, publicRect.h * 0.55);
+            const diningH = Math.max(diningMinH, publicRect.h - livingH);
+            placed.push(mkSpace('living',
+              { x: publicRect.x, y: publicRect.y, w: Math.max(publicRect.w, livingMinW), h: livingH },
+              living.placedLabel, living.placedId, 'public'));
+            placed.push(mkSpace('dining',
+              { x: publicRect.x, y: publicRect.y + livingH, w: Math.max(publicRect.w, diningMinW), h: diningH },
+              dining.placedLabel, dining.placedId, 'public'));
+          } else {
+            // Genuinely infeasible — preserve min width, allow overflow but never negative
+            livingW = livingMinW;
+            const eastX = publicRect.x + livingW;
+            const eastW = Math.max(diningMinW, publicRect.w - livingW);
+            placed.push(mkSpace('living',
+              { x: publicRect.x, y: publicRect.y, w: livingW, h: publicH },
+              living.placedLabel, living.placedId, 'public'));
+            placed.push(mkSpace('dining',
+              { x: eastX, y: publicRect.y, w: eastW, h: publicH },
+              dining.placedLabel, dining.placedId, 'public'));
+          }
         } else {
           livingW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, livingW));
-        }
-        placed.push(mkSpace('living',
-          { x: publicRect.x, y: publicRect.y, w: livingW, h: publicH },
-          living.placedLabel, living.placedId, 'public'));
-        const eastX = publicRect.x + livingW;
-        const eastW = publicRect.w - livingW;
-        const DINING_MIN_W = diningMinW;
-        const GWC_MIN_W = 1.2;
-        if (guestWc && eastW >= DINING_MIN_W + GWC_MIN_W && publicRect.h > 4.0) {
-          const gwcW = Math.min(1.6, Math.max(GWC_MIN_W, eastW * 0.30));
-          const gwcH = Math.min(2.2, Math.max(1.8, publicRect.h * 0.25));
-          const diningW = eastW - gwcW;
-          const finalDiningW = Math.max(DINING_MIN_W, diningW);
-          placed.push(mkSpace('guest-wc',
-            { x: eastX + finalDiningW, y: publicRect.y + publicRect.h - gwcH, w: gwcW, h: gwcH },
-            guestWc.placedLabel, guestWc.placedId, 'public'));
-          placed.push(mkSpace('dining',
-            { x: eastX, y: publicRect.y, w: finalDiningW, h: publicH },
-            dining.placedLabel, dining.placedId, 'public'));
-        } else {
-          const finalDiningW = Math.max(DINING_MIN_W, eastW);
-          placed.push(mkSpace('dining',
-            { x: eastX, y: publicRect.y, w: finalDiningW, h: publicH },
-            dining.placedLabel, dining.placedId, 'public'));
+          placed.push(mkSpace('living',
+            { x: publicRect.x, y: publicRect.y, w: livingW, h: publicH },
+            living.placedLabel, living.placedId, 'public'));
+          const eastX = publicRect.x + livingW;
+          const eastW = publicRect.w - livingW;
+          const DINING_MIN_W = diningMinW;
+          const GWC_MIN_W = 1.2;
+          const finalEastW = Math.max(0, eastW);
+          if (guestWc && finalEastW >= DINING_MIN_W + GWC_MIN_W && publicRect.h > 4.0) {
+            const gwcW = Math.min(1.6, Math.max(GWC_MIN_W, finalEastW * 0.30));
+            const gwcH = Math.min(2.2, Math.max(1.8, publicRect.h * 0.25));
+            const diningW = Math.max(DINING_MIN_W, finalEastW - gwcW);
+            placed.push(mkSpace('guest-wc',
+              { x: eastX + diningW, y: publicRect.y + publicRect.h - gwcH, w: gwcW, h: gwcH },
+              guestWc.placedLabel, guestWc.placedId, 'public'));
+            placed.push(mkSpace('dining',
+              { x: eastX, y: publicRect.y, w: diningW, h: publicH },
+              dining.placedLabel, dining.placedId, 'public'));
+          } else {
+            const finalDiningW = Math.max(DINING_MIN_W, finalEastW);
+            placed.push(mkSpace('dining',
+              { x: eastX, y: publicRect.y, w: finalDiningW, h: publicH },
+              dining.placedLabel, dining.placedId, 'public'));
+          }
         }
       } else {
         const livingMinH = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);
         const publicH = Math.max(publicRect.h, livingMinH);
         placed.push(mkSpace('living',
-          { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: publicH },
+          { x: publicRect.x, y: publicRect.y, w: Math.max(publicRect.w, living.minWidth ?? 3.0), h: publicH },
           living.placedLabel, living.placedId, 'public'));
         if (guestWc) {
           const gwcW = Math.min(1.8, publicRect.w * 0.2);

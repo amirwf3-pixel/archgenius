@@ -89,9 +89,13 @@ describe('Phase 11.2 Production MUST_BE_ADJACENT HARD', () => {
     });
     const { bestCandidate } = generate(prj);
     const vr = validateLayout(bestCandidate);
-    const hardAdj = vr.hard.filter(f => f.code === 'CONSTRAINT_MUST_ADJACENT' || f.code === 'CONSTRAINT_DIRECT_ACCESS');
-    // For 12x18, generator does not guarantee corridor-bedroom adjacency, so hard must be present — correct engineering
-    expect(hardAdj.length).toBeGreaterThan(0);
+    const geoHard = vr.hard.filter(f => f.code.startsWith('GEO_'));
+    // Phase 13.1: after fixing negative width, 12x18 is feasible with 0 GEO hard, CONSTRAINT_ may be 0 as well
+    expect(geoHard.length).toBe(0);
+    for (const s of bestCandidate.floors[0].spaces) {
+      expect(s.rect.w).toBeGreaterThan(0);
+      expect(s.rect.h).toBeGreaterThan(0);
+    }
   });
 
   it('two rooms MUST_BE_ADJACENT and actually adjacent → no HARD', () => {

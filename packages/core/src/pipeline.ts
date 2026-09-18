@@ -45,6 +45,26 @@ export function createProject(input: ProjectInput): Project {
   };
 }
 
+function isValidRoomGeometry(c: any): { valid: boolean; reason?: string } {
+  for (const fl of c.floors) {
+    for (const s of fl.spaces) {
+      const r = s.rect;
+      if (!r) return { valid: false, reason: `missing rect ${s.type}` };
+      if (!(r.w > 0) || !(r.h > 0)) return { valid: false, reason: `non-positive dimension ${s.type} w=${r.w} h=${r.h}` };
+      if (!(s.area > 0)) return { valid: false, reason: `non-positive area ${s.type}` };
+      const minW = s.minWidth ?? s.constraints?.minWidth ?? 0.9;
+      const minL = s.minLength ?? s.constraints?.minLength ?? s.minWidth ?? 0.9;
+      const minA = s.minArea ?? s.constraints?.minArea ?? 0;
+      if (r.w + 1e-6 < minW - 0.05) return { valid: false, reason: `below minWidth ${s.type} w=${r.w} < ${minW}` };
+      if (r.h + 1e-6 < minL - 0.05) return { valid: false, reason: `below minLength ${s.type} h=${r.h} < ${minL}` };
+      if (minA > 1e-6 && s.area + 1e-6 < minA - 0.1) return { valid: false, reason: `below minArea ${s.type} area=${s.area} < ${minA}` };
+      // polygon validity
+      if (s.polygon && s.polygon.length < 3) return { valid: false, reason: `invalid polygon ${s.type}` };
+    }
+  }
+  return { valid: true };
+}
+
 export function generate(project: Project, opts: GenerateOptions = {}): GenerateResult {
   const strategies = opts.strategies ?? [
     'area-efficiency',
@@ -53,12 +73,33 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     'alternative-zoning',
   ];
   const all = generateLayouts(project.input, strategies);
-  // Phase 12: Hard-first ranking (hard feasibility > quality), deterministic tie-break
-  // Use hard count as primary, then soft count, then quality
-  const scored = all.map(c => {
+  // Phase 13.1: final feasibility gate — filter out geometrically invalid candidates (w<=0,h<=0,area<=0,below min)
+  const validCandidates: typeof all = [];
+  const invalidCandidates: typeof all = [];
+  for (const cand of all) {
+    const check = isValidRoomGeometry(cand);
+    if (check.valid) {
+      validCandidates.push(cand);
+    } else {
+      // Add explicit HARD finding for invalid geometry
+      cand.findings.push({
+        code: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
+        severity: 'hard',
+        message: `Phase13.1 invalid geometry filtered: ${check.reason} — explicit HARD infeasibility, no valid candidate with invalid geometry`,
+        ruleId: 'GEOM_VALIDATION',
+        reference: 'Phase13.1 feasibility gate',
+        status: 'VERIFIED',
+      } as any);
+      invalidCandidates.push(cand);
+    }
+  }
+  // If we have at least one geometrically valid candidate, rank among valid only
+  const toRank = validCandidates.length > 0 ? validCandidates : all;
+  const scored = toRank.map(c => {
     const m = computeMetrics(c);
     const hardCount = c.findings.filter(f => f.severity === 'hard').length;
     const softCount = c.findings.filter(f => f.severity === 'soft').length;
+    // For validCandidates path, hardCount already excludes invalid geometry; for fallback all path, invalid geometry already has extra hard
     return { c, m, hardCount, softCount };
   });
   scored.sort((a, b) => {
@@ -71,11 +112,17 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
   });
   const candidates = scored.map(x => x.c);
   const bestCandidate = candidates[0];
-  project.candidates = candidates;
+  // If validCandidates empty, bestCandidate is from invalid set but now has explicit HARD and no negative dimensions (primary fix ensures positive)
+  // For strict Phase13.1 semantics, if all invalid, we still return best with HARD, but geometry must be valid (positive dims) — primary fix guarantees that
+  project.candidates = validCandidates.length > 0 ? validCandidates : candidates;
+  if (validCandidates.length === 0 && candidates.length > 0) {
+    // No valid candidate — mark project with explicit infeasibility explanation
+    bestCandidate.explanations.push(`Phase13.1: no geometrically valid candidate — all ${all.length} attempts produced invalid geometry, explicit HARD_CONSTRAINT_INFEASIBLE_DIMENSION, no valid candidate exposed`);
+  }
   project.selectedCandidateId = bestCandidate.id;
   project.updatedAt = Date.now();
   if (opts.allStrategies) {
-    return { project, candidates, bestCandidate };
+    return { project, candidates: validCandidates.length > 0 ? validCandidates : candidates, bestCandidate };
   }
   return { project, candidates: [bestCandidate], bestCandidate };
 }

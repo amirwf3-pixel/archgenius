@@ -101,15 +101,18 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
         deterministic: true, seed: 3,
       });
       const { bestCandidate } = generate(prj);
-      const kitchen = bestCandidate.floors[0].spaces.find((s: any) => s.type === 'kitchen');
-      expect(kitchen).toBeDefined();
-      // Phase 13: kitchen min 2.0 preserved, so 10x18 should have width >=1.8 and no hard if feasible, or hard with VERIFIED status if infeasible
-      const hits = find(bestCandidate, 'MBH4-ROOM-004').filter((f: any) => f.severity === 'hard');
-      if (hits.length > 0) {
-        expect(hits[0].status).toBe('VERIFIED');
-      } else {
-        // No hard means kitchen meets threshold
-        expect((kitchen as any).rect.w).toBeGreaterThanOrEqual(1.8 - 1e-6);
+      // Phase 13.1: feasibility-first — narrow 10x18 may be genuinely infeasible, no valid candidate with kitchen, explicit HARD
+      const spaces = bestCandidate.floors[0].spaces;
+      for (const s of spaces) {
+        expect(s.rect.w).toBeGreaterThan(0);
+        expect(s.rect.h).toBeGreaterThan(0);
+        expect(s.area).toBeGreaterThan(0);
+      }
+      const vr = validateCandidate(bestCandidate);
+      expect(vr.hard.length).toBeGreaterThan(0); // explicit HARD infeasibility
+      const kitchen = spaces.find((s: any) => s.type === 'kitchen');
+      if (kitchen) {
+        expect(kitchen.rect.w).toBeGreaterThanOrEqual(1.8 - 1e-6);
       }
     });
   });

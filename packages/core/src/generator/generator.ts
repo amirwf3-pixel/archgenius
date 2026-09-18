@@ -278,35 +278,39 @@ function buildFloorSiteAware(
   if (!entrancePlaced) {
     const foyer = repaired.spaces.find(s => (s.type === 'foyer' || s.type === 'corridor') && s.rect.y <= buildableRect.y + EPS);
     if (foyer) {
-      const spurH = Math.min(1.5, foyer.rect.h);
-      const entrId = nextId('entrance');
-      const entrRect: Rect = { x: foyer.rect.x, y: foyer.rect.y, w: Math.min(1.8, foyer.rect.w), h: spurH };
-      if (rectInsidePolygon(entrRect, buildableBoundary, 1e-3)) {
-        repaired.spaces.push(mkSpace('entrance', entrRect, 'Entrance', entrId, 'public'));
-        // Update foyer rect/polygon canonical
-        const newFoyerRect: Rect = { x: foyer.rect.x, y: foyer.rect.y + spurH, w: foyer.rect.w, h: foyer.rect.h - spurH };
-        foyer.rect = newFoyerRect;
-        foyer.polygon = createRectangleRoomPolygon(newFoyerRect);
-        foyer.area = polygonArea(foyer.polygon);
-        entrancePlaced = true;
-        explanations.push('Entrance vestibule carved from corridor/foyer on the access facade — site-aware.');
+      const spurH = Math.min(1.5, foyer.rect.h * 0.4);
+      // Phase 13.1: feasibility-first — never create negative height
+      if (foyer.rect.h > spurH + 0.9) {
+        const entrId = nextId('entrance');
+        const entrRect: Rect = { x: foyer.rect.x, y: foyer.rect.y, w: Math.min(1.8, foyer.rect.w), h: spurH };
+        if (rectInsidePolygon(entrRect, buildableBoundary, 1e-3)) {
+          repaired.spaces.push(mkSpace('entrance', entrRect, 'Entrance', entrId, 'public'));
+          const newFoyerRect: Rect = { x: foyer.rect.x, y: foyer.rect.y + spurH, w: foyer.rect.w, h: foyer.rect.h - spurH };
+          foyer.rect = newFoyerRect;
+          foyer.polygon = createRectangleRoomPolygon(newFoyerRect);
+          foyer.area = polygonArea(foyer.polygon);
+          entrancePlaced = true;
+          explanations.push('Entrance vestibule carved from corridor/foyer on the access facade — site-aware.');
+        }
       }
     }
   }
   if (!entrancePlaced) {
     const pub = repaired.spaces.find(s => s.zone === 'public' || s.type === 'living');
     if (pub) {
-      const eW = Math.min(1.6, pub.rect.w);
-      const eH = Math.min(1.5, pub.rect.h);
-      const entrId = nextId('entrance');
-      const r: Rect = { x: pub.rect.x, y: pub.rect.y, w: eW, h: eH };
-      if (rectInsidePolygon(r, buildableBoundary, 1e-3)) {
-        repaired.spaces.push(mkSpace('entrance', r, 'Entrance', entrId, 'public'));
-        const newPubRect: Rect = { x: pub.rect.x, y: pub.rect.y + eH, w: pub.rect.w, h: pub.rect.h - eH };
-        pub.rect = newPubRect;
-        pub.polygon = createRectangleRoomPolygon(newPubRect);
-        pub.area = polygonArea(pub.polygon);
-        entrancePlaced = true;
+      const eW = Math.min(1.6, pub.rect.w * 0.3);
+      const eH = Math.min(1.5, pub.rect.h * 0.3);
+      if (pub.rect.w > eW + 0.9 && pub.rect.h > eH + 0.9) {
+        const entrId = nextId('entrance');
+        const r: Rect = { x: pub.rect.x, y: pub.rect.y, w: eW, h: eH };
+        if (rectInsidePolygon(r, buildableBoundary, 1e-3)) {
+          repaired.spaces.push(mkSpace('entrance', r, 'Entrance', entrId, 'public'));
+          const newPubRect: Rect = { x: pub.rect.x, y: pub.rect.y + eH, w: pub.rect.w, h: pub.rect.h - eH };
+          pub.rect = newPubRect;
+          pub.polygon = createRectangleRoomPolygon(newPubRect);
+          pub.area = polygonArea(pub.polygon);
+          entrancePlaced = true;
+        }
       }
     }
   }
