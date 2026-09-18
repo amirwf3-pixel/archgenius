@@ -4,7 +4,7 @@
 **Software:** 0.11.2-phase11.2
 **Schema:** 6
 **DXF:** R12 / AC1009 / INSUNITS=4 (mm)
-**Commit:** (pending)
+**Commit:** cdcd711 (Phase 11.2 hardening)
 **Date:** 2026-09-18
 **Branch:** arena/01a0b33a-archgenius
 **Baseline:** 4023acd Phase 11, 3288158 Phase 11.1
@@ -187,7 +187,7 @@ Same as Phase 11.
 - Documentation consistent: YES
 - Working tree clean: pending final commit
 
-**Commit hash**: (to be filled)
+**Commit hash**: cdcd711
 **Test count**: 495 PASS
 **Build results**: core tsc PASS, web tsc PASS, vite PASS 310 modules 1.79 MB
 **Version**: 0.11.2-phase11.2
