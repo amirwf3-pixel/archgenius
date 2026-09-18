@@ -8,7 +8,8 @@ export * from './parking.js';
 export * from './floor.js';
 export * from './layout.js';
 export * from './project.js';
-// room-constraints exports RoomSizeConstraint which duplicates space.ts — export explicitly without duplicate
+// Phase 11.1: RoomSizeConstraint canonical in space.ts (re-exported from room-constraints for compat, but index exports only once from space to avoid duplicate)
+// Export constraint types explicitly excluding RoomSizeConstraint to avoid duplicate export (canonical is from space.ts)
 export {
   type RoomConstraintKind,
   type ConstraintStrength,
@@ -20,4 +21,5 @@ export {
   validateRoomSizeConstraints,
   constraintsFromSpec,
 } from './room-constraints.js';
-export type { RoomSizeConstraint as ParametricRoomSizeConstraint } from './room-constraints.js';
+// Alias for backward compat: ParametricRoomSizeConstraint = RoomSizeConstraint
+export type { RoomSizeConstraint as ParametricRoomSizeConstraint } from './space.js';

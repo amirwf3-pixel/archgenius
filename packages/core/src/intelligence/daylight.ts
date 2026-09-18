@@ -90,7 +90,10 @@ export function evaluateDaylight(floor: Floor): DaylightEvaluation {
     const exteriorWallScore = extWalls.length > 0 ? 1 : 0;
 
     // Depth score: room depth should be <=7m for daylight (MBH4-DYL-001 verified: max 7m)
-    const depth = Math.max(s.rect.w, s.rect.h);
+    // Phase 11.1: Use polygon bounding rect for depth (canonical bbox, not rect area). For L-shape, bounding equals rect (derived), so depth is max side of bbox.
+    // This is heuristic, does NOT affect HARD feasibility — hard feasibility separate.
+    const bbox = s.polygon ? { w: Math.max(...s.polygon.map(p => p.x)) - Math.min(...s.polygon.map(p => p.x)), h: Math.max(...s.polygon.map(p => p.y)) - Math.min(...s.polygon.map(p => p.y)) } : s.rect;
+    const depth = Math.max(bbox.w, bbox.h);
     totalDepth += depth;
     depthCount++;
     let depthScore = 1;

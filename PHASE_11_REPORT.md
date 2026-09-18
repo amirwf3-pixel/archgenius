@@ -4,7 +4,7 @@
 **Software:** 0.11.0-phase11  
 **Schema:** 6  
 **DXF:** R12 / AC1009 / INSUNITS=4 (mm)  
-**Commit:** (pending release)  
+**Commit:** 4023acd  
 **Date:** 2026-09-18  
 **Branch:** arena/01a0b33a-archgenius  
 
@@ -190,7 +190,7 @@ Phase 11 implements **Space.polygon canonical authoritative geometry** with boun
 - **no silent bbox fallback**: validateRoomPolygon fails explicitly for invalid, decompose returns null, no fallback.
 - **no output-specific reconstruction**: DXF uses Space.polygon directly, not reconstructed from rect.
 
-**Commit hash**: (to be filled after push)  
+**Commit hash**: 4023acd (Phase 11 baseline)  
 **Test count**: 449 PASS (402 baseline + 47 Phase11)  
 **Build results**: core tsc PASS, web vite PASS (1.79 MB)  
 **Version**: 0.11.0-phase11  

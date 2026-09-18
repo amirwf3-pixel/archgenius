@@ -40,6 +40,10 @@ function isService(type: string): boolean {
 }
 
 function overlapRatio(a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }): number {
+  // Phase 11.1: overlapRatio is heuristic approximation using bounding rects, not polygon boolean.
+  // This is intentional for bounded complexity (rect intersection O(1) vs polygon boolean O(n*m)).
+  // It is marked isHeuristic=true and does NOT affect HARD feasibility — hard feasibility separate.
+  // For L-shape rooms, bounding rect overlap may overestimate actual polygon overlap, but heuristic remains safe.
   const overlap = rOverlapArea(a, b);
   const minArea = Math.min(a.w * a.h, b.w * b.h);
   return minArea > 0 ? overlap / minArea : 0;

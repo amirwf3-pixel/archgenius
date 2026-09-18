@@ -10,9 +10,12 @@
  *
  * Hard constraints separate from heuristic quality scoring.
  * Architectural heuristics remain heuristics, not legal.
+ * Phase 11.1: RoomSizeConstraint canonical in space.ts, re-exported here for compat.
  */
 
+import type { RoomSizeConstraint } from './space.js';
 import type { Zone, PrivacyBand, SpaceType } from './space.js';
+export type { RoomSizeConstraint } from './space.js';
 
 export type RoomConstraintKind =
   | 'MUST_ADJACENT'
@@ -23,25 +26,6 @@ export type RoomConstraintKind =
   | 'PRIVACY_REQUIRED';
 
 export type ConstraintStrength = 'hard' | 'soft';
-
-export interface RoomSizeConstraint {
-  /** Minimum area m² — HARD */
-  minArea?: number;
-  /** Target area m² — soft preference */
-  targetArea?: number;
-  /** Maximum area m² — HARD upper bound */
-  maxArea?: number;
-  /** Minimum width m — HARD */
-  minWidth?: number;
-  /** Minimum length m — HARD */
-  minLength?: number;
-  /** Preferred aspect ratio (long/short) — soft */
-  preferredAspectRatio?: number;
-  /** Zone requirement — HARD if specified */
-  zone?: Zone;
-  /** Privacy band requirement — HARD if specified */
-  privacy?: PrivacyBand;
-}
 
 export interface RoomAdjacencyConstraint {
   id: string;

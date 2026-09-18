@@ -1,8 +1,8 @@
 /**
- * Phase 11 — Controlled Editing Implementation (CORE)
+ * Phase 11.1 — Controlled Editing Implementation (CORE) — Hardened
  *
  * Expected flow:
- * edit operation → constraint-aware mutation → bounded repair of unlocked geometry → validation → intelligence re-evaluation
+ * edit operation → constraint-aware mutation → bounded repair of unlocked geometry (nudge + shrink) → validation (site + geometric + parametric constraints) → intelligence re-evaluation
  *
  * All operations are deterministic, bounded, seed-stable, no Math.random.
  */
@@ -11,8 +11,7 @@ import type { LayoutCandidate } from '../model/layout.js';
 import type { Floor } from '../model/floor.js';
 import type { Space } from '../model/space.js';
 import type { Rect } from '../geometry/rect.js';
-import { rArea, rCorners, R } from '../geometry/rect.js';
-import { polygonArea, polygonBoundingRect, pointInPolygon, rectInsidePolygon } from '../geometry/polygon-ops.js';
+import { polygonArea, polygonBoundingRect } from '../geometry/polygon-ops.js';
 import {
   createRectangleRoomPolygon,
   createLShapedRoomPolygon,
@@ -28,14 +27,13 @@ import { generateWalls } from '../generator/walls.js';
 import { placeOpenings } from '../generator/openings.js';
 import { placeFurniture } from '../generator/furniture.js';
 import type { EditOperation, EditResult } from './types.js';
-import type { Finding } from '../validation/types.js';
 
 const BOUNDED_REPAIR_MAX_ITER = 4;
 const BOUNDED_REPAIR_STEP = 0.1;
+const BOUNDED_SHRINK_STEP = 0.1;
+const BOUNDED_SHRINK_MAX = 0.5;
+const BOUNDED_SHRINK_ATTEMPTS = 5; // 0.1 *5 =0.5
 
-/**
- * Deep clone candidate for editing (deterministic, no random)
- */
 function cloneCandidate(candidate: LayoutCandidate): LayoutCandidate {
   return JSON.parse(JSON.stringify(candidate)) as LayoutCandidate;
 }
@@ -48,9 +46,6 @@ function findSpace(floor: Floor, spaceId: string): Space | undefined {
   return floor.spaces.find(s => s.id === spaceId);
 }
 
-/**
- * Check if space is locked for given kind
- */
 function isLocked(space: Space, kind: 'position' | 'size' | 'geometry' | 'adjacency'): boolean {
   if (!space.locked) return false;
   switch (kind) {
@@ -62,9 +57,14 @@ function isLocked(space: Space, kind: 'position' | 'size' | 'geometry' | 'adjace
   }
 }
 
-/**
- * Apply move operation
- */
+function hasHardConstraintFinding(findings: any[]): boolean {
+  return findings.some(f => f.severity === 'hard' && (f.code?.startsWith('CONSTRAINT_') || f.code?.startsWith('ROOM_CONSTRAINT_')));
+}
+
+function getHardConstraintFindings(findings: any[]): any[] {
+  return findings.filter(f => f.severity === 'hard' && (f.code?.startsWith('CONSTRAINT_') || f.code?.startsWith('ROOM_CONSTRAINT_')));
+}
+
 export function moveRoom(candidate: LayoutCandidate, op: { floorLevel: number; spaceId: string; newX: number; newY: number }): EditResult {
   const cloned = cloneCandidate(candidate);
   const floor = findFloor(cloned, op.floorLevel);
@@ -83,14 +83,12 @@ export function moveRoom(candidate: LayoutCandidate, op: { floorLevel: number; s
   const dx = op.newX - oldRect.x;
   const dy = op.newY - oldRect.y;
 
-  // Translate polygon (canonical)
   const newPoly = translateRoomPolygon(space.polygon, dx, dy);
   const v = validateRoomPolygon(newPoly);
   if (!v.valid) {
     return { success: false, candidate: null, findings: [], error: `Move results in invalid polygon: ${v.errors.join('; ')}`, attemptedOperation: { kind: 'move', ...op } };
   }
 
-  // Check site containment — use buildableBoundary if available
   const anyFloor = floor as any;
   const buildableBoundary = anyFloor.buildableBoundary as any;
   if (buildableBoundary) {
@@ -98,7 +96,6 @@ export function moveRoom(candidate: LayoutCandidate, op: { floorLevel: number; s
       return { success: false, candidate: null, findings: [], error: `Move would place room outside buildable boundary`, attemptedOperation: { kind: 'move', ...op } };
     }
   } else {
-    // Fallback to footprint bounding
     const br = polygonBoundingRect(newPoly);
     if (br.x < floor.footprint.x - 1e-6 || br.y < floor.footprint.y - 1e-6 ||
         br.x + br.w > floor.footprint.x + floor.footprint.w + 1e-6 ||
@@ -107,7 +104,6 @@ export function moveRoom(candidate: LayoutCandidate, op: { floorLevel: number; s
     }
   }
 
-  // Check overlap with locked rooms
   for (const other of floor.spaces) {
     if (other.id === space.id) continue;
     if (isLocked(other, 'position') || isLocked(other, 'geometry')) {
@@ -117,26 +113,25 @@ export function moveRoom(candidate: LayoutCandidate, op: { floorLevel: number; s
     }
   }
 
-  // Apply
   space.polygon = newPoly;
   space.rect = roomPolygonToBoundingRect(newPoly);
   space.area = polygonArea(newPoly);
 
-  // Bounded repair of unlocked geometry — try to resolve overlaps with unlocked rooms by nudging them minimally
   const repairResult = boundedRepair(floor, space.id);
   if (!repairResult.success) {
     return { success: false, candidate: null, findings: [], error: repairResult.error, attemptedOperation: { kind: 'move', ...op } };
   }
 
-  // Regenerate walls/openings/furniture for this floor
   regenerateFloor(floor, cloned);
 
-  // Validate
   const vr = validateLayout(cloned);
-  // Check for HARD site containment after edit
   const hardSite = vr.findings.filter(f => f.severity === 'hard' && f.code.startsWith('SITE_'));
   if (hardSite.length > 0) {
     return { success: false, candidate: null, findings: vr.findings, error: `Move results in HARD site containment: ${hardSite.map(h => h.code).join(', ')}`, attemptedOperation: { kind: 'move', ...op } };
+  }
+  const hardConstraints = getHardConstraintFindings(vr.findings);
+  if (hardConstraints.length > 0) {
+    return { success: false, candidate: null, findings: vr.findings, error: `Move violates HARD parametric constraints: ${hardConstraints.map(h => h.code).join(', ')}`, attemptedOperation: { kind: 'move', ...op } };
   }
 
   cloned.findings = vr.findings;
@@ -146,9 +141,6 @@ export function moveRoom(candidate: LayoutCandidate, op: { floorLevel: number; s
   return { success: true, candidate: cloned, findings: vr.findings, attemptedOperation: { kind: 'move', ...op } };
 }
 
-/**
- * Resize operation — for rectangle rooms, change w/h; for L-shape, resize bounding rect then re-apply notch if possible
- */
 export function resizeRoom(candidate: LayoutCandidate, op: { floorLevel: number; spaceId: string; newWidth: number; newHeight: number; anchor?: 'sw' | 'se' | 'nw' | 'ne' | 'center' }): EditResult {
   const cloned = cloneCandidate(candidate);
   const floor = findFloor(cloned, op.floorLevel);
@@ -167,7 +159,6 @@ export function resizeRoom(candidate: LayoutCandidate, op: { floorLevel: number;
     return { success: false, candidate: null, findings: [], error: `Resize too small ${op.newWidth}x${op.newHeight} < 1.0`, attemptedOperation: { kind: 'resize', ...op } };
   }
 
-  // Check constraints if present
   if (space.constraints) {
     if (space.constraints.minWidth && Math.min(op.newWidth, op.newHeight) < space.constraints.minWidth - 1e-6) {
       return { success: false, candidate: null, findings: [], error: `Resize violates minWidth ${space.constraints.minWidth}`, attemptedOperation: { kind: 'resize', ...op } };
@@ -175,12 +166,7 @@ export function resizeRoom(candidate: LayoutCandidate, op: { floorLevel: number;
     if (space.constraints.minLength && Math.max(op.newWidth, op.newHeight) < space.constraints.minLength - 1e-6) {
       return { success: false, candidate: null, findings: [], error: `Resize violates minLength ${space.constraints.minLength}`, attemptedOperation: { kind: 'resize', ...op } };
     }
-    if (space.constraints.minArea && op.newWidth * op.newHeight < space.constraints.minArea - 1e-6) {
-      // For L-shape actual area may be smaller than bounding, but we check bounding as approximation
-      // Actual area check after polygon creation
-    }
     if (space.constraints.maxArea && op.newWidth * op.newHeight > space.constraints.maxArea + 1e-6) {
-      // Allow if L-shape will reduce area, but fail if rectangle
       if (space.shapeType === 'rectangle' || !space.shapeType) {
         return { success: false, candidate: null, findings: [], error: `Resize violates maxArea ${space.constraints.maxArea}`, attemptedOperation: { kind: 'resize', ...op } };
       }
@@ -200,17 +186,11 @@ export function resizeRoom(candidate: LayoutCandidate, op: { floorLevel: number;
 
   let newPoly;
   if (space.shapeType === 'l-shape' && space.polygon.length === 6) {
-    // For L-shape, try to preserve notch proportion
-    const oldBound = oldRect;
-    const notchW = oldBound.w - Math.max(...space.polygon.map(p => p.x)) + Math.min(...space.polygon.map(p => p.x)) + oldBound.w; // simplified: we need to infer notch
-    // Instead, we will create new L-shape with same notch corner and proportional notch
-    // For simplicity, use previous notch if we can infer, else create rectangle
-    const inferred = inferLNotch(space.polygon, oldBound);
+    const inferred = inferLNotch(space.polygon, oldRect);
     if (inferred) {
       const newBounding: Rect = { x: newX, y: newY, w: op.newWidth, h: op.newHeight };
-      // Scale notch proportionally but keep within bounds
-      const scaleW = op.newWidth / oldBound.w;
-      const scaleH = op.newHeight / oldBound.h;
+      const scaleW = op.newWidth / oldRect.w;
+      const scaleH = op.newHeight / oldRect.h;
       const newNotchW = Math.min(inferred.notchWidth * scaleW, op.newWidth * 0.5);
       const newNotchH = Math.min(inferred.notchLength * scaleH, op.newHeight * 0.5);
       const lPoly = createLShapedRoomPolygon(newBounding, newNotchW, newNotchH, inferred.corner);
@@ -242,14 +222,12 @@ export function resizeRoom(candidate: LayoutCandidate, op: { floorLevel: number;
     return { success: false, candidate: null, findings: [], error: `Resize area ${newArea.toFixed(2)} > maxArea ${space.constraints.maxArea}`, attemptedOperation: { kind: 'resize', ...op } };
   }
 
-  // Site containment
   const anyFloor = floor as any;
   const buildableBoundary = anyFloor.buildableBoundary;
   if (buildableBoundary && !roomPolygonInsideBuildable(newPoly, buildableBoundary)) {
     return { success: false, candidate: null, findings: [], error: `Resize outside buildable`, attemptedOperation: { kind: 'resize', ...op } };
   }
 
-  // Overlap with locked rooms
   for (const other of floor.spaces) {
     if (other.id === space.id) continue;
     if (isLocked(other, 'position') || isLocked(other, 'geometry')) {
@@ -277,6 +255,10 @@ export function resizeRoom(candidate: LayoutCandidate, op: { floorLevel: number;
   if (hardSite.length > 0) {
     return { success: false, candidate: null, findings: vr.findings, error: `Resize results in HARD site containment`, attemptedOperation: { kind: 'resize', ...op } };
   }
+  const hardConstraints = getHardConstraintFindings(vr.findings);
+  if (hardConstraints.length > 0) {
+    return { success: false, candidate: null, findings: vr.findings, error: `Resize violates HARD parametric constraints: ${hardConstraints.map(h => h.code).join(', ')}`, attemptedOperation: { kind: 'resize', ...op } };
+  }
 
   cloned.findings = vr.findings;
   cloned.valid = vr.ok;
@@ -285,8 +267,6 @@ export function resizeRoom(candidate: LayoutCandidate, op: { floorLevel: number;
 }
 
 function inferLNotch(poly: any[], bounding: Rect): { notchWidth: number; notchLength: number; corner: 'ne' | 'nw' | 'se' | 'sw' } | null {
-  // For L-shape 6 verts, bounding rect minus polygon area gives notch area, but we need dimensions
-  // Simplified: check which corner of bounding rect is missing
   const br = bounding;
   const corners = [
     { x: br.x, y: br.y, c: 'sw' as const },
@@ -300,22 +280,14 @@ function inferLNotch(poly: any[], bounding: Rect): { notchWidth: number; notchLe
       if (Math.abs(p.x - corner.x) < 1e-3 && Math.abs(p.y - corner.y) < 1e-3) { inside = true; break; }
     }
     if (!inside) {
-      // Found missing corner
-      // Estimate notch dimensions from polygon extents
-      // For ne missing, notch is top-right
-      // Find concave vertex
       let concave: any = null;
       for (let i = 0; i < poly.length; i++) {
         const prev = poly[(i - 1 + poly.length) % poly.length];
         const curr = poly[i];
         const next = poly[(i + 1) % poly.length];
-        // Simple concave detection: if interior angle > 180, cross product sign differs
-        // For orthogonal, we can detect by checking if both prev and next are on same side
-        // We'll approximate: find vertex where both adjacent edges go inward
         const dx1 = curr.x - prev.x, dy1 = curr.y - prev.y;
         const dx2 = next.x - curr.x, dy2 = next.y - curr.y;
         const cross = dx1 * dy2 - dy1 * dx2;
-        // For CCW, concave has negative cross
         if (cross < -1e-6) { concave = curr; break; }
       }
       if (!concave) return null;
@@ -334,49 +306,55 @@ function inferLNotch(poly: any[], bounding: Rect): { notchWidth: number; notchLe
 }
 
 /**
- * Bounded repair: try to resolve overlaps among unlocked rooms by minimal nudging
+ * Bounded repair: try to resolve overlaps among unlocked rooms by minimal nudging and shrinking
  * Deterministic, bounded iterations, no explosion
  */
 function boundedRepair(floor: Floor, editedSpaceId: string): { success: boolean; error?: string } {
   for (let iter = 0; iter < BOUNDED_REPAIR_MAX_ITER; iter++) {
     let hasOverlap = false;
+    let repairedInIter = false;
     for (let i = 0; i < floor.spaces.length; i++) {
       for (let j = i + 1; j < floor.spaces.length; j++) {
         const a = floor.spaces[i];
         const b = floor.spaces[j];
-        if (a.id === editedSpaceId && isLocked(a, 'position')) continue; // edited is already checked
+        if (a.id === editedSpaceId && isLocked(a, 'position')) continue;
         if (roomPolygonsOverlap(a.polygon, b.polygon)) {
-          // If both locked, fail
           if ((isLocked(a, 'position') || isLocked(a, 'geometry')) && (isLocked(b, 'position') || isLocked(b, 'geometry'))) {
             return { success: false, error: `Unresolvable overlap between locked rooms ${a.id} and ${b.id}` };
           }
-          // Try to move the unlocked one that is not the edited space, or the one with lower priority
           let toMove: Space | null = null;
           if (a.id === editedSpaceId) toMove = b;
           else if (b.id === editedSpaceId) toMove = a;
           else {
-            // Move the one that is not locked
             if (!isLocked(a, 'position') && !isLocked(a, 'geometry')) toMove = a;
             else if (!isLocked(b, 'position') && !isLocked(b, 'geometry')) toMove = b;
           }
           if (!toMove) {
             return { success: false, error: `Overlap but no movable room ${a.id} vs ${b.id}` };
           }
-          // Simple nudge: try 4 directions by step
+          // Try nudge first, then shrink
           const moved = tryNudge(toMove, floor, editedSpaceId);
-          if (!moved) {
-            // If cannot nudge, fail repair
+          if (moved) {
+            repairedInIter = true;
             hasOverlap = true;
-          } else {
-            hasOverlap = true;
+            continue;
           }
+          const shrunk = tryShrink(toMove, floor, editedSpaceId);
+          if (shrunk) {
+            repairedInIter = true;
+            hasOverlap = true;
+            continue;
+          }
+          hasOverlap = true;
         }
       }
     }
     if (!hasOverlap) break;
+    if (!repairedInIter && hasOverlap) {
+      // No progress in this iteration, break to final check
+      break;
+    }
   }
-  // Final check: any remaining overlap among unlocked rooms is allowed to be flagged as HARD by validation, but we try to minimize
-  // For Phase 11, we allow repair to leave some overlaps if they involve edited room? Actually we should fail if overlap remains with locked rooms, else let validation catch
   for (let i = 0; i < floor.spaces.length; i++) {
     for (let j = i + 1; j < floor.spaces.length; j++) {
       const a = floor.spaces[i];
@@ -404,18 +382,12 @@ function tryNudge(space: Space, floor: Floor, editedId: string): boolean {
     const newPoly = translateRoomPolygon(space.polygon, step.dx, step.dy);
     if (!validateRoomPolygon(newPoly).valid) continue;
     if (buildableBoundary && !roomPolygonInsideBuildable(newPoly, buildableBoundary)) continue;
-    // Check overlap with all other spaces except itself
     let overlaps = false;
     for (const other of floor.spaces) {
       if (other.id === space.id) continue;
       if (roomPolygonsOverlap(newPoly, other.polygon)) {
-        // If other is edited space, we already know they overlap, but nudging might reduce?
-        // Allow overlap with edited space to be resolved iteratively
         if (other.id === editedId) { overlaps = true; break; }
-        // If other is locked, cannot overlap
         if (isLocked(other, 'position') || isLocked(other, 'geometry')) { overlaps = true; break; }
-        // For unlocked, we allow temporary overlap, will be resolved in next iter
-        // But for this simple check, we consider any overlap as bad to avoid cascading
         overlaps = true;
         break;
       }
@@ -430,17 +402,112 @@ function tryNudge(space: Space, floor: Floor, editedId: string): boolean {
   return false;
 }
 
+/**
+ * Phase 11.1 — Bounded shrink repair
+ * Only unlocked rooms may shrink, never below minArea/minWidth/minLength/hard constraints
+ * Deterministic order, bounded attempts (step 0.1m, max 0.5m)
+ */
+function tryShrink(space: Space, floor: Floor, editedId: string): boolean {
+  if (isLocked(space, 'size') || isLocked(space, 'geometry')) return false;
+  const anyFloor = floor as any;
+  const buildableBoundary = anyFloor.buildableBoundary;
+
+  // Determine current dimensions
+  const curW = space.rect.w;
+  const curH = space.rect.h;
+  const curArea = space.area;
+
+  // Hard constraints
+  const minArea = space.constraints?.minArea ?? space.minArea ?? 1.0;
+  const minWidth = space.constraints?.minWidth ?? space.minWidth ?? 0.9;
+  const minLength = space.constraints?.minLength ?? space.minLength ?? 0.9;
+
+  // Try shrinking width, height, both in deterministic order
+  // Attempts: shrink W by 0.1..0.5, shrink H by 0.1..0.5, shrink both
+  const attempts: Array<{ w: number; h: number }> = [];
+  for (let i = 1; i <= BOUNDED_SHRINK_ATTEMPTS; i++) {
+    const dw = BOUNDED_SHRINK_STEP * i;
+    if (curW - dw >= minWidth - 1e-6 && curW - dw >= 0.9) {
+      attempts.push({ w: curW - dw, h: curH });
+    }
+  }
+  for (let i = 1; i <= BOUNDED_SHRINK_ATTEMPTS; i++) {
+    const dh = BOUNDED_SHRINK_STEP * i;
+    if (curH - dh >= minLength - 1e-6 && curH - dh >= 0.9) {
+      attempts.push({ w: curW, h: curH - dh });
+    }
+  }
+  for (let i = 1; i <= BOUNDED_SHRINK_ATTEMPTS; i++) {
+    const d = BOUNDED_SHRINK_STEP * i;
+    if (curW - d >= minWidth - 1e-6 && curH - d >= minLength - 1e-6 && curW - d >= 0.9 && curH - d >= 0.9) {
+      attempts.push({ w: curW - d, h: curH - d });
+    }
+  }
+
+  for (const att of attempts) {
+    if (att.w * att.h < minArea - 1e-6) continue;
+    if (att.w < 1.0 - 1e-6 || att.h < 1.0 - 1e-6) continue;
+
+    let newPoly;
+    if (space.shapeType === 'l-shape' && space.polygon.length === 6) {
+      const inferred = inferLNotch(space.polygon, space.rect);
+      if (inferred) {
+        const newBounding: Rect = { x: space.rect.x, y: space.rect.y, w: att.w, h: att.h };
+        const scaleW = att.w / curW;
+        const scaleH = att.h / curH;
+        const newNotchW = Math.min(inferred.notchWidth * scaleW, att.w * 0.5);
+        const newNotchH = Math.min(inferred.notchLength * scaleH, att.h * 0.5);
+        const lPoly = createLShapedRoomPolygon(newBounding, newNotchW, newNotchH, inferred.corner);
+        if (lPoly) newPoly = lPoly;
+        else newPoly = createRectangleRoomPolygon(newBounding);
+      } else {
+        const newBounding: Rect = { x: space.rect.x, y: space.rect.y, w: att.w, h: att.h };
+        newPoly = createRectangleRoomPolygon(newBounding);
+      }
+    } else {
+      const newBounding: Rect = { x: space.rect.x, y: space.rect.y, w: att.w, h: att.h };
+      newPoly = createRectangleRoomPolygon(newBounding);
+    }
+
+    if (!newPoly) continue;
+    const v = validateRoomPolygon(newPoly);
+    if (!v.valid) continue;
+    const newArea = polygonArea(newPoly);
+    if (newArea < minArea - 1e-6) continue;
+    if (space.constraints?.maxArea && newArea > space.constraints.maxArea + 1e-6) continue;
+    if (buildableBoundary && !roomPolygonInsideBuildable(newPoly, buildableBoundary)) continue;
+
+    let overlaps = false;
+    for (const other of floor.spaces) {
+      if (other.id === space.id) continue;
+      if (roomPolygonsOverlap(newPoly, other.polygon)) {
+        if (other.id === editedId) { overlaps = true; break; }
+        if (isLocked(other, 'position') || isLocked(other, 'geometry')) { overlaps = true; break; }
+        overlaps = true;
+        break;
+      }
+    }
+    if (overlaps) continue;
+
+    // Success — apply shrink preserving polygon authoritative, rect derived, area derived
+    space.polygon = newPoly;
+    space.rect = roomPolygonToBoundingRect(newPoly);
+    space.area = newArea;
+    if (newPoly.length === 6) space.shapeType = 'l-shape';
+    else if (newPoly.length === 4) space.shapeType = 'rectangle';
+    else space.shapeType = 'orthogonal';
+    return true;
+  }
+  return false;
+}
+
 function regenerateFloor(floor: Floor, candidate: LayoutCandidate) {
-  // Regenerate walls from canonical polygon
   floor.walls = generateWalls(floor.spaces, floor.level);
-  // Furniture
   floor.furniture = placeFurniture(floor.spaces);
-  // Openings — need accessSide from candidate metadata? Use south as default, but we have siteInput stored
   const anyCand = candidate as any;
   const accessSide = anyCand.siteInput?.accessSide ?? 'south';
   const { openings } = placeOpenings(floor, accessSide);
   floor.openings = openings;
-  // Re-link wallIds etc — similar to generator
   for (const w of floor.walls) {
     for (const id of w.spaceIds) {
       if (!id) continue;
@@ -524,7 +591,6 @@ export function setLShape(candidate: LayoutCandidate, op: { floorLevel: number; 
     return { success: false, candidate: null, findings: [], error: `Failed to create L-shape polygon with notch ${op.notchWidth}x${op.notchLength} corner ${op.notchCorner}`, attemptedOperation: { kind: 'set-l-shape', ...op } };
   }
 
-  // Check constraints
   const newArea = polygonArea(lPoly);
   if (space.constraints?.minArea && newArea < space.constraints.minArea - 1e-6) {
     return { success: false, candidate: null, findings: [], error: `L-shape area ${newArea.toFixed(2)} < minArea ${space.constraints.minArea}`, attemptedOperation: { kind: 'set-l-shape', ...op } };
@@ -533,14 +599,12 @@ export function setLShape(candidate: LayoutCandidate, op: { floorLevel: number; 
     return { success: false, candidate: null, findings: [], error: `L-shape area ${newArea.toFixed(2)} > maxArea ${space.constraints.maxArea}`, attemptedOperation: { kind: 'set-l-shape', ...op } };
   }
 
-  // Site containment
   const anyFloor = floor as any;
   const buildableBoundary = anyFloor.buildableBoundary;
   if (buildableBoundary && !roomPolygonInsideBuildable(lPoly, buildableBoundary)) {
     return { success: false, candidate: null, findings: [], error: `L-shape outside buildable`, attemptedOperation: { kind: 'set-l-shape', ...op } };
   }
 
-  // Overlap with locked rooms
   for (const other of floor.spaces) {
     if (other.id === space.id) continue;
     if (isLocked(other, 'position') || isLocked(other, 'geometry')) {
@@ -562,6 +626,15 @@ export function setLShape(candidate: LayoutCandidate, op: { floorLevel: number; 
 
   regenerateFloor(floor, cloned);
   const vr = validateLayout(cloned);
+  const hardSite = vr.findings.filter(f => f.severity === 'hard' && f.code.startsWith('SITE_'));
+  if (hardSite.length > 0) {
+    return { success: false, candidate: null, findings: vr.findings, error: `L-shape results in HARD site containment`, attemptedOperation: { kind: 'set-l-shape', ...op } };
+  }
+  const hardConstraints = getHardConstraintFindings(vr.findings);
+  if (hardConstraints.length > 0) {
+    return { success: false, candidate: null, findings: vr.findings, error: `L-shape violates HARD parametric constraints: ${hardConstraints.map(h => h.code).join(', ')}`, attemptedOperation: { kind: 'set-l-shape', ...op } };
+  }
+
   cloned.findings = vr.findings;
   cloned.valid = vr.ok;
   cloned.metrics = computeMetrics(cloned);

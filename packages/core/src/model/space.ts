@@ -87,7 +87,7 @@ export interface RoomLockState {
 /** Phase 11 — Room shape type, canonical polygon */
 export type RoomShapeType = 'rectangle' | 'l-shape' | 'orthogonal';
 
-/** Phase 11 — Parametric size constraint stored per space */
+/** Phase 11 — Parametric size constraint stored per space (canonical, includes zone/privacy) */
 export interface RoomSizeConstraint {
   minArea?: number;
   targetArea?: number;
@@ -95,6 +95,8 @@ export interface RoomSizeConstraint {
   minWidth?: number;
   minLength?: number;
   preferredAspectRatio?: number;
+  zone?: Zone;
+  privacy?: PrivacyBand;
 }
 
 export interface Space {

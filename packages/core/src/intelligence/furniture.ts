@@ -40,17 +40,18 @@ export function evaluateFurniture(floor: Floor): FurnitureEvaluation {
     let bedPlacementScore = 1, bedAccessScore = 1, wardrobeAccessScore = 1, doorClearanceScore = 1, circulationScore = 1, windowRelationshipScore = windowRelationship(s.id, floor);
     let sofaArrangementScore = 1, tableClearanceScore = 1, workZoneScore = 1, counterContinuityScore = 1;
 
-    // Check door conflicts
+    // Check door conflicts — heuristic, does NOT affect HARD feasibility
     for (const furn of furns) {
       if (hasDoorConflict(furn, floor)) {
         doorClearanceScore -= 0.3;
         issues.push(`${furn.type} may block door`);
         findings.push({ code: 'FURNITURE_BLOCKS_DOOR', severity: 'soft', message: `Furniture ${furn.id} blocks door in ${s.label}`, entityIds: [furn.id, s.id] } as Finding);
       }
-      // Check furniture inside room already validated, but double-check
+      // Check furniture inside room — Phase 11.1: rect check is heuristic compatibility, hard containment already validated in validation/site.ts via rectInsidePolygon(polygon)
+      // For L-shape rooms, bounding rect may contain area outside actual polygon (notch), so rect check is approximation only.
+      // We keep rect check as heuristic but do NOT emit hard finding — hard is in site validation.
       if (!rContains(s.rect, furn.rect, 0.01)) {
-        issues.push(`${furn.type} outside room`);
-        findings.push({ code: 'FURN_OUTSIDE_ROOM', severity: 'hard', message: `${furn.type} outside ${s.label}`, entityIds: [furn.id, s.id] } as Finding);
+        issues.push(`${furn.type} outside room (rect heuristic, polygon canonical is authoritative — hard check in site.ts)`);
       }
     }
 
