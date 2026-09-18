@@ -41,37 +41,77 @@ export function validateParametricConstraints(
   const findings: Finding[] = [];
   const byId = new Map(spaces.map(s => [s.id, s]));
 
+  // Precompute adjacency for all pairs present in constraints
+  const adjMap = new Map<string, boolean>(); // key `${fromId}|${toId}` -> adjacent
   for (const c of constraints) {
     const from = byId.get(c.fromId);
     const to = byId.get(c.toId);
     if (!from || !to) continue;
+    const key = `${c.fromId}|${c.toId}`;
+    if (!adjMap.has(key)) {
+      const shared = sharedWallEdges(from.polygon, to.polygon).length > 0;
+      const adjById = areAdjacentByWall(from, to);
+      adjMap.set(key, shared || adjById);
+    }
+  }
 
-    const shared = sharedWallEdges(from.polygon, to.polygon).length > 0;
-    const adjById = areAdjacentByWall(from, to);
-    const adjacent = shared || adjById;
+  // Group constraints that require existence (MUST_ADJACENT, MUST_BE_ADJACENT, DIRECT_ACCESS_REQUIRED) by toId
+  // For each toId, at least one fromId must be adjacent
+  const existenceGroups = new Map<string, ParametricAdjacencyConstraint[]>(); // toId -> list
+  const otherConstraints: ParametricAdjacencyConstraint[] = [];
 
-    // Phase 11.1: Hard vs soft preserved per spec, but for baseline preservation (402 tests) we downgrade hard adjacency to soft in validation pipeline.
-    // Hard enforcement remains via editing (size constraints hard, adjacency hard via lock/validation after edit) and explicit ROOM_CONSTRAINT_ findings.
-    // This avoids breaking 12x18 regression which expects 0 hard before parametric wiring.
-    // All CONSTRAINT_ findings are soft here; hard feasibility is via SITE_/GEO_/ROOM_CONSTRAINT_ only.
-    switch (c.kind) {
-      case 'MUST_ADJACENT':
-      case 'MUST_BE_ADJACENT':
-        if (!adjacent) {
-          findings.push({
-            code: 'CONSTRAINT_MUST_ADJACENT',
-            severity: 'soft',
-            message: `Constraint ${c.id}: ${from.label} must be adjacent to ${to.label} — ${c.note ?? ''} (HEURISTIC in Phase 11.1, hard via editing)`,
-            entityIds: [from.id, to.id],
-          });
-        }
+  for (const c of constraints) {
+    if (c.kind === 'MUST_ADJACENT' || c.kind === 'MUST_BE_ADJACENT' || c.kind === 'DIRECT_ACCESS_REQUIRED') {
+      // Hard or soft, we treat as existence per toId
+      if (!existenceGroups.has(c.toId)) existenceGroups.set(c.toId, []);
+      existenceGroups.get(c.toId)!.push(c);
+    } else {
+      otherConstraints.push(c);
+    }
+  }
+
+  // Validate existence groups
+  for (const [toId, group] of existenceGroups) {
+    const to = byId.get(toId);
+    if (!to) continue;
+    let satisfied = false;
+    let representative: ParametricAdjacencyConstraint | null = null;
+    for (const c of group) {
+      const key = `${c.fromId}|${c.toId}`;
+      const adjacent = adjMap.get(key) ?? false;
+      if (adjacent) {
+        satisfied = true;
         break;
+      }
+      if (!representative) representative = c;
+    }
+    if (!satisfied && representative) {
+      const from = byId.get(representative.fromId);
+      // Use declared strength
+      findings.push({
+        code: representative.kind === 'DIRECT_ACCESS_REQUIRED' ? 'CONSTRAINT_DIRECT_ACCESS' : 'CONSTRAINT_MUST_ADJACENT',
+        severity: representative.strength,
+        message: `Constraint ${representative.id}: ${from?.label ?? representative.fromId} must be adjacent to ${to.label} — ${representative.note ?? ''}`,
+        entityIds: [representative.fromId, toId],
+      });
+    }
+  }
+
+  // Validate other constraints per pair (MUST_BE_SEPARATED, PREFER_*, PRIVACY)
+  for (const c of otherConstraints) {
+    const from = byId.get(c.fromId);
+    const to = byId.get(c.toId);
+    if (!from || !to) continue;
+    const key = `${c.fromId}|${c.toId}`;
+    const adjacent = adjMap.get(key) ?? false;
+
+    switch (c.kind) {
       case 'MUST_BE_SEPARATED':
         if (adjacent) {
           findings.push({
             code: 'CONSTRAINT_MUST_SEPARATED',
-            severity: 'soft',
-            message: `Constraint ${c.id}: ${from.label} must be separated from ${to.label} — ${c.note ?? ''} (HEURISTIC in Phase 11.1)`,
+            severity: c.strength,
+            message: `Constraint ${c.id}: ${from.label} must be separated from ${to.label} — ${c.note ?? ''}`,
             entityIds: [from.id, to.id],
           });
         }
@@ -80,7 +120,7 @@ export function validateParametricConstraints(
         if (!adjacent) {
           findings.push({
             code: 'CONSTRAINT_PREFER_ADJACENT',
-            severity: 'soft',
+            severity: c.strength,
             message: `Constraint ${c.id}: ${from.label} prefer adjacent to ${to.label}`,
             entityIds: [from.id, to.id],
           });
@@ -90,18 +130,8 @@ export function validateParametricConstraints(
         if (adjacent) {
           findings.push({
             code: 'CONSTRAINT_PREFER_SEPARATED',
-            severity: 'soft',
+            severity: c.strength,
             message: `Constraint ${c.id}: ${from.label} prefer separated from ${to.label}`,
-            entityIds: [from.id, to.id],
-          });
-        }
-        break;
-      case 'DIRECT_ACCESS_REQUIRED':
-        if (!adjacent) {
-          findings.push({
-            code: 'CONSTRAINT_DIRECT_ACCESS',
-            severity: 'soft',
-            message: `Constraint ${c.id}: ${from.label} requires direct access to ${to.label} (HEURISTIC in Phase 11.1)`,
             entityIds: [from.id, to.id],
           });
         }
@@ -110,7 +140,7 @@ export function validateParametricConstraints(
         if (adjacent) {
           findings.push({
             code: 'CONSTRAINT_PRIVACY',
-            severity: 'soft',
+            severity: c.strength,
             message: `Constraint ${c.id}: ${from.label} privacy required from ${to.label} — direct adjacency`,
             entityIds: [from.id, to.id],
           });

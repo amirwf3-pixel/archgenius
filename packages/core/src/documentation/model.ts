@@ -358,4 +358,4 @@ export interface IntelligenceModel {
 }
 
 export const DOCUMENTATION_SCHEMA_VERSION = 6;
-export const SOFTWARE_VERSION = '0.11.1-phase11.1';
+export const SOFTWARE_VERSION = '0.11.2-phase11.2';

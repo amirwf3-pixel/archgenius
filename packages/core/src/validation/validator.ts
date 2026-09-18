@@ -60,7 +60,16 @@ export function validateLayout(candidate: LayoutCandidate): ValidationResult {
 
   findings.push(...validateSite(candidate));
 
-  findings.push(...candidate.findings); // generator/regulator pre-findings
+  // Include generator/regulator pre-findings, but deduplicate CONSTRAINT_/ROOM_CONSTRAINT_ etc that are already freshly validated
+  // to avoid double counting when validateLayout is called on a candidate that already had findings from previous validation (generator does cand.findings = vr.findings)
+  const existingKeys = new Set(findings.map(f => `${f.code}|${(f.entityIds||[]).join(',')}|${f.message}`));
+  for (const f of candidate.findings) {
+    const key = `${f.code}|${(f.entityIds||[]).join(',')}|${f.message}`;
+    if (!existingKeys.has(key)) {
+      findings.push(f);
+      existingKeys.add(key);
+    }
+  }
 
   const hard = findings.filter(f => f.severity === 'hard');
   const soft = findings.filter(f => f.severity === 'soft');

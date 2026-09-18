@@ -194,11 +194,15 @@ export function resizeRoom(candidate: LayoutCandidate, op: { floorLevel: number;
       const newNotchW = Math.min(inferred.notchWidth * scaleW, op.newWidth * 0.5);
       const newNotchH = Math.min(inferred.notchLength * scaleH, op.newHeight * 0.5);
       const lPoly = createLShapedRoomPolygon(newBounding, newNotchW, newNotchH, inferred.corner);
-      if (lPoly) newPoly = lPoly;
-      else newPoly = createRectangleRoomPolygon(newBounding);
+      if (lPoly) {
+        newPoly = lPoly;
+      } else {
+        // Phase 11.2: If L-shape preservation fails during resize, explicit failure, do not silently convert to rectangle
+        return { success: false, candidate: null, findings: [], error: `Resize failed to preserve L-shape for ${op.spaceId}`, attemptedOperation: { kind: 'resize', ...op } };
+      }
     } else {
-      const newBounding: Rect = { x: newX, y: newY, w: op.newWidth, h: op.newHeight };
-      newPoly = createRectangleRoomPolygon(newBounding);
+      // Phase 11.2: Cannot infer notch, explicit failure
+      return { success: false, candidate: null, findings: [], error: `Resize cannot infer L-shape notch for ${op.spaceId}`, attemptedOperation: { kind: 'resize', ...op } };
     }
   } else {
     const newBounding: Rect = { x: newX, y: newY, w: op.newWidth, h: op.newHeight };
@@ -458,11 +462,15 @@ function tryShrink(space: Space, floor: Floor, editedId: string): boolean {
         const newNotchW = Math.min(inferred.notchWidth * scaleW, att.w * 0.5);
         const newNotchH = Math.min(inferred.notchLength * scaleH, att.h * 0.5);
         const lPoly = createLShapedRoomPolygon(newBounding, newNotchW, newNotchH, inferred.corner);
-        if (lPoly) newPoly = lPoly;
-        else newPoly = createRectangleRoomPolygon(newBounding);
+        if (lPoly) {
+          newPoly = lPoly;
+        } else {
+          // Phase 11.2: Do NOT silently convert L-shape to rectangle — explicit failure path
+          continue;
+        }
       } else {
-        const newBounding: Rect = { x: space.rect.x, y: space.rect.y, w: att.w, h: att.h };
-        newPoly = createRectangleRoomPolygon(newBounding);
+        // Phase 11.2: Cannot infer notch, cannot preserve L-shape — explicit failure, do not convert to rectangle
+        continue;
       }
     } else {
       const newBounding: Rect = { x: space.rect.x, y: space.rect.y, w: att.w, h: att.h };

@@ -52,10 +52,9 @@ describe('Phase 11.1 F-01 constraint integration', () => {
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     const vr = validateLayout(bestCandidate);
-    // Should have CONSTRAINT_ findings (soft) from DEFAULT_RESIDENTIAL_CONSTRAINTS wiring
+    // Should have CONSTRAINT_ findings from DEFAULT_RESIDENTIAL_CONSTRAINTS wiring — now hard per declared strength
     const constraintFindings = vr.findings.filter(f => f.code.startsWith('CONSTRAINT_'));
-    expect(constraintFindings.length).toBeGreaterThanOrEqual(0); // may be 0 if layout satisfies all, but wiring exists
-    // Check that validateParametricConstraints is used: create instance constraints and validate
+    expect(constraintFindings.length).toBeGreaterThanOrEqual(0);
     const typeConstraints = DEFAULT_RESIDENTIAL_CONSTRAINTS.slice(0, 2).map(tc => ({
       id: tc.id,
       kind: tc.kind as any,
@@ -68,7 +67,7 @@ describe('Phase 11.1 F-01 constraint integration', () => {
     expect(Array.isArray(instance)).toBe(true);
   });
 
-  it('MUST_BE_ADJACENT alias handled', () => {
+  it('MUST_BE_ADJACENT alias handled as HARD', () => {
     const rectA = { x: 0, y: 0, w: 4, h: 4 };
     const rectB = { x: 10, y: 0, w: 4, h: 4 };
     const polyA = createRectangleRoomPolygon(rectA);
@@ -79,7 +78,7 @@ describe('Phase 11.1 F-01 constraint integration', () => {
       { id: 'alias', kind: 'MUST_BE_ADJACENT' as const, strength: 'hard' as const, fromId: 'a', toId: 'b' },
     ];
     const findings = validateParametricConstraints([spaceA, spaceB], constraints);
-    expect(findings.some(f => f.code === 'CONSTRAINT_MUST_ADJACENT')).toBe(true);
+    expect(findings.some(f => f.code === 'CONSTRAINT_MUST_ADJACENT' && f.severity === 'hard')).toBe(true);
   });
 });
 
