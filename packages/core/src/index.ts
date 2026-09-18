@@ -18,4 +18,6 @@ export * as Generator from './generator/generator.js';
 export * from './generator/generator.js';
 export * as StairSolver from './generator/stair-solver.js';
 export * from './generator/stair-solver.js';
+export * as Documentation from './documentation/index.js';
+export * from './documentation/index.js';
 export * from './pipeline.js';

@@ -1,5 +1,6 @@
 /**
  * High-level, UI-friendly API for ArchGenius core.
+ * Phase 7 adds documentation model & multi-output engine.
  */
 import type { ProjectInput, Project } from './model/project.js';
 import { PROJECT_SCHEMA_VERSION } from './model/project.js';
@@ -9,6 +10,14 @@ import { validateLayout, summarize } from './validation/validator.js';
 import { generateLayouts, validateInput } from './generator/generator.js';
 import { writeDXF, validateDXFStructure } from './dxf/writer.js';
 import { computeMetrics } from './optimizer/metrics.js';
+import { buildDocumentationModel } from './documentation/builder.js';
+import { generatePDF } from './documentation/pdf.js';
+import { generateXLSX } from './documentation/xlsx.js';
+import { buildQAReport } from './documentation/report.js';
+import { buildManifest } from './documentation/manifest.js';
+import type { DocumentationModel } from './documentation/model.js';
+import type { QAReport } from './documentation/report.js';
+import type { ProjectManifest } from './documentation/manifest.js';
 
 export interface GenerateOptions {
   strategies?: CandidateStrategy[];
@@ -44,8 +53,6 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     'alternative-zoning',
   ];
   const all = generateLayouts(project.input, strategies);
-  // Rank candidates: fewer constraint violations first, then higher usable-
-  // area ratio and daylight exposure. Tie-break by strategy order.
   const scored = all.map(c => ({ c, m: computeMetrics(c) }));
   scored.sort((a, b) => {
     if (a.m.constraintViolations !== b.m.constraintViolations)
@@ -77,6 +84,33 @@ export function exportDXF(candidate: LayoutCandidate, projectName = 'ArchGenius 
 
 export function summarizeValidation(candidate: LayoutCandidate): string {
   return summarize(validateLayout(candidate));
+}
+
+export function buildDocumentation(project: Project, candidate: LayoutCandidate): DocumentationModel {
+  return buildDocumentationModel(project, candidate);
+}
+
+export async function exportAll(project: Project, candidate: LayoutCandidate): Promise<{
+  docModel: DocumentationModel;
+  dxf: string;
+  pdf: Uint8Array;
+  xlsx: Uint8Array;
+  report: QAReport;
+  manifest: ProjectManifest;
+}> {
+  const docModel = buildDocumentationModel(project, candidate);
+  const dxf = writeDXF(candidate, project.input.name);
+  const pdf = await generatePDF(docModel, candidate);
+  const xlsx = await generateXLSX(docModel);
+  const report = buildQAReport(docModel);
+  const manifest = buildManifest(docModel, project, candidate);
+  // Mark outputs as generated
+  docModel.outputs.dxf.generated = true;
+  docModel.outputs.pdf.generated = true;
+  docModel.outputs.xlsx.generated = true;
+  docModel.outputs.report.generated = true;
+  docModel.outputs.manifest.generated = true;
+  return { docModel, dxf, pdf, xlsx, report, manifest };
 }
 
 export { generateLayouts, writeDXF, validateLayout, summarize, validateInput };
