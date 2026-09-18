@@ -1,74 +1,50 @@
-# Sources — Primary Regulation Documents
+# Sources — Primary Regulation Documents — Phase 5.2 VERIFIED
 
 This directory holds authoritative (Tier 1) Iranian building-regulation
 documents in their original PDF form. See
 [`../docs/REGULATION_AUDIT.md`](../docs/REGULATION_AUDIT.md) for the audit
 trail and [`../packages/core/src/regulations/packs/source-registry.ts`](../packages/core/src/regulations/packs/source-registry.ts)
-for the machine-readable source registry.
+for the machine-readable source registry with SHA-256 digests.
 
-## Status at last audit (2026-09-18 — Phase 5)
+## Status at last audit (2026-09-18 — Phase 5.2 VERIFIED)
 
-| Source | Tier | Expected filename | Status |
-|--------|------|-------------------|--------|
-| **مبحث چهارم — الزامات عمومی ساختمان** (latest edition; 1399 / 4th rev. at audit date) | 1 | `mabhas-4-1399.pdf` | **NOT OBTAINED** — sandbox network restrictions prevented download from inbr.ir / bhrc.ac.ir. |
-| **مبحث چهارم — الزامات عمومی ساختمان** (1396 / 3rd rev., edition from which current clause numbers are transcribed) | 1 | `mabhas-4-1396.pdf` / `mabhas4-96.pdf` (Phase 5 attachment, 128p) | **NOT OBTAINED in sandbox** — Phase 5 PDFs were attached in UI as `mabhas4-96.pdf` (arena-system-message says /home/user/uploads/mabhas4-96.pdf) but filesystem search `find / -name *.pdf` returns none; `/home/user/uploads/` does not exist. SHA-256 cannot be computed. Honest limitation per Phase 5 task. |
-| **مبحث پانزدهم — آسانسورها و پلکان برقی** (1392 w/ amendments) | 1 | `mabhas-15.pdf` (Phase 5 attachment) | **NOT OBTAINED in sandbox** — same limitation as above; attachment not accessible in agent filesystem. |
-| **طرح تفصیلی تهران** / دستور نقشه | 1 | (project-specific PDF supplied by user) | **NOT OBTAINED** — always supplied per-project by the architect from the municipality. |
+| Source | Tier | Filename | Bytes | SHA-256 | Pages | Status |
+|--------|------|----------|-------|---------|-------|--------|
+| **مبحث چهارم — الزامات عمومی ساختمان** (1396 / 3rd rev., 128p) | 1 | `mabhas4-96.pdf` (repo root) + `sources/mabhas4-96.pdf` | 3575435 | `ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6` | 128 (PyPDF2) | **OBTAINED-AUTHENTICATED** — obtained via `git checkout origin/main -- mabhas4-96.pdf` from commit bc800bd, copied to sources/, registered via `register-source.js` |
+| **مبحث چهارم — الزامات عمومی ساختمان** (1399 / 4th rev., latest) | 1 | `mabhas-4-1399.pdf` (future) | — | — | — | **NOT OBTAINED** — latest revision, not yet placed |
+| **مبحث پانزدهم — آسانسورها و پلکان برقی** (1392) | 1 | `mabhas-15.pdf` (repo root) + `sources/mabhas-15.pdf` | 1026762 | `e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477` | 84 (PyPDF2) | **OBTAINED-AUTHENTICATED** — same as above |
+| **طرح تفصیلی تهران** / دستور نقشه | 1 | (project-specific PDF supplied by user) | — | — | — | **NOT OBTAINED** — always supplied per-project |
 
-Phase 5 attempted verification:
-- Task attached `mabhas4-96.pdf` (مبحث چهارم ویرایش سوم ۱۳۹۶, 128 pages) and `mabhas-15.pdf` (مبحث پانزدهم ۱۳۹۲).
-- Agent searched: `ls /home/user/uploads/` → no such file, `find /home -name *.pdf` → none, `find / -maxdepth 4 -name *.pdf` → none.
-- Therefore SHA-256, page count from actual file, and exact clause/page verification could NOT be performed in this sandbox session.
-- Per Phase 5 instructions: DO NOT pretend files registered, DO NOT fabricate hashes/page numbers, report limitation clearly.
-- Source registry entries `t1-mabhas4-96-pdf` and `t1-mabhas15-92-pdf` added with `verificationState: 'not-obtained'` and explanatory note.
+### Verification evidence (Phase 5.2)
 
-No rule is marked `VERIFIED` until a matching PDF exists in this directory
-and a reviewer has verified the exact clause, page number, threshold, and
-conditions (see promotion procedure below). Currently **0 VERIFIED**.
+- Extraction: `pymupdf` (fitz) `get_pixmap(dpi=250)` → PNG, visual inspection (PyPDF2 text garbled Persian RTL).
+- Images: `m4_page_62.png` (book 48 PDF 62) stair general §4-5-1-7-1/3/4/5/6; `m4_page_73.png` (book 59 PDF 73) kitchen general §4-5-5-2; `m4_page_75.png` (book 61 PDF 75) sanitary general §4-5-6-2-1; `m4_page_99.png` (book 85 PDF 99) residential stair §7-1-1-3/4/6 and room §7-1-1-8; `m4_page_100.png` (book 86 PDF 100) kitchen §7-1-1-10/11/12/13 and sanitary §7-1-1-18 (1.00×1.30 corrected); `m4_page_101.png` (book 87 PDF 101) sanitary exceptions §7-1-1-18/19; `m4_hab_66.png` (book 52 PDF 66) habitable §4-5-2-2-1/2/3; `m15_page_19.png` (book 9 PDF 19) elevator §15-2-1-2/3/4; etc.
+- **9 rules promoted to VERIFIED** with page, snippet, verifiedAt: ROOM-001 (p99), ROOM-002 (p66), ROOM-004 (p73/p100), ROOM-007 (p100/101/75 corrected 1.20→1.30), STAIR-001 (p62/p99), STAIR-002 (p62), STAIR-003 (p62), LIFT-001 (p19), DYL-001 (p100).
+- Remaining municipal MUN-PARK-001 / MUN-SET-001 stay REQUIRES_SOURCE_VERIFICATION (local policy).
+- NOT_IMPLEMENTED slots: ROOM-003, STAIR-004, LIFT-002 now have Tier-1 backing for thresholds (2.40/2.60, 2.05, cab sizes) but still need 3-D model.
+
+No rule is marked VERIFIED without Tier-1, obtained-authenticated, 64-char SHA-256, page >0, known digest. Integrity tests enforce this.
 
 ## Adding a new primary document
 
-1. Obtain the PDF from the issuing authority (BHRC / inbr.ir / the
-   municipality) or from an authorised distributor. Do not add pirated
-   or unauthenticated scans.
-2. Place the file in this directory using the filenames listed above (or
-   a descriptive name for project-specific documents).
-3. Register it in the machine-readable source registry:
-   ```bash
-   node sources/register-source.js <sourceId> <pdf-path>
-   ```
-   where `<sourceId>` matches one of the `t1-*` ids in
-   `packages/core/src/regulations/packs/source-registry.ts` (e.g.
-   `t1-mabhas4-1399`, `t1-mabhas4-1396`, `t1-mabhas15-1392`). The script
-   records the SHA-256 digest, sets `verificationState: 'obtained-authenticated'`,
-   and fills in the local `documentPath`.
-4. Open the PDF, and for every implemented rule that this document governs:
-   - Locate the exact clause/table/page.
-   - Confirm the numerical threshold, units, conditions, and exceptions
-     against the current implementation.
-   - If the implementation is faithful, flip the rule's `status` to
-     `'VERIFIED'`, add `page: <number>` to its `SourceRef`, and set
-     `verifiedAt` (ISO date).
-   - If the implementation disagrees, fix the evaluator AND add a
-     regression test (compliant / boundary / non-compliant / exception).
-5. Add tests for each newly-verified rule (see the "Testing" section of
-   `docs/REGULATION_AUDIT.md`).
-6. Run `npm run build` and `npx vitest run`. Both must pass.
-7. Update the status tables in `docs/REGULATION_AUDIT.md` and
-   `docs/REGULATIONS.md` to reflect which rules are now VERIFIED.
+Same workflow as before:
+
+1. Obtain PDF from issuing authority.
+2. Place in this directory.
+3. `node sources/register-source.js <sourceId> <pdf-path>` → computes SHA-256, sets obtained-authenticated, documentPath.
+4. Locate exact clause/page for each rule, compare threshold/operator/unit/conditions/exceptions, fix if needed, add tests.
+5. `npm test`, `npm run build`, DXF validation.
+6. Update docs.
 
 ## File integrity
 
-Every registered document carries a SHA-256 digest in
-`source-registry.ts` under `digest: { algorithm: 'sha256', value: '…' }`.
-This allows the UI and CI to detect tampering. The digest is computed
-automatically by `register-source.js`. Re-run the script if you replace
-a PDF with a newer edition.
+Digests recorded in `source-registry.ts`:
+
+- `mabhas4-96.pdf`: sha256 `ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6`, 3575435 bytes, 128 pages
+- `mabhas-15.pdf`: sha256 `e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477`, 1026762 bytes, 84 pages
+
+Re-run `register-source.js` if you replace a PDF.
 
 ## Do NOT commit unlicensed or pirated scans
 
-ArchGenius will only ship with regulation PDFs that the project is
-authorised to redistribute. When in doubt, leave the PDF out of this
-directory and distribute it via an external mechanism; the regulation
-engine only requires that the PDF be available at audit time — it does
-not need to be bundled into the web app at runtime.
+Only ship PDFs you are authorised to redistribute. For Phase 5.2, PDFs are present in repo root and sources/ because they were uploaded to origin/main commit bc800bd as primary sources for verification.

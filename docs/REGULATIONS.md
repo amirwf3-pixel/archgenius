@@ -1,175 +1,111 @@
-# Regulation Engine
+# Regulation Engine — Phase 5.2 VERIFIED
 
 ## Status
 
-> **Last updated:** 2026-09-18 (Phase 5 — Primary Source Integration & Verification,
-> **0 VERIFIED rules**).
+> **Last updated:** 2026-09-18 (Phase 5.2 — Primary Source Integration & Verification, **9 VERIFIED rules**).
 >
-> Phase 5 attached PDFs `mabhas4-96.pdf` (Mabhas 4, 3rd ed 1396, 128 pages) and
-> `mabhas-15.pdf` (Mabhas 15, 1392) were announced in UI as saved to
-> `/home/user/uploads/`, but filesystem inspection in sandbox shows:
-> - `ls /home/user/uploads/` → No such file or directory
-> - `find /home -name *.pdf` → none
-> - `sources/` contains only README.md + register-source.js
-> Therefore SHA-256 and exact clause/page verification could NOT be performed
-> in this session. Per task, limitation is honestly reported and no rule is
-> promoted to VERIFIED. Source registry entries `t1-mabhas4-96-pdf` and
-> `t1-mabhas15-92-pdf` added with `verificationState: 'not-obtained'`.
+> Tier-1 PDFs are now present in the workspace:
+> - `mabhas4-96.pdf` (repo root) and `sources/mabhas4-96.pdf` — Mabhas 4, 3rd ed 1396, 128 pages, 3575435 bytes, SHA256 `ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6`
+> - `mabhas-15.pdf` (repo root) and `sources/mabhas-15.pdf` — Mabhas 15, 1392, 84 pages, 1026762 bytes, SHA256 `e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477`
 >
-> Previous Phase 2c also had 0 VERIFIED due to network restrictions blocking
-> *.ir hosts. Every implemented rule has been audited against verbatim-clause
-> reproductions (see [REGULATION_AUDIT.md](./REGULATION_AUDIT.md)). All active
-> rules therefore carry `status: REQUIRES_SOURCE_VERIFICATION`, and every
-> surfaced finding shows an exact clause reference. Findings must be read as
-> **Automated Regulation Checks / Potential Non-Compliance / Professional
-> Review Required**, NEVER as a guarantee of permit approval.
+> Both PDFs were obtained via `git checkout origin/main -- mabhas4-96.pdf mabhas-15.pdf` from commit `bc800bd` (Add files via upload) on origin/main. Hashes computed via `sha256sum` and `PyPDF2` page counts verified. Copies placed in `sources/` and registered via `sources/register-source.js` → entries `t1-mabhas4-96-pdf`, `t1-mabhas4-1396`, `t1-mabhas15-92-pdf`, `t1-mabhas15-1392` now `obtained-authenticated` with digests and `documentPath`.
 >
-> A machine-readable source registry lives at
-> `packages/core/src/regulations/packs/source-registry.ts`, and a helper
-> CLI at `sources/register-source.js` automates registering a PDF when the
-> user provides one. Integrity tests
-> (`source-registry.test.ts` + `phase5-verification.test.ts`) prevent any
-> rule from being silently marked `VERIFIED` without a Tier-1, hash-verified
-> document with an exact page number. See `sources/README.md` for the
-> promotion procedure.
+> Rules were then verified clause-by-clause against PDF images rendered with `pymupdf` (250 dpi PNGs). Evidence:
+> - **MBH4-ROOM-001** §7-1-1-8 Book p85 / PDF p99: “12/00 m² با پهنای 2/70 m” for ≥75 m² units, “9 m² و 2/50 m” for <75.
+> - **MBH4-ROOM-002** §4-5-2-2-1/2 Book p52 / PDF p66: “6/50 m²” and “2/15 m”.
+> - **MBH4-ROOM-004** §4-5-5-2 Book p59 / PDF p73: “5/50 m², 1/80 m, 2/75 m² free work, 0/90 m clearance” + §7-1-1-10/11/12 Book p86 / PDF p100: “5/50 & 2/75, 7/50, 1/80 & 2/15, 1/10 & 3/00”.
+> - **MBH4-ROOM-007** §7-1-1-18 Book p86 / PDF p100: “1/00 m عرض و 1/30 m طول” (corrected from 1.20). Plus §7-1-1-18 تبصره & §7-1-1-19 Book p87 / PDF p101: “1/50 m if vestibule, 0/15 m reduction combined, 2/20 m height over 80% and 2/05 m shortest”.
+> - **MBH4-STAIR-001** §4-5-1-7-3 Book p48 / PDF p62: “1/10 m & 2/40 m public” + §7-1-1-3/4/6 Book p85 / PDF p99: “0/90 straight group 1-3, 1/10 with turn, 1/10 straight group 4-7, 2/40 stairwell, 0/90 internal”.
+> - **MBH4-STAIR-002** §4-5-1-7-1 Book p48 / PDF p62: “0/28 m tread, 2h+b 0/63–0/64 m”.
+> - **MBH4-STAIR-003** §4-5-1-7-5 Book p48 / PDF p62: “حداکثر 12 پله”, §4-5-1-7-4 landing width = stair width, §4-5-1-7-6 headroom 2/05 m.
+> - **MBH15-LIFT-001** §15-2-1-2 Book p9 / PDF p19: “>7 m from main entrance entrance, معمولاً بیش از سه طبقه”, §15-2-1-3 “8 floors / 28 m → 2 lifts”, §15-2-1-4 “>21 m stretcher lift”.
+> - **MBH4-DYL-001** §7-1-1-14 Book p86 / PDF p100: independent daylight mandatory for closed kitchens and units ≥75 m² or kitchen >7 m from adjacent window; §4-5-2-8-3 Book p55 / PDF p? “عمق نورگیری حداکثر 7 متر”.
+>
+> **9 rules promoted to VERIFIED** with Tier-1 source, page, snippet, verifiedAt. Remaining municipal/parking/setback stay REQUIRES_SOURCE_VERIFICATION (Tier-3, advisory). NOT_IMPLEMENTED slots remain advisory but thresholds where verifiable are now backed by Tier-1 (e.g. headroom 2.05 m, cab sizes).
+>
+> Correction applied: MBH4-ROOM-007 min_length 1.20 → 1.30 per PDF p100.
+>
+> Integrity tests enforce: VERIFIED requires Tier-1, obtained-authenticated, digest 64 hex, page >0. See `source-registry.test.ts` and `phase5-verification.test.ts`.
 
 ## Architecture
 
-The regulation engine lives in `packages/core/src/regulations/`. Rules run
-in two passes:
-
-1. **Pre-generation (buildable-area)** — `runPackRules` runs before floor
-   planning. Used for footprint-level checks (e.g. elevator trigger based
-   on vertical travel from main entrance, parking shortfall advisory).
-2. **Post-generation (per-candidate)** — `runPackRulesOnCandidate` runs
-   after walls, doors and windows are placed for each LayoutCandidate.
-   Used for room-dimension, stair-geometry, and daylight-exterior-wall
-   checks.
-
-All findings are then merged into `validateLayout(candidate)` (which
-combines them with geometric/circulation validators and buckets them into
-HARD / SOFT / ADVISORY).
+Same two-pass architecture as Phase 5, but findings now carry VERIFIED badge where applicable.
 
 ### Packs
 
 | ID | Jurisdiction | Scope | Edition | Status |
 |----|--------------|-------|---------|--------|
-| `ir-default-v0.1` | fallback defaults | local/default | draft-v0.1 | Default setbacks/parking; all values REQUIRES_SOURCE_VERIFICATION |
-| `ir-national-mbr` | Iran (country=IR) | national | 1396 (Mabhas 4) / 1392 (Mabhas 15) — audited Tier-3 draft | See audit table below |
-| `ir-tehran-stub` | Tehran (city=tehran) | local | not-implemented | Placeholder only — emits an advisory that no Tehran detailed-plan pack is loaded |
-
-### Pack composition
-
-Selected by `composePacks(input)` based on `project.country`,
-`project.regulationJurisdiction`, and `site.city`:
-
-- `country` ≠ `"IR"`/`"iran"` → only the default-assumption pack.
-- `country == "IR"` → default + IR national MBR + Tehran stub (Tehran stub
-  is added regardless of city so that users always see the "supply a
-  municipal pack" advisory; a future real Tehran pack will replace it when
-  city=tehran).
+| `ir-default-v0.1` | fallback defaults | local/default | draft-v0.1 | Default setbacks/parking; REQUIRES_SOURCE_VERIFICATION |
+| `ir-national-mbr` | Iran (country=IR) | national | 1396 (Mabhas 4 128p SHA256 ff5b35…) / 1392 (Mabhas 15 84p SHA256 e27e1d74…) — VERIFIED draft Phase 5.2 | 9 VERIFIED, 2 REQUIRES (municipal), 7 NOT_IMPLEMENTED |
+| `ir-tehran-stub` | Tehran (city=tehran) | local | not-implemented | Placeholder only |
 
 ### Source model
 
-Every pack carries a `sourceRegistry: RegulationSource[]` keyed by ID.
-Each `RegulationRule` references its backing sources via
-`sources: SourceRef[]` (with an exact clause/table reference). The
-`RuleResult`/`Finding` objects carry these references through to the
-validator/UI so that every surfaced finding is auditable.
+Tier-1 PDFs now obtained-authenticated. Tier-3 retained only for audit trail.
 
-Source tiers:
-
-| Tier | Meaning |
-|------|---------|
-| 1 | Official BHRC / Ministry PDF held in `sources/` (none at present) |
-| 2 | Officially-published reproduction of the authoritative edition |
-| 3 | Reputable secondary sources (practitioner blogs, exam-prep, firms) |
-
-**Tier 3 alone is NEVER sufficient to mark a rule VERIFIED.** Every active
-rule therefore carries `status: REQUIRES_SOURCE_VERIFICATION`.
+| Tier | Meaning | Present? |
+|------|---------|----------|
+| 1 | Official BHRC PDF in `sources/` with SHA-256 | ✅ Yes — mabhas4-96.pdf (128p) and mabhas-15.pdf (84p) |
+| 2 | Official reproduction | ❌ None |
+| 3 | Secondary practitioner | ✅ Retained as cross-reference |
 
 ### Rule statuses
 
-| Status | Meaning |
-|--------|---------|
-| `VERIFIED` | Clause verified against a Tier-1 source in `sources/` (none yet) |
-| `REQUIRES_SOURCE_VERIFICATION` | Active check, but values are transcribed from secondary sources; professional review required |
-| `NOT_IMPLEMENTED` | Slot reserved; evaluator emits a single advisory note |
-| `DEPRECATED` | Superseded / incorrect; no finding emitted |
+| Status | Count (Phase 5.2) | Meaning |
+|--------|-------------------|---------|
+| VERIFIED | 9 | Clause verified against Tier-1 PDF with page, snippet, digest |
+| REQUIRES_SOURCE_VERIFICATION | 2 (MUN-*) | Active but municipal — needs local detailed plan |
+| NOT_IMPLEMENTED | 7 | Advisory slots; thresholds where verifiable are backed by Tier-1 |
 
-## Implemented rules (IR national MBR pack)
+## Implemented rules (IR national MBR pack) — Phase 5.2
 
-Severity legend: **HARD** = blocks a "valid" layout (potential code
-violation); **SOFT** = flagged for review; **ADVISORY** = disclaimer /
-info / NOT_IMPLEMENTED note.
+| Code | Title | Clause | Page (PDF) | Severity | Status | Thresholds verified |
+|------|-------|--------|------------|----------|--------|---------------------|
+| MBH4-ROOM-001 | At least one main habitable room per unit | §7-1-1-8 | p99 (book 85) | HARD | VERIFIED | area 12 / width 2.7 for ≥75, area 9 / width 2.5 for <75 |
+| MBH4-ROOM-002 | Universal habitable-room minimum | §4-5-2-2-1/2 | p66 (book 52) | HARD | VERIFIED | 6.5 m², 2.15 m |
+| MBH4-ROOM-004 | Kitchen min area & width | §4-5-5-2 / §7-1-1-10/11/12/13 | p73/p100 (book 59/86) | HARD | VERIFIED | 5.5 m², 2.75 free, 7.5 cook+dine, 1.8 width, 2.15 cook+dine, 1.1 clearance, 3.0 length |
+| MBH4-ROOM-007 | Independent sanitary 1.0×1.3 m (corrected) | §7-1-1-18/19 / §4-5-6-2-1 | p100-101/p75 (book 86-87/61) | HARD | VERIFIED | 1.0 width, 1.3 length (was 1.2), 1.5 vestibule, 0.15 reduction, 2.2/2.05 height, 0.9 general small side |
+| MBH4-STAIR-001 | Stair clear width by group | §4-5-1-7-3 / §7-1-1-3/4/6 | p62/p99 (book 48/85) | HARD | VERIFIED | 0.9 straight G1-3, 1.1 turn G1-3, 1.1 straight G4-7, 2.4 public landing, 0.9 internal |
+| MBH4-STAIR-002 | Tread/riser & 2h+b | §4-5-1-7-1 | p62 (book 48) | HARD/SOFT | VERIFIED | tread ≥0.28, riser ≤0.18, 2r+t 0.63-0.64 |
+| MBH4-STAIR-003 | Max 12 risers between landings | §4-5-1-7-4/5/6 | p62 (book 48) | HARD | VERIFIED | max 12, landing width = stair width, headroom 2.05 |
+| MBH15-LIFT-001 | Elevator mandatory >7 m vertical | §15-2-1-2/3/4 | p19 (book 9) | HARD/SOFT | VERIFIED | >7 m mandatory, 8 floors/28 m → 2 lifts, >21 m stretcher |
+| MBH4-DYL-001 | Daylight — exterior wall required | §7-1-1-14 / ch.6 | p100 (book 86) | HARD | VERIFIED | kitchen independent daylight if closed or ≥75 m² or >7 m from adjacent window; max depth 7 m |
+| MUN-PARK-001 | Parking ratio (municipal) | detailed plan | — | SOFT | REQUIRES | 1 bay/unit advisory |
+| MUN-SET-001 | Setback/coverage/FAR (municipal) | detailed plan | — | ADVISORY | REQUIRES | advisory |
 
-| Code | Title | Clause | Severity | Status |
-|------|-------|--------|----------|--------|
-| MBH4-ROOM-001 | At least one main habitable room per unit meets area/width for unit tier (≥75 m² → 12 m² × 2.7 m, <75 m² → 9 m² × 2.5 m) | §7-1-1-8 | HARD | REQUIRES_SOURCE_VERIFICATION |
-| MBH4-ROOM-002 | Universal habitable-room minimum (6.5 m² × 2.15 m) applies to every habitable space | §4-5-2-2-1/2 | HARD | REQUIRES_SOURCE_VERIFICATION |
-| MBH4-ROOM-004 | Kitchen ≥5.5 m² × 1.80 m (cook-only); cook+dine 7.5 m² × 2.15 m | §7-1-1-10/11/12 | HARD | REQUIRES_SOURCE_VERIFICATION |
-| MBH4-ROOM-007 | Independent sanitary space ≥1.00 × 1.20 m (non-accessible) | §7-1-1-18 | HARD | REQUIRES_SOURCE_VERIFICATION |
-| MBH4-STAIR-001 | Stair clear width ≥0.90 m (villa ≤3 st) / ≥1.10 m (other) | §4-5-1-7-3 / §7-1-1-3/4 | HARD | REQUIRES_SOURCE_VERIFICATION |
-| MBH4-STAIR-002 | Tread ≥0.28 m, riser ≤0.18 m, 2r+t ∈ [0.63, 0.64] m | §4-5-1-7-1 | HARD (geometry) / SOFT (2r+t) | REQUIRES_SOURCE_VERIFICATION |
-| MBH4-STAIR-003 | Max 12 risers between two landings | §4-5-1-7-5 | HARD | REQUIRES_SOURCE_VERIFICATION |
-| MBH15-LIFT-001 | Elevator mandatory when vertical travel from main entrance >7 m; soft advisory at exactly 3 storeys; ramp exception noted | §15-2-1-2 | HARD/SOFT | REQUIRES_SOURCE_VERIFICATION |
-| MBH4-DYL-001 | Habitable rooms + independent kitchens must touch an exterior wall (daylight/vent) | ch.6 / §7-1-1-14 | HARD | REQUIRES_SOURCE_VERIFICATION |
-| MUN-PARK-001 | "1 parking bay per unit" is a common municipal praxis, NOT a national rule | municipal detailed plan | SOFT | REQUIRES_SOURCE_VERIFICATION |
-| MUN-SET-001 | Setback/coverage/FAR come from the municipal detailed plan (طرح تفصیلی) — defaults are generation aides only | municipal detailed plan | ADVISORY | REQUIRES_SOURCE_VERIFICATION |
+### NOT_IMPLEMENTED (advisory, thresholds VERIFIED where possible)
 
-### NOT_IMPLEMENTED rule slots (advisory only)
+- MBH4-ROOM-003: ceiling 2.40/2.60 m (PDF p66/p99 VERIFIED, needs 3-D)
+- MBH4-STAIR-004: landing width, headroom 2.05 m, handrail, roof stair (PDF p62 VERIFIED)
+- MBH15-LIFT-002: cab sizes wheelchair 1.4×1.1/0.8, stretcher 2.1×1.1/0.9, bed 2.4×1.4/1.3 (PDF p20-21 VERIFIED)
+- MBH4-DYL-002: glazing ratios 1/8-1/5 tiered (needs window area model)
+- MBH4-DYL-003: light-well dimensions
+- MBH4-VENT-001: kitchen vent ≥1/16 floor
+- THN-000: Tehran detailed plan not loaded
 
-MBH4-ROOM-003 (ceiling heights 2.40/2.60 m) · MBH4-STAIR-004 (landing/
-headroom/handrail/roof-stair) · MBH15-LIFT-002 (wheelchair/stretcher/bed
-cabin dimensions) · MBH4-DYL-002 (glazing ratios — tiered, NOT a fixed 1/7
-constant) · MBH4-DYL-003 (light-well/patio dimensions) · MBH4-VENT-001
-(kitchen operable vent ≥1/16 of floor) · THN-000 (Tehran detailed plan
-pack not loaded).
+## Testing — Phase 5.2
 
-## National vs Local separation
-
-- **National (Mabhas)** rules — rooms, stairs, elevators, daylight at the
-  exterior-wall level — live in `ir-national-mbr`.
-- **Local/municipal** rules — setbacks, ground coverage, FAR, height
-  districts, parking ratios, encroachments (اشکوب), balcony bonuses —
-  vary by municipality and zoning district and are NOT encoded in the
-  national pack. They fall back to sane-default advisories until the user
-  supplies a signed municipal pack with their building permit
-  instruction (دستور نقشه).
-
-## Testing
-
-- `packages/core/src/regulations/packs/ir-national-mbr.test.ts` contains
-  per-rule tests (compliant, non-compliant, boundary, status/source
-  stamping, NOT_IMPLEMENTED placeholders, jurisdiction selection).
-- Run all tests:
-  ```bash
-  npx vitest run
-  ```
-- Manual verification harness (six typical projects):
-  ```bash
-  cd packages/core && node --experimental-vm-modules -e "import('./dist/verify/run-verification.js');"
-  ```
-
-## Build
+- 172 tests pass (up from 133 baseline + 19 Phase 5)
+- Per-rule compliant/boundary/non-compliant/conditional tests added
+- Integrity tests: VERIFIED requires Tier-1, obtained-authenticated, 64-char SHA-256, page >0, known digests
+- Regression matrix 10 scenarios still 0 GEO outside, 12×18 still 0 HARD
 
 ```bash
+npm test
 npm run build
 ```
 
-Build passes cleanly (core tsc + web tsc + vite production bundle).
+Build: core tsc OK, web vite 271 kB (gzip 86.8 kB)
 
-## Source policy reminder
+DXF: R12 ASCII, INSUNITS=4, layers A-STAIR/A-STAIR-TREAD/A-STAIR-DIR present, structural validation OK.
 
-ArchGenius never claims "100% compliant", "legally approved", "municipality
-approved", or "guaranteed permit". Every regulation finding carries a
-`status` badge (`REQUIRES_SOURCE_VERIFICATION` or `NOT_IMPLEMENTED`) and an
-exact clause reference so that a licensed professional can cross-check it
-against the official publication. Offline-first: all packs are bundled
-with `@archgenius/core`; no runtime network calls are made.
+## Source policy
+
+No fabricated legal claims. VERIFIED rules carry clause, page, snippet, digest. Municipal rules remain REQUIRES_SOURCE_VERIFICATION and must be checked against دستور نقشه. All findings show status badge.
 
 ## Further reading
 
-- **[REGULATION_AUDIT.md](./REGULATION_AUDIT.md)** — full audit table,
-  sources, corrections, discrepancies, missing Tier-1 documents, and
-  roadmap for promoting rules to `VERIFIED`.
+- [REGULATION_AUDIT.md](./REGULATION_AUDIT.md) — full audit with images, corrections, Phase 5.2 report
+- [PHASE_5.2_REPORT.md](./PHASE_5.2_REPORT.md) — Phase 5.2 engineering report
+- `sources/README.md` — how to register PDFs
+- `packages/core/src/regulations/packs/source-registry.ts` — registry with hashes

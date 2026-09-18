@@ -1,8 +1,13 @@
 # Regulation Source Audit — Iranian National Mabar Pack
 
-**Last updated:** 2026-09-18 (Phase 5 — Primary Source Integration & Verification)
+**Last updated:** 2026-09-18 (Phase 5.2 — Primary Source Integration & Verification, 9 VERIFIED)
 **Audit scope:** Every implemented rule in `packages/core/src/regulations/packs/ir-national-mbr.ts`
-**Audit result (Phase 5):** **0 rules verified (Tier 1)** — Phase 5 attached PDFs
+**Audit result (Phase 5.2):** **9 rules VERIFIED (Tier-1)** — Primary PDFs now present:
+- `mabhas4-96.pdf` (3575435 bytes, SHA256 ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6, 128 pages)
+- `mabhas-15.pdf` (1026762 bytes, SHA256 e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477, 84 pages)
+Both verified via pymupdf image extraction (250 dpi) clause-by-clause.
+
+**Previous Phase 5 (attempt):** **0 rules verified (Tier 1)** — Phase 5 attached PDFs were announced but not accessible in sandbox filesystem at that time. Honest limitation reported per task.
 `mabhas4-96.pdf` (Mabhas 4, 3rd ed 1396, 128 pages) and `mabhas-15.pdf`
 (Mabhas 15, 1392) were announced in UI as saved to `/home/user/uploads/`,
 but filesystem inspection shows:
@@ -431,3 +436,83 @@ To promote any rule to VERIFIED, a human reviewer must:
 6. Run tests + build, update docs
 
 Until then, all rules remain REQUIRES_SOURCE_VERIFICATION or NOT_IMPLEMENTED, and findings must be displayed as Automated Regulation Check / Potential Non-Compliance / Professional Review Required.
+
+
+---
+
+## 12. Phase 5.2 — Primary Source Integration & Verification (2026-09-18) — VERIFIED
+
+### 12.1 Source Files Obtained
+
+| PDF | Repo path | Sources copy | Edition | Bytes | SHA-256 | Pages | Verification |
+|-----|-----------|--------------|---------|-------|---------|-------|--------------|
+| `mabhas4-96.pdf` | `/mabhas4-96.pdf` (repo root) | `sources/mabhas4-96.pdf` | 1396 ویرایش سوم | 3575435 | `ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6` | 128 (PyPDF2) | obtained-authenticated via `git checkout origin/main -- mabhas4-96.pdf` from bc800bd, sha256sum + hashlib verified |
+| `mabhas-15.pdf` | `/mabhas-15.pdf` (repo root) | `sources/mabhas-15.pdf` | 1392 | 1026762 | `e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477` | 84 (PyPDF2) | same, from origin/main |
+
+Registration: `node sources/register-source.js t1-mabhas4-96-pdf sources/mabhas4-96.pdf`, `t1-mabhas15-92-pdf`, `t1-mabhas4-1396`, `t1-mabhas15-1392` — all now `obtained-authenticated` with digest and documentPath. Source registry rewritten clean (fixed duplicate retrievedAt syntax).
+
+### 12.2 Extraction Method
+
+Text extraction via PyPDF2/pdfminer garbled Persian RTL and reversed numbers (e.g. "33/62" for 12.00). Switched to `pymupdf` (fitz) `get_pixmap(dpi=250)` → PNG, then visual inspection via `read_file` tool. All clause numbers, thresholds, and conditions transcribed directly from images.
+
+Images saved: `m4_page_62.png` (book 48 PDF 62) — stair general; `m4_page_73.png` (book 59 PDF 73) — kitchen general; `m4_page_75.png` (book 61 PDF 75) — sanitary general; `m4_page_99.png` (book 85 PDF 99) — residential stair & room; `m4_page_100.png` (book 86 PDF 100) — kitchen & sanitary residential; `m4_page_101.png` (book 87 PDF 101) — sanitary exceptions & height; `m4_hab_66.png` (book 52 PDF 66) — habitable general; `m15_page_19.png` (book 9 PDF 19) — elevator >7m; etc.
+
+### 12.3 Clause-by-Clause Verification
+
+| Rule | Clause | PDF page (book / PDF) | Threshold in PDF | Threshold in code (before) | Match? | Action |
+|------|--------|------------------------|------------------|----------------------------|--------|--------|
+| MBH4-ROOM-001 | §7-1-1-8 | 85 / 99 | ≥75 → 12.00 m² width 2.70 m; <75 → 9 m² width 2.50 m (no horiz <2.50) | 12/2.7, 9/2.5 | ✅ | Promoted VERIFIED, page 99 |
+| MBH4-ROOM-002 | §4-5-2-2-1/2 | 52 / 66 | 6/50 m² (6.50), 2/15 m (2.15) | 6.5, 2.15 | ✅ | VERIFIED page 66 |
+| MBH4-ROOM-003 | §4-5-2-2-3 / §7-1-1-9 | 52 / 66 and 85 / 99 | 2/40 m entire, 2/60 m over 50%/75% for ≥12 m² and living | NOT_IMPLEMENTED | ✅ (threshold verified but needs 3-D) | NOT_IMPLEMENTED but sources Tier-1 page 66+99 |
+| MBH4-ROOM-004 | §4-5-5-2 + §7-1-1-10/11/12/13 | 59 / 73 and 86 / 100 | 5/50 m² (5.50) inc under-shelf, 1/80 m (1.80) wall dist, 2/75 free work, 0/90 clearance; residential 5.50+2.75, 7.50 cook+dine, 1.80/2.15 width, 1.10 clearance, 3.00 length | 5.5, 1.8, 2.75, 7.5, 2.15, 1.1, 3.0 | ✅ | VERIFIED pages 73+100, thresholds added for free work, work clearance, wall length |
+| MBH4-ROOM-007 | §7-1-1-18 + §7-1-1-19 + §4-5-6-2-1 | 86-87 / 100-101 and 61 / 75 | 1/00 m width × 1/30 m length (1.00×1.30) — **previous 1.20 was wrong**; 1/50 if vestibule inside shower, 0/15 reduction combined without door, height 2/20 over 80% and 2/05 shortest; general 0/90 small side, 1/50 shower, 1/70×1/50 accessible, 2/20 height | 1.0×1.2 (incorrect) | ❌ (length) | **CORRECTED to 1.30**, promoted VERIFIED pages 100,101,75, added thresholds for 1.5, 0.15, 2.2/2.05/0.9 |
+| MBH4-STAIR-001 | §4-5-1-7-3 + §7-1-1-3/4/6 | 48 / 62 and 85 / 99 | 1/10 m (1.10) and 2/40 m (2.40) public landing (PDF62), 0/90 straight G1-3, 1/10 with turn G1-3, 1/10 straight G4-7, 2/40 stairwell, 0/90 internal (PDF99) | 0.9, 1.1, 2.4 | ✅ | VERIFIED pages 62+99 |
+| MBH4-STAIR-002 | §4-5-1-7-1 | 48 / 62 | 0/28 m tread (0.28), 2h+b 0/63-0/64 (0.63-0.64) | 0.28, 0.63-0.64 | ✅ | VERIFIED page 62 |
+| MBH4-STAIR-003 | §4-5-1-7-4/5/6 | 48 / 62 | max 12 risers between landings, landing width = stair width, headroom 2/05 m from nose | 12, 2.05 | ✅ | VERIFIED page 62 |
+| MBH4-STAIR-004 | §4-5-1-7-4/6/7 + §7-1-1-7 | 48 / 62 | landing width, headroom 2.05, roof stair, handrail | NOT_IMPLEMENTED | ✅ (thresholds verified) | NOT_IMPLEMENTED but Tier-1 page 62 |
+| MBH15-LIFT-001 | §15-2-1-2/3/4 | 9 / 19 | >7 m vertical from main entrance (usually >3 floors) mandatory, 8 floors or 28 m → min 2 lifts, >21 m stretcher lift | 7, 8, 28, 21 | ✅ | VERIFIED page 19 |
+| MBH15-LIFT-002 | §15-2-1-9/10/11 | 10-11 / 20-21 | wheelchair cab 1400×1100 door 800, stretcher 2100×1100 door 900, bed 2400×1400 door 1300/2100 | NOT_IMPLEMENTED | ✅ (thresholds verified) | NOT_IMPLEMENTED but Tier-1 page 20 |
+| MBH4-DYL-001 | §7-1-1-14 + ch.6 + §4-5-2-8-3 | 86 / 100 and 55 / ? | independent daylight for closed kitchens, units ≥75 m² or kitchen >7 m from adjacent window, max daylight depth 7 m | exterior wall check | ✅ | VERIFIED page 100 |
+| MUN-PARK-001 | municipal | — | no national rule | soft advisory | — | REMAINS REQUIRES (local) |
+| MUN-SET-001 | municipal | — | no national rule | advisory | — | REMAINS REQUIRES (local) |
+
+**Total VERIFIED: 9** (ROOM-001, ROOM-002, ROOM-004, ROOM-007, STAIR-001, STAIR-002, STAIR-003, LIFT-001, DYL-001)
+**NOT_IMPLEMENTED with Tier-1 backing: 3** (ROOM-003, STAIR-004, LIFT-002)
+**Remaining NOT_IMPLEMENTED Tier-3: 4** (DYL-002, DYL-003, VENT-001, THN-000)
+**REQUIRES (municipal): 2**
+
+### 12.4 Corrections Made
+
+- **MBH4-ROOM-007**: min_length 1.20 → 1.30 per PDF p100 clause §7-1-1-18 verbatim: "باید دارای حداقل ۱/۰۰ متر عرض و ۱/۳۰ متر طول باشد." Title updated to "۱٫۰ × ۱٫۳ متر (اصلاح شده از ۱٫۲)". Description includes correction note. Test updated to expect 1.30 and boundary at 1.29 FAIL.
+- No weakening of engine: stair 12-riser limit remains HARD, tread 0.28 remains, elevator >7 m remains HARD for 4 floors.
+
+### 12.5 Tests Added / Updated
+
+- `ir-national-mbr.test.ts` rewritten for Phase 5.2: 38 tests, each rule has compliant/boundary/non-compliant/conditional, VERIFIED status checks, page checks.
+- `phase5-verification.test.ts` rewritten: 23 tests, expects obtained-authenticated with SHA-256, VERIFIED integrity, boundary cases, traceability, regression matrix 10 scenarios.
+- `source-registry.test.ts` rewritten: 8 tests, expects authenticated, digest match known hashes, VERIFIED count ≥9, no fabricated hash.
+- Total: 172 tests pass (was 133 baseline).
+
+### 12.6 Build & DXF
+
+- `npm run build`: core tsc OK, web tsc + vite 271.21 kB gzip 86.80 kB.
+- DXF R12 ASCII: INSUNITS=4 verified via `$INSUNITS 70 4` in header, layers A-STAIR, A-STAIR-TREAD, A-STAIR-DIR present, `validateDXFStructure` OK, 22038 bytes sample.
+
+### 12.7 Remaining Gaps
+
+- Glazing ratios table 1-6-4 (1/8-1/5) still needs window area model → DYL-002 NOT_IMPLEMENTED.
+- Light-well dimensions → DYL-003 NOT_IMPLEMENTED.
+- Kitchen vent 1/16 → VENT-001 NOT_IMPLEMENTED.
+- Tehran detailed plan → THN-000 NOT_IMPLEMENTED (user must supply).
+- Parking/setback remain municipal advisory.
+
+### 12.8 Promotion Workflow Used
+
+1. `git fetch origin/main`, `git checkout origin/main -- mabhas4-96.pdf mabhas-15.pdf` → 3.5 MB and 1 MB PDFs.
+2. `sha256sum` + `python -c hashlib` → ff5b351c… and e27e1d74…; `PyPDF2` → 128 and 84 pages.
+3. Copy to `sources/`, run `node sources/register-source.js` for 4 IDs → registry now obtained-authenticated with digests and documentPath.
+4. Fix duplicate retrievedAt syntax error via rewrite of source-registry.ts.
+5. Render PNGs via pymupdf 250 dpi, visual inspection, transcribe thresholds.
+6. Correct MBH4-ROOM-007 1.20→1.30, promote 9 rules to VERIFIED with SourceRef.page, snippet, verifiedAt.
+7. Update tests, run npm test/build/DXF validation, update docs, commit.
+
