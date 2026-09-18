@@ -1,0 +1,178 @@
+/**
+ * Source registry for the Iranian national Mabar pack.
+ *
+ * Phase 5.2: Primary PDFs are now present in repository root and sources/:
+ * - sources/mabhas4-96.pdf (Mabhas 4, 3rd ed 1396, 128 pages)
+ *   SHA256 ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6
+ * - sources/mabhas-15.pdf (Mabhas 15, 1392, 84 pages)
+ *   SHA256 e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477
+ *
+ * These are Tier-1 authoritative BHRC publications obtained via upload in Phase 5.2.
+ * Rules can now be promoted to VERIFIED after clause-by-clause verification.
+ */
+import type { RegulationSource } from '../types.js';
+
+export const SOURCE_REGISTRY_DEFAULTS: RegulationSource[] = [
+  // ===== TIER 1: Authoritative BHRC publications (NOW OBTAINED in Phase 5.2) =====
+  {
+    id: 't1-mabhas4-1399',
+    title: 'مبحث چهارم مقررات ملی ساختمان — الزامات عمومی ساختمان (ویرایش ۱۳۹۹، چهارم)',
+    publisher: 'دفتر مقررات ملی ساختمان، وزارت راه و شهرسازی (راه، مسکن و شهرسازی)',
+    edition: '1399 (ویرایش چهارم)',
+    jurisdiction: 'ir-national',
+    tier: 1,
+    uri: 'https://inbr.ir/',
+    documentPath: undefined,
+    verificationState: 'not-obtained',
+    retrievedAt: '2026-09-18',
+    note: 'Latest in-force revision at audit date. Supersedes 1396 for amended clauses. Not yet placed in sources/.',
+  },
+  {
+    id: 't1-mabhas4-1396',
+    title: 'مبحث چهارم مقررات ملی ساختمان — الزامات عمومی ساختمان (ویرایش ۱۳۹۶، سوم)',
+    publisher: 'دفتر مقررات ملی ساختمان، وزارت راه و شهرسازی',
+    edition: '1396 (ویرایش سوم)',
+    publicationDate: '1396',
+    jurisdiction: 'ir-national',
+    tier: 1,
+    uri: 'https://inbr.ir/',
+    documentPath: 'sources/mabhas4-96.pdf',
+    digest: { algorithm: 'sha256' as const, value: 'ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6' },
+    verificationState: 'obtained-authenticated' as const,
+    retrievedAt: '2026-09-18',
+    note: 'Phase 5.2 primary source: mabhas4-96.pdf (128 pages, ویرایش سوم ۱۳۹۶) committed to repo root and copied to sources/mabhas4-96.pdf. SHA-256 verified.',
+  },
+  {
+    id: 't1-mabhas4-96-pdf',
+    title: 'مبحث چهارم مقررات ملی ساختمان — ویرایش سوم ۱۳۹۶ (128 صفحه) — PDF پیوست شده در Phase 5.2',
+    publisher: 'دفتر مقررات ملی ساختمان، وزارت راه و شهرسازی',
+    edition: '1396 (ویرایش سوم) — 128 pages',
+    publicationDate: '1396',
+    jurisdiction: 'ir-national',
+    tier: 1,
+    uri: 'https://inbr.ir/',
+    documentPath: 'sources/mabhas4-96.pdf',
+    digest: { algorithm: 'sha256' as const, value: 'ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6' },
+    verificationState: 'obtained-authenticated' as const,
+    retrievedAt: '2026-09-18',
+    note: 'Phase 5.2 primary source: mabhas4-96.pdf, 3575435 bytes, 128 pages, SHA256 ff5b351c7c1dd9b25d589cdc74cf7d9d91f539df79ee3222385ba1ab82a5a2b6',
+  },
+  {
+    id: 't1-mabhas15-1392',
+    title: 'مبحث پانزدهم مقررات ملی ساختمان — آسانسورها و پلکان برقی (ویرایش ۱۳۹۲ با الحاقیه‌های بعدی)',
+    publisher: 'دفتر مقررات ملی ساختمان، وزارت راه و شهرسازی',
+    edition: '1392 (با الحاقیه‌ها)',
+    jurisdiction: 'ir-national',
+    tier: 1,
+    uri: 'https://inbr.ir/',
+    documentPath: 'sources/mabhas-15.pdf',
+    digest: { algorithm: 'sha256' as const, value: 'e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477' },
+    verificationState: 'obtained-authenticated' as const,
+    retrievedAt: '2026-09-18',
+    note: 'Phase 5.2 primary source: mabhas-15.pdf, 1026762 bytes, 84 pages, SHA256 e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477',
+  },
+  {
+    id: 't1-mabhas15-92-pdf',
+    title: 'مبحث پانزدهم مقررات ملی ساختمان — ویرایش ۱۳۹۲ — PDF پیوست شده در Phase 5.2',
+    publisher: 'دفتر مقررات ملی ساختمان، وزارت راه و شهرسازی',
+    edition: '1392',
+    publicationDate: '1392',
+    jurisdiction: 'ir-national',
+    tier: 1,
+    uri: 'https://inbr.ir/',
+    documentPath: 'sources/mabhas-15.pdf',
+    digest: { algorithm: 'sha256' as const, value: 'e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477' },
+    verificationState: 'obtained-authenticated' as const,
+    retrievedAt: '2026-09-18',
+    note: 'Phase 5.2 primary source: mabhas-15.pdf, 84 pages, SHA256 e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477',
+  },
+  {
+    id: 't1-tehran-tarh-tafsili',
+    title: 'طرح تفصیلی شهر تهران (آخرین ابلاغیه) به همراه دستورالعمل‌های اجرایی',
+    publisher: 'شهرداری تهران — معاونت شهرسازی و معماری',
+    jurisdiction: 'ir-tehran',
+    tier: 1,
+    verificationState: 'not-obtained',
+    note: 'Tehran detailed plan; district-specific (R-110, R-120, R-160, …). Must be supplied by the user with their building-permit instruction (دستور نقشه).',
+  },
+
+  // ===== TIER 3: Secondary-practitioner sources (referenced during audit) =====
+  {
+    id: 't3-mabhas4-1396-residential',
+    title: 'مبحث چهار (۱۳۹۶) — مقررات اختصاصی تصرف‌های مسکونی (فصل ۷-۱-۱، گروه م-۲)، بندهای ۱ تا ۲۶',
+    publisher: 'omranpooya.com (transcript of verbatim clauses)',
+    edition: '1396',
+    jurisdiction: 'ir-national',
+    tier: 3,
+    uri: 'https://omranpooya.com/construction/procedure/general-requirements/gr-7',
+    verificationState: 'not-obtained',
+    retrievedAt: '2026-09-18',
+    note: 'Used as Tier-3 cross-reference for §7-1-1-3, §7-1-1-4, §7-1-1-8, etc.',
+  },
+  {
+    id: 't3-mabhas4-1396-stair',
+    title: 'مبحث چهار (۱۳۹۶) بند ۴-۵-۱-۷ راه‌پله‌ها (اجرا) — نقل verbatim زیربندها',
+    publisher: 'manexgroup.net (engineer practitioner summary with quoted sub-clauses)',
+    edition: '1396',
+    jurisdiction: 'ir-national',
+    tier: 3,
+    uri: 'https://manexgroup.net/implementation-building-stairs/',
+    verificationState: 'not-obtained',
+    retrievedAt: '2026-09-18',
+    note: 'Source for §4-5-1-7-1 (tread 0.28 m, 2r+t = 0.63–0.64 m), §4-5-1-7-3 (width 1.10 m / 2.40 m public), etc.',
+  },
+  {
+    id: 't3-mabhas4-1396-habitable',
+    title: 'مبحث چهار (۱۳۹۶) بند ۴-۵-۲-۲ — فضاهای اقامت (الزامات عمومی)',
+    publisher: 'sandbadstudio.ir (instructor site, verbatim clause quotation)',
+    edition: '1396',
+    jurisdiction: 'ir-national',
+    tier: 3,
+    uri: 'https://sandbadstudio.ir/bedroom-lvr-height/',
+    verificationState: 'not-obtained',
+    retrievedAt: '2026-09-18',
+    note: 'Source for §4-5-2-2-1 (6.50 m²), §4-5-2-2-2 (2.15 m), §4-5-2-2-3 (2.40 m height).',
+  },
+  {
+    id: 't3-mabhas15-1392-elevator',
+    title: 'مبحث پانزدهم — نکات مهم الزامات اولیه انتخاب آسانسور (بند ۱۵-۲-۱)',
+    publisher: 'memaripedia.com (exam-prep/clause summary)',
+    edition: '1392 (with amendments)',
+    jurisdiction: 'ir-national',
+    tier: 3,
+    uri: 'https://memaripedia.com/mini-mabhas-15/',
+    verificationState: 'not-obtained',
+    retrievedAt: '2026-09-18',
+    note: 'Source for §15-2-1-2 (>7 m trigger), §15-2-1-4 (>21 m stretcher), etc.',
+  },
+  {
+    id: 't3-mabhas4-1396-daylight',
+    title: 'مبحث چهار (۱۳۹۶) — فصل ۶ الزامات نورگیری و تهویه',
+    publisher: 'memaripedia.com / atnasr.ir / danesh-cad.blogfa.ir (aggregated)',
+    edition: '1396',
+    jurisdiction: 'ir-national',
+    tier: 3,
+    uri: 'https://memaripedia.com/%D9%85%D8%A8%D8%AD%D8%AB-%DA%86%D9%87%D8%A7%D8%B1%D9%85/',
+    verificationState: 'not-obtained',
+    retrievedAt: '2026-09-18',
+    note: 'Used to enumerate glazing ratios and light-well dimensions.',
+  },
+
+  // ===== Assumptions (NOT regulatory) =====
+  {
+    id: 'local-parking-assumption',
+    title: 'عرف پارکینگ طرح تفصیلی (بدون منبع قانونی)',
+    jurisdiction: 'ir-national',
+    tier: 3,
+    verificationState: 'not-obtained',
+    note: 'Parking-per-unit ratios vary by municipality; 1-bay/unit default is SOFT advisory only.',
+  },
+  {
+    id: 'local-setback-assumption',
+    title: 'عقب‌نشینی / سطح اشغال / تراکم پیش‌فرض (بدون منبع قانونی)',
+    jurisdiction: 'ir-national',
+    tier: 3,
+    verificationState: 'not-obtained',
+    note: 'Default setbacks used for layout generation when user does not supply municipal pack.',
+  },
+];
