@@ -13,7 +13,7 @@
 import type { Space } from '../model/space.js';
 import type { Wall } from '../model/wall.js';
 import type { Rect } from '../geometry/rect.js';
-import { EPS, WALL_EXT_THK, WALL_INT_THK, WALL_PARTITION_THK } from '../units.js';
+import { EPS, WALL_EXT_THK, WALL_INT_THK, WALL_PARTITION_THK, WALL_CORE_THK, WALL_SERVICE_THK } from '../units.js';
 import { rEdges } from '../geometry/rect.js';
 import type { Vec2 } from '../geometry/vec2.js';
 
@@ -119,14 +119,31 @@ export function generateWalls(spaces: Space[], floorLevel: number): Wall[] {
             kind = 'exterior';
             thickness = WALL_EXT_THK;
           } else {
-            // Partition between rooms; treat bathroom/wc thin walls as partitions
             const plusType = spaces.find(s => s.id === plus)?.type;
             const minusType = spaces.find(s => s.id === minus)?.type;
-            const isPartition =
-              (plusType === 'bathroom' || plusType === 'master-bathroom' || plusType === 'guest-wc') ||
-              (minusType === 'bathroom' || minusType === 'master-bathroom' || minusType === 'guest-wc');
-            kind = isPartition ? 'partition' : 'interior';
-            thickness = isPartition ? WALL_PARTITION_THK : WALL_INT_THK;
+            const plusIsCore = plusType === 'stair-hall' || plusType === 'elevator-hall';
+            const minusIsCore = minusType === 'stair-hall' || minusType === 'elevator-hall';
+            const plusIsService = plusType === 'bathroom' || plusType === 'master-bathroom' || plusType === 'guest-wc' || plusType === 'storage' || plusType === 'utility';
+            const minusIsService = minusType === 'bathroom' || minusType === 'master-bathroom' || minusType === 'guest-wc' || minusType === 'storage' || minusType === 'utility';
+            const plusIsPartition = plusIsService;
+            const minusIsPartition = minusIsService;
+
+            if (plusIsCore || minusIsCore) {
+              kind = 'core';
+              thickness = WALL_CORE_THK;
+            } else if (plusIsService && minusIsService) {
+              kind = 'partition';
+              thickness = WALL_PARTITION_THK;
+            } else if (plusIsService || minusIsService) {
+              kind = 'service';
+              thickness = WALL_SERVICE_THK;
+            } else if (plusIsPartition || minusIsPartition) {
+              kind = 'partition';
+              thickness = WALL_PARTITION_THK;
+            } else {
+              kind = 'interior';
+              thickness = WALL_INT_THK;
+            }
           }
           walls.push({
             id: `wall-${floorLevel}-${wallIdx++}`,

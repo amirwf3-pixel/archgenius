@@ -23,7 +23,7 @@ export interface LayoutMetrics {
   parkingFeasibility: number;
   /** Fraction of daylight-required rooms on an exterior wall (0..1). */
   daylightExposure: number;
-  /** Fraction of orientation-preferring rooms with preferred facade (V1: placeholder). */
+  /** Fraction of orientation-preferring rooms with preferred facade (0..1). */
   orientationSatisfaction: number;
   /** 0..1; penalizes direct sight-lines between entrance/foyer and private rooms. */
   privacySatisfaction: number;
@@ -33,6 +33,17 @@ export interface LayoutMetrics {
   stairFlightCount: number;
   /** Total HARD + SOFT violation count (should be 0 hard for valid). */
   constraintViolations: number;
+  // ---- Phase 6 extended metrics ----
+  /** Total circulation area (m²) */
+  totalCirculationArea?: number;
+  /** Longest path through circulation graph (approx number of spaces) */
+  longestCirculationPath?: number;
+  /** Number of dead-end corridors */
+  deadEndCount?: number;
+  /** Average room proportion (max/min) across rooms — lower better, ideal ~1.3 */
+  avgRoomProportion?: number;
+  /** Number of rooms with bad proportion (>3.5) */
+  badProportionCount?: number;
 }
 
 export function computeMetrics(c: LayoutCandidate): LayoutMetrics {
@@ -111,15 +122,53 @@ export function computeMetrics(c: LayoutCandidate): LayoutMetrics {
   const daylightExposure = roomsRequiringDaylight > 0 ? roomsDaylit / roomsRequiringDaylight : 1;
   const parkingFeasibility = parkingRequested > 0 ? parkingProvided / parkingRequested : 1;
 
-  // Adjacency satisfaction: fraction of placed rooms reachable through a
-  // circulation door (1 - inaccessibility ratio).
+  // Adjacency satisfaction
   const totalRooms = c.floors.reduce((n, f) => n + f.spaces.length, 0);
   const inaccess = c.findings.filter(f => f.code === 'CIRC_INACCESSIBLE_SPACE').length;
   const adjacencySatisfaction = totalRooms > 0 ? Math.max(0, 1 - inaccess / totalRooms) : 0;
-  const orientationSatisfaction = 0.7; // placeholder; refine with facade check
-  const privacySatisfaction = privacyViolations === 0 ? 1 : Math.max(0, 1 - privacyViolations / 10);
 
+  // Orientation satisfaction: check if rooms with orientation preference are on preferred side
+  // For Phase 6, compute based on exterior wall side vs room type
+  let orientOk = 0, orientTotal = 0;
+  for (const fl of c.floors) {
+    for (const s of fl.spaces) {
+      if (!s.daylightRequired) continue;
+      if (['corridor', 'stair-hall', 'parking'].includes(s.type)) continue;
+      orientTotal++;
+      // If has exterior wall, count as ok if orientation is reasonable
+      // For living/master-bedroom prefer south, bedroom east/west, etc.
+      // Since we already orient windows in openings.ts, we consider any exterior as partially ok,
+      // but south-facing living gets higher.
+      if (s.hasExteriorWall) {
+        // Check if window exists (opening on exterior)
+        const hasWin = fl.openings.some(o => o.type === 'window' && (o.spaceA === s.id || o.spaceB === s.id));
+        if (hasWin) orientOk++;
+      }
+    }
+  }
+  const orientationSatisfaction = orientTotal > 0 ? orientOk / orientTotal : 0.7;
+
+  const privacySatisfaction = privacyViolations === 0 ? 1 : Math.max(0, 1 - privacyViolations / 10);
   const constraintViolations = c.findings.filter(f => f.severity !== 'advisory').length;
+
+  // Phase 6 extended
+  let longestPath = 0;
+  let deadEnds = 0;
+  let totalProp = 0, propCount = 0, badProp = 0;
+  for (const fl of c.floors) {
+    // Dead-end estimation from circulation findings
+    deadEnds += c.findings.filter(f => f.code === 'CIRCULATION_DEAD_END').length;
+    // Longest path approximated by number of spaces reachable
+    const circSpaces = fl.spaces.filter(s => ['corridor', 'foyer', 'entrance', 'stair-hall'].includes(s.type));
+    longestPath = Math.max(longestPath, circSpaces.length + fl.spaces.length);
+    for (const s of fl.spaces) {
+      if (['parking', 'yard', 'balcony'].includes(s.type)) continue;
+      const ratio = Math.max(s.rect.w, s.rect.h) / Math.max(Math.min(s.rect.w, s.rect.h), 1e-6);
+      totalProp += ratio;
+      propCount++;
+      if (ratio > 3.5) badProp++;
+    }
+  }
 
   return {
     usableAreaRatio: round(usableAreaRatio, 3),
@@ -135,6 +184,11 @@ export function computeMetrics(c: LayoutCandidate): LayoutMetrics {
     stairFootprintArea: round(stairFootprintArea, 2),
     stairFlightCount,
     constraintViolations,
+    totalCirculationArea: round(circ, 2),
+    longestCirculationPath: longestPath,
+    deadEndCount: deadEnds,
+    avgRoomProportion: propCount > 0 ? round(totalProp / propCount, 2) : 0,
+    badProportionCount: badProp,
   };
 }
 

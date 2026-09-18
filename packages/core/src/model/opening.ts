@@ -23,6 +23,16 @@ export interface Opening {
   sill: number;
   /** For doors: swing side, hinge offset, etc. */
   swing?: DoorSwing;
+  /** Hinge point (for doors) in world coordinates. */
+  hinge?: Vec2;
+  /** Closed leaf end point (for doors). */
+  leafEnd?: Vec2;
+  /** Open leaf end point (for doors, 90° swing). */
+  openEnd?: Vec2;
+  /** Swing angle in degrees (typically 90). */
+  swingAngle?: number;
+  /** Leaf thickness (m). */
+  leafThickness?: number;
   /** Floor number. */
   floor: number;
   /** Space ids on each side of the wall (mirror of wall.spaceIds but handy). */

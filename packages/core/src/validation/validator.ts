@@ -5,6 +5,7 @@ import { validateGeometric } from './geometric.js';
 import { validateCirculation } from './circulation.js';
 import { validateFurniture } from './furniture.js';
 import { validateStairs } from './stair.js';
+import { validateArchitecturalQA } from './architectural-qa.js';
 
 export function validateFloor(floor: Floor): Finding[] {
   return [
@@ -12,6 +13,7 @@ export function validateFloor(floor: Floor): Finding[] {
     ...validateCirculation(floor),
     ...validateFurniture(floor),
     ...validateStairs(floor),
+    ...validateArchitecturalQA(floor),
   ];
 }
 

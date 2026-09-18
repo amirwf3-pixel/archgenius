@@ -23,6 +23,8 @@ export const EPS = 1e-6;
 export const WALL_EXT_THK = 0.35; // ~35 cm exterior (bearing + cladding)
 export const WALL_INT_THK = 0.15; // ~15 cm interior partition
 export const WALL_PARTITION_THK = 0.10;
+export const WALL_CORE_THK = 0.20; // ~20 cm stair/elevator core (fire rated)
+export const WALL_SERVICE_THK = 0.12; // ~12 cm service / wet area
 
 /** Door defaults (meters). */
 export const DOOR_EXT_WIDTH = 1.0;

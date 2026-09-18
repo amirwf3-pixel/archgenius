@@ -13,9 +13,13 @@ export interface LayerDef {
 
 export const LAYERS: LayerDef[] = [
   { name: 'A-GRID',       color: 1, lineweight: 18, linetype: 'CENTER',     description: 'Axis grid lines' },
+  { name: 'A-AXIS',       color: 1, lineweight: 18, linetype: 'CENTER',     description: 'Axis lines' },
   { name: 'A-AXIS-TEXT',  color: 1, lineweight: 18, linetype: 'CONTINUOUS', description: 'Axis labels' },
   { name: 'A-WALL-EXT',   color: 7, lineweight: 50, linetype: 'CONTINUOUS', description: 'Exterior walls' },
   { name: 'A-WALL-INT',   color: 7, lineweight: 30, linetype: 'CONTINUOUS', description: 'Interior walls' },
+  { name: 'A-WALL-CORE',  color: 7, lineweight: 40, linetype: 'CONTINUOUS', description: 'Core walls (stair/elevator)' },
+  { name: 'A-WALL-SERVICE', color: 7, lineweight: 25, linetype: 'CONTINUOUS', description: 'Service/wet area walls' },
+  { name: 'A-WALL-PART',  color: 7, lineweight: 18, linetype: 'CONTINUOUS', description: 'Partition walls' },
   { name: 'A-COLUMN',     color: 7, lineweight: 50, linetype: 'CONTINUOUS', description: 'Structural columns' },
   { name: 'A-DOOR',       color: 3, lineweight: 25, linetype: 'CONTINUOUS', description: 'Doors + swing arcs' },
   { name: 'A-WINDOW',     color: 4, lineweight: 25, linetype: 'CONTINUOUS', description: 'Windows' },

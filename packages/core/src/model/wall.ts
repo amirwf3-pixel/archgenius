@@ -1,6 +1,6 @@
 import type { Vec2 } from '../geometry/vec2.js';
 
-export type WallKind = 'exterior' | 'interior' | 'partition' | 'retaining';
+export type WallKind = 'exterior' | 'interior' | 'partition' | 'retaining' | 'core' | 'service';
 
 export interface Wall {
   id: string;

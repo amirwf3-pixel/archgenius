@@ -149,11 +149,15 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     }
 
     // ---- Walls ----
-    // Represent each wall as a filled rectangle (polygon) drawn on the appropriate layer
-    // so that thick walls render correctly.
     for (const w of fl.walls) {
-      const layer = w.kind === 'exterior' ? 'A-WALL-EXT' : (w.kind === 'partition' ? 'A-WALL-INT' : 'A-WALL-INT');
-      // Draw two parallel lines representing wall edges; punch openings.
+      let layer: string;
+      switch (w.kind) {
+        case 'exterior': layer = 'A-WALL-EXT'; break;
+        case 'core': layer = 'A-WALL-CORE'; break;
+        case 'service': layer = 'A-WALL-SERVICE'; break;
+        case 'partition': layer = 'A-WALL-PART'; break;
+        default: layer = 'A-WALL-INT'; break;
+      }
       emitWallWithOpenings(w, fl, emitLine, layer);
     }
 
@@ -199,13 +203,17 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
       emitText(cx, cy - h * 0.7, `${s.area.toFixed(1)} m²`, h * 0.7, 'A-ROOM', 1);
     }
 
-    // ---- Dimensions (V1: outer overall dimensions along all four sides) ----
+    // ---- Grid / Axis (Phase 6) ----
+    if (fi === 0) emitGrid(candidate.buildableArea, emitLine, emitText);
+
+    // ---- Dimensions (improved) ----
     emitOuterDimensions(fl.footprint, emitLine, emitText);
+    emitRoomDimensions(fl.spaces, emitLine, emitText);
 
     // ---- North arrow ----
     if (fi === 0) drawNorthArrow(fl.footprint.x + fl.footprint.w - 1.2, fl.footprint.y + fl.footprint.h - 0.3, emitLine, emitText);
 
-    // ---- Title block (sheet border + title) — in model space for simplicity ----
+    // ---- Title block ----
     if (fi === 0) drawTitleBlock(candidate, projectName, emitLine, emitText, track);
   }
 
@@ -326,41 +334,45 @@ function drawDoor(
   emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
   emitArc: (cx: number, cy: number, r: number, startDeg: number, endDeg: number, layer: string) => void,
 ) {
-  // Draw the door leaf as a line from hinge point to end (perpendicular when open)
-  // plus a 90-degree swing arc.
   const along = o.wallDir;
-  const perp: Vec2 = { x: -along.y, y: along.x };
-  // Hinge is on the side opposite the swing direction relative to normal.
-  // For "left" swing when looking into the room (normal direction is into space),
-  // hinge is on the left when facing along wallDir.
-  // V1: pick a consistent hinge side per door (opening at -half from center).
-  const hingeSign = o.swing === 'right' ? 1 : -1;
-  const leafDirSign = 1; // open 90° into the destination side (normal points into space)
-  // Normal points into destination room; we open into the destination room.
   const n = o.normal;
-  const hinge: Vec2 = {
-    x: o.center.x + along.x * (o.width / 2) * hingeSign,
-    y: o.center.y + along.y * (o.width / 2) * hingeSign,
-  };
-  const closedEnd: Vec2 = {
-    x: o.center.x - along.x * (o.width / 2) * hingeSign,
-    y: o.center.y - along.y * (o.width / 2) * hingeSign,
-  };
-  const openEnd: Vec2 = {
-    x: hinge.x + n.x * o.width * leafDirSign,
-    y: hinge.y + n.y * o.width * leafDirSign,
-  };
-  // Door leaf (closed position drawn solid)
+  let hinge: Vec2, closedEnd: Vec2, openEnd: Vec2;
+  if (o.hinge && o.leafEnd && o.openEnd) {
+    hinge = o.hinge;
+    closedEnd = o.leafEnd;
+    openEnd = o.openEnd;
+  } else {
+    const hingeSign = o.swing === 'right' ? 1 : -1;
+    hinge = {
+      x: o.center.x + along.x * (o.width / 2) * hingeSign,
+      y: o.center.y + along.y * (o.width / 2) * hingeSign,
+    };
+    closedEnd = {
+      x: o.center.x - along.x * (o.width / 2) * hingeSign,
+      y: o.center.y - along.y * (o.width / 2) * hingeSign,
+    };
+    openEnd = {
+      x: hinge.x + n.x * o.width,
+      y: hinge.y + n.y * o.width,
+    };
+  }
   emitLine(hinge.x, hinge.y, closedEnd.x, closedEnd.y, 'A-DOOR');
-  // Swing arc: from closedEnd to openEnd around hinge.
   const a1 = Math.atan2(closedEnd.y - hinge.y, closedEnd.x - hinge.x) * 180 / Math.PI;
   const a2 = Math.atan2(openEnd.y - hinge.y, openEnd.x - hinge.x) * 180 / Math.PI;
-  // Ensure arc goes CCW from smaller to larger; if a2 < a1, add 360? Arc is drawn CCW from 50 to 51.
   let start = a1, end = a2;
-  if (end < start) { const t = start; start = end; end = t; }
+  let diff = end - start;
+  while (diff < 0) diff += 360;
+  while (diff > 360) diff -= 360;
+  if (diff > 180) {
+    const t = start; start = end; end = t;
+  }
+  if (end < start) end += 360;
   emitArc(hinge.x, hinge.y, o.width, start, end, 'A-DOOR');
-  // Suppress unused warnings
-  void perp;
+  if (o.leafThickness) {
+    const perpOpen: Vec2 = { x: -n.y, y: n.x };
+    const thk = o.leafThickness;
+    emitLine(openEnd.x, openEnd.y, openEnd.x + perpOpen.x * thk, openEnd.y + perpOpen.y * thk, 'A-DOOR');
+  }
 }
 
 function drawStair(
@@ -533,19 +545,62 @@ function drawTitleBlock(
   emitText(tx0 + 0.3, ty0 + 0.3, `Strategy: ${cand.metadata.strategy} | Floors: ${cand.floors.length} | Scale: 1:100`, 0.2, 'A-TITLE');
 }
 
+function emitGrid(
+  fr: Rect,
+  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
+  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
+) {
+  // Simple axis grid: one vertical and one horizontal line at footprint edges + center
+  const cx = fr.x + fr.w / 2;
+  const cy = fr.y + fr.h / 2;
+  // Vertical grid lines
+  emitLine(fr.x, fr.y - 0.5, fr.x, fr.y + fr.h + 0.5, 'A-GRID');
+  emitLine(cx, fr.y - 0.5, cx, fr.y + fr.h + 0.5, 'A-AXIS');
+  emitLine(fr.x + fr.w, fr.y - 0.5, fr.x + fr.w, fr.y + fr.h + 0.5, 'A-GRID');
+  // Horizontal grid lines
+  emitLine(fr.x - 0.5, fr.y, fr.x + fr.w + 0.5, fr.y, 'A-GRID');
+  emitLine(fr.x - 0.5, cy, fr.x + fr.w + 0.5, cy, 'A-AXIS');
+  emitLine(fr.x - 0.5, fr.y + fr.h, fr.x + fr.w + 0.5, fr.y + fr.h, 'A-GRID');
+  // Labels
+  emitText(fr.x - 0.7, fr.y + fr.h + 0.3, 'A', 0.25, 'A-AXIS-TEXT', 1);
+  emitText(cx, fr.y + fr.h + 0.3, 'B', 0.25, 'A-AXIS-TEXT', 1);
+  emitText(fr.x + fr.w + 0.3, fr.y + fr.h + 0.3, 'C', 0.25, 'A-AXIS-TEXT', 0);
+  emitText(fr.x - 0.7, fr.y - 0.7, '1', 0.25, 'A-AXIS-TEXT', 2);
+  emitText(fr.x - 0.7, cy, '2', 0.25, 'A-AXIS-TEXT', 2);
+}
+
+function emitRoomDimensions(
+  spaces: Space[],
+  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
+  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
+) {
+  // Emit small dimension lines for each room (width/height)
+  for (const s of spaces) {
+    if (s.type === 'parking' || s.type === 'yard') continue;
+    // Only for rooms larger than 2m in both dimensions to avoid clutter
+    if (s.rect.w < 2 || s.rect.h < 2) continue;
+    const r = s.rect;
+    const off = 0.15;
+    // Bottom edge dimension
+    emitLine(r.x, r.y - off, r.x + r.w, r.y - off, 'A-DIMS');
+    emitText(r.x + r.w / 2, r.y - off - 0.15, `${r.w.toFixed(2)}`, 0.12, 'A-DIMS', 1);
+    // Left edge dimension
+    emitLine(r.x - off, r.y, r.x - off, r.y + r.h, 'A-DIMS');
+    // Use vertical text for height — horizontal for simplicity
+    emitText(r.x - off - 0.2, r.y + r.h / 2, `${r.h.toFixed(2)}`, 0.12, 'A-DIMS', 2);
+  }
+}
+
 function emitOuterDimensions(
   fr: Rect,
   emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
   emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
 ) {
-  const off = 1.0; // offset from footprint
-  // South dimension line
+  const off = 1.0;
   emitLine(fr.x, fr.y - off, fr.x + fr.w, fr.y - off, 'A-DIMS');
   emitText((fr.x + fr.x + fr.w) / 2, fr.y - off - 0.3, `${(fr.w).toFixed(2)} m`, 0.22, 'A-DIMS', 1);
-  // Ticks
   emitLine(fr.x, fr.y - off - 0.15, fr.x, fr.y - off + 0.15, 'A-DIMS');
   emitLine(fr.x + fr.w, fr.y - off - 0.15, fr.x + fr.w, fr.y - off + 0.15, 'A-DIMS');
-  // West dimension line
   emitLine(fr.x - off, fr.y, fr.x - off, fr.y + fr.h, 'A-DIMS');
   emitText(fr.x - off - 0.3, (fr.y + fr.y + fr.h) / 2, `${(fr.h).toFixed(2)} m`, 0.22, 'A-DIMS', 1);
   emitLine(fr.x - off - 0.15, fr.y, fr.x - off + 0.15, fr.y, 'A-DIMS');
@@ -577,9 +632,12 @@ export function validateDXFStructure(dxf: string): { ok: boolean; errors: string
   if (!lines.includes('ENTITIES')) errors.push('Missing ENTITIES section');
   if (!lines.includes('EOF')) errors.push('Missing EOF');
   if (!lines.includes('LAYER')) errors.push('Missing LAYER table');
-  // Check required layers appear
-  for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR']) {
+  for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR', 'A-GRID', 'A-AXIS', 'A-NORTH', 'A-TITLE', 'A-PARKING']) {
     if (!lines.includes(name)) errors.push(`Missing layer entry: ${name}`);
+  }
+  // Check INSUNITS=4 (mm)
+  if (!dxf.includes('$INSUNITS') || !dxf.includes('4')) {
+    errors.push('Missing INSUNITS=4 (mm) in HEADER');
   }
   return { ok: errors.length === 0, errors };
 }

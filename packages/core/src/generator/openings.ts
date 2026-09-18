@@ -69,6 +69,24 @@ function normalIntoSpace(wall: Wall, spaceId: string): Vec2 {
   return right;
 }
 
+/** Compute hinge/leaf geometry for a door. */
+function computeDoorLeaf(center: Vec2, wallDir: Vec2, normal: Vec2, width: number, swing: 'left' | 'right'): { hinge: Vec2; leafEnd: Vec2; openEnd: Vec2 } {
+  const hingeSign = swing === 'right' ? 1 : -1;
+  const hinge: Vec2 = {
+    x: center.x + wallDir.x * (width / 2) * hingeSign,
+    y: center.y + wallDir.y * (width / 2) * hingeSign,
+  };
+  const leafEnd: Vec2 = {
+    x: center.x - wallDir.x * (width / 2) * hingeSign,
+    y: center.y - wallDir.y * (width / 2) * hingeSign,
+  };
+  const openEnd: Vec2 = {
+    x: hinge.x + normal.x * width,
+    y: hinge.y + normal.y * width,
+  };
+  return { hinge, leafEnd, openEnd };
+}
+
 /** Place openings on a floor, mutating walls/openings arrays. */
 export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings: Opening[]; entranceWallId?: string; entranceDoorId?: string } {
   const openings: Opening[] = [];
@@ -130,8 +148,6 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
       })
       .sort((a, b) => b.score - a.score);
     for (const { w: wall, inside } of candidates) {
-      // Entrance door margin smaller so we can fit on narrow facades; we only
-      // need to stay clear of wall corners.
       const span = findFreeSpan(wall, DOOR_EXT_WIDTH, 'middle', 0.1);
       if (!span) continue;
       const id = mkId('entrance');
@@ -140,11 +156,15 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
       const into: string | null = inside ? inside.id : (wall.spaceIds[0] ?? wall.spaceIds[1]);
       const normal = into ? normalIntoSpace(wall, into) : { x: 0, y: 1 };
       const center = pointAtOffset(wall, span.offset + span.width / 2);
+      const wallDir = wallDirection(wall);
+      const swing: 'left' | 'right' = 'left';
+      const leaf = computeDoorLeaf(center, wallDir, normal, DOOR_EXT_WIDTH, swing);
       const op: Opening = {
         id, type: 'entrance', wallId: wall.id, center,
-        wallDir: wallDirection(wall), normal,
+        wallDir, normal,
         width: DOOR_EXT_WIDTH, height: DOOR_EXT_HEIGHT, sill: 0,
-        swing: 'left', floor: floor.level,
+        swing, hinge: leaf.hinge, leafEnd: leaf.leafEnd, openEnd: leaf.openEnd, swingAngle: 90, leafThickness: 0.04,
+        floor: floor.level,
         spaceA: wall.spaceIds[0] ?? undefined, spaceB: wall.spaceIds[1] ?? undefined,
       };
       openings.push(op);
@@ -169,20 +189,23 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
     return oid ? spacesById.get(oid) : undefined;
   }
   function placeDoorOnWall(wall: Wall, intoSpaceId: string, width: number, prefer: 'start' | 'end' | 'middle' = 'middle') {
-    // For small walls (tight sites / bathrooms) use minimal corner margin so
-    // doors can still fit. Otherwise use comfortable margin.
     const L = wallLength(wall);
-    // Pick the largest margin that still leaves room for the door on this wall.
     const margin = L < width + 0.45 ? Math.max(0.02, (L - width) / 2 - 0.01) : 0.2;
     const span = findFreeSpan(wall, width, prefer, margin);
     if (!span) return;
     const id = mkId('door');
     const center = pointAtOffset(wall, span.offset + span.width / 2);
+    const wallDir = wallDirection(wall);
+    const normal = normalIntoSpace(wall, intoSpaceId);
+    // Alternate swing based on wall orientation for variety but deterministic: use hash of wall id
+    const swing: 'left' | 'right' = wall.id.charCodeAt(wall.id.length - 1) % 2 === 0 ? 'left' : 'right';
+    const leaf = computeDoorLeaf(center, wallDir, normal, width, swing);
     const op: Opening = {
       id, type: 'door', wallId: wall.id, center,
-      wallDir: wallDirection(wall), normal: normalIntoSpace(wall, intoSpaceId),
+      wallDir, normal,
       width, height: DOOR_INT_HEIGHT, sill: 0,
-      swing: 'left', floor: floor.level,
+      swing, hinge: leaf.hinge, leafEnd: leaf.leafEnd, openEnd: leaf.openEnd, swingAngle: 90, leafThickness: 0.04,
+      floor: floor.level,
       spaceA: wall.spaceIds[0] ?? undefined, spaceB: wall.spaceIds[1] ?? undefined,
     };
     openings.push(op);
@@ -342,28 +365,77 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
     }
   }
 
-  // ---- Windows ----
+  // ---- Windows (professional) ----
+  // Orientation preference: living/master-bedroom prefers south, bedroom east/west,
+  // kitchen east or north, bathroom any but smallest.
+  function orientationScore(wall: Wall, roomType: string): number {
+    const side = wallSide(wall, floor.footprint);
+    if (!side) return 0;
+    switch (roomType) {
+      case 'living':
+        if (side === 'south') return 10;
+        if (side === 'east' || side === 'west') return 6;
+        return 2;
+      case 'master-bedroom':
+        if (side === 'south') return 10;
+        if (side === 'east') return 8;
+        if (side === 'west') return 5;
+        return 1;
+      case 'bedroom':
+        if (side === 'east') return 9;
+        if (side === 'west') return 7;
+        if (side === 'south') return 6;
+        return 2;
+      case 'kitchen':
+        if (side === 'east') return 9;
+        if (side === 'north') return 7;
+        if (side === 'south') return 4;
+        return 3;
+      case 'dining':
+        if (side === 'south') return 8;
+        if (side === 'east' || side === 'west') return 6;
+        return 3;
+      default:
+        return 5;
+    }
+  }
+
   for (const s of floor.spaces) {
     if (!s.daylightRequired && s.type !== 'kitchen' && s.type !== 'bathroom' && s.type !== 'master-bathroom') continue;
     if (s.type === 'corridor' || s.type === 'stair-hall' || s.type === 'elevator-hall' || s.type === 'parking' || s.type === 'storage' || s.type === 'entrance' || s.type === 'foyer') continue;
-    // Find an exterior wall of this room; prefer the one best oriented for daylight.
     const extWalls = floor.walls.filter(w => w.kind === 'exterior' && w.spaceIds.includes(s.id));
     if (!extWalls.length) continue;
-    // Pick the longest exterior wall for the window.
-    extWalls.sort((a, b) => wallLength(b) - wallLength(a));
+    // Sort by orientation preference + length
+    extWalls.sort((a, b) => {
+      const oa = orientationScore(a, s.type);
+      const ob = orientationScore(b, s.type);
+      if (oa !== ob) return ob - oa;
+      return wallLength(b) - wallLength(a);
+    });
     for (const w of extWalls) {
       const L = wallLength(w);
-      // window width ~60% of wall length, capped
-      const ww = Math.min(Math.max(WINDOW_MIN_WIDTH, L * 0.55), 2.4);
+      // Window width based on room type
+      let ratio = 0.55;
+      let maxW = 2.4;
+      if (s.type === 'living') { ratio = 0.65; maxW = 3.0; }
+      else if (s.type === 'master-bedroom') { ratio = 0.6; maxW = 2.4; }
+      else if (s.type === 'bedroom') { ratio = 0.5; maxW = 2.0; }
+      else if (s.type === 'kitchen') { ratio = 0.45; maxW = 1.8; }
+      else if (s.type === 'bathroom' || s.type === 'master-bathroom') { ratio = 0.35; maxW = 1.0; }
+      const ww = Math.min(Math.max(WINDOW_MIN_WIDTH, L * ratio), maxW);
       const span = findFreeSpan(w, ww, 'middle', 0.5);
       if (!span) continue;
       const id = mkId('window');
       const center = pointAtOffset(w, span.offset + span.width / 2);
+      // Sill height per room type
+      let sill = WINDOW_SILL;
+      if (s.type === 'bathroom' || s.type === 'master-bathroom') sill = 1.2;
+      else if (s.type === 'kitchen') sill = 1.0;
       const op: Opening = {
         id, type: 'window', wallId: w.id, center,
         wallDir: wallDirection(w),
         normal: normalIntoSpace(w, s.id),
-        width: ww, height: WINDOW_LINTEL - WINDOW_SILL, sill: WINDOW_SILL,
+        width: ww, height: WINDOW_LINTEL - sill, sill,
         floor: floor.level,
         spaceA: w.spaceIds[0] ?? undefined, spaceB: w.spaceIds[1] ?? undefined,
       };
