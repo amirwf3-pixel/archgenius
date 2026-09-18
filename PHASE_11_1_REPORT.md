@@ -4,7 +4,7 @@
 **Software:** 0.11.1-phase11.1
 **Schema:** 6
 **DXF:** R12 / AC1009 / INSUNITS=4 (mm)
-**Commit:** 4023acd (Phase 11 baseline) -> hardening commit pending
+**Commit:** 06ca254 (Phase 11.1 hardening, baseline 4023acd)
 **Date:** 2026-09-18
 **Branch:** arena/01a0b33a-archgenius
 
@@ -208,7 +208,7 @@ Same as Phase 11.
 - **no silent bbox fallback**: validateRoomPolygon fails explicitly.
 - **no output-specific reconstruction**: DXF uses Space.polygon directly.
 
-**Commit hash**: (to be filled after push, baseline 4023acd)
+**Commit hash**: 06ca254 (Phase 11.1 hardening)
 **Test count**: 484 PASS (402 baseline + 47 Phase11 + 35 Phase11.1)
 **Build results**: core tsc PASS, web tsc PASS, web vite PASS (1.79 MB)
 **Version**: 0.11.1-phase11.1
