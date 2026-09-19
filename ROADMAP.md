@@ -56,7 +56,7 @@
 - [ ] Project management dashboard (list, save/load/import/export) — **not built** (core storage module exists)
 - [x] Plan inspection UI (spaces panel: type/area/vertices, click-to-select; findings panel with severity codes) — per-room dimension callouts not built
 - [ ] Better canvas preview (panning, zoom, hatch) — **not built** (static fitted canvas)
-- [x] Dimension entities in DXF (`A-DIMS` layer) — north arrow / grid axes not implemented
+- [x] North symbol, grid lines, axis labels, and title block in DXF — emitted on layers `A-NORTH` (north arrow with "N" label), `A-GRID`, `A-AXIS` (labels A/B/C/1/2), `A-TITLE` (title block), plus dimension entities on `A-DIMS`
 
 ## Phase 6 — Advanced cases & polish (partially complete)
 - [x] Irregular sites — L-shape and orthogonal polygon (3–8 vertices, deterministic scanline decomposition, no silent bbox fallback)
