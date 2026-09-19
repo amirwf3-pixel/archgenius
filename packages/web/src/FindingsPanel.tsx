@@ -47,7 +47,7 @@ function FindingsGroup({
   const [expanded, setExpanded] = useState(false);
   if (items.length === 0) {
     return (
-      <div className="flex items-center gap-2 px-2 py-1.5 text-[11px] text-ink-500">
+      <div className="flex items-center gap-2 px-2 py-1.5 text-[11px] text-ink-400">
         <IconCheckCircle className="w-3.5 h-3.5 text-ok/70" />
         <span>{title}</span>
         <span className="ms-auto">{t('findingsNone')}</span>
@@ -125,7 +125,7 @@ export function ResultStatusCard({ state }: { state: ResultState }) {
         <IconCube className="w-8 h-8 text-ink-500 mx-auto" />
         <div className="text-sm font-semibold text-slate-200">{t('resultEmptyTitle')}</div>
         <p className="text-xs text-ink-400 leading-6">{t('resultEmptyHint')}</p>
-        <p className="text-[10px] text-ink-500 leading-5 border-t border-ink-700 pt-2 w-full">{t('autoCheckNote')}</p>
+        <p className="text-[10px] text-ink-400 leading-5 border-t border-ink-700 pt-2 w-full">{t('autoCheckNote')}</p>
       </div>
     );
   }
@@ -149,7 +149,7 @@ export function ResultStatusCard({ state }: { state: ResultState }) {
               </li>
             ))}
           </ul>
-          <p className="text-[10px] text-ink-500 leading-5 whitespace-pre-wrap">{state.explanation}</p>
+          <p className="text-[10px] text-ink-400 leading-5 whitespace-pre-wrap">{state.explanation}</p>
         </Collapsible>
       </div>
     );
@@ -165,7 +165,7 @@ export function ResultStatusCard({ state }: { state: ResultState }) {
         <span className={`text-sm font-bold ${ok ? 'text-ok' : 'text-bad'}`}>
           {ok ? t('validTitle') : t('invalidTitle')}
         </span>
-        <span className="ms-auto text-[10px] text-ink-500">{t('resultSuccess')}</span>
+        <span className="ms-auto text-[10px] text-ink-400">{t('resultSuccess')}</span>
       </div>
       <div className="flex flex-wrap gap-1.5">
         <span className="chip-hard">{t('badgeHard').replace('{count}', '')}: {faNum(state.vr.hard.length)}</span>

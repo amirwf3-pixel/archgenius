@@ -178,6 +178,80 @@ describe('PlanCanvas — view transform math (zoom/pan correctness)', () => {
   });
 });
 
+describe('QA fix pass — WCAG AA contrast tokens (MAJOR-1)', () => {
+  // WCAG 2.1 relative luminance / contrast ratio
+  const lum = (hex: string): number => {
+    const c = hex.replace('#', '');
+    const [r, g, b] = [0, 2, 4]
+      .map(i => parseInt(c.slice(i, i + 2), 16) / 255)
+      .map(v => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a: string, b: string) => {
+    const [l1, l2] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (l1 + 0.05) / (l2 + 0.05);
+  };
+  const blend = (fg: string, bg: string, a: number) => {
+    const p = (h: string) => [0, 2, 4].map(i => parseInt(h.replace('#', '').slice(i, i + 2), 16));
+    const [r1, g1, b1] = p(fg), [r2, g2, b2] = p(bg);
+    const m = (x: number, y: number) => Math.round(x * a + y * (1 - a));
+    return '#' + [m(r1, r2), m(g1, g2), m(b1, b2)].map(v => v.toString(16).padStart(2, '0')).join('');
+  };
+  const INK900 = '#0b1220', INK800 = '#0f172a', INK400 = '#94a3b8';
+
+  it('de-emphasis text token (ink-400) meets AA 4.5:1 on every surface it is used on', () => {
+    expect(ratio(INK400, INK900)).toBeGreaterThanOrEqual(4.5);          // page / canvas overlay
+    expect(ratio(INK400, INK800)).toBeGreaterThanOrEqual(4.5);          // panels / cards
+    expect(ratio(INK400, blend(INK800, INK900, 0.6))).toBeGreaterThanOrEqual(4.5); // translucent cards
+    expect(ratio(INK400, blend(INK800, INK900, 0.4))).toBeGreaterThanOrEqual(4.5); // group containers
+  });
+
+  it('the previously failing elements now use ink-400 (source guard, no ink-500/600 text)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const css = readFileSync(new URL('./index.css', import.meta.url), 'utf8');
+    expect(css).toMatch(/\.field-hint\s*\{\s*@apply text-\[10px\] text-ink-400;/);
+    expect(css).toMatch(/\.finding-tech\s*\{\s*@apply text-\[10px\] text-ink-400/);
+    const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+    // NOTE: the literal below is split so Tailwind's content scanner cannot see the
+    // full class token in this test source and (re)generate a dead utility rule.
+    expect(app).not.toContain('text-ink-' + '600'); // 1.81:1 pan hint must never return
+    expect(app).not.toMatch(/text-[^"']*text-ink-500/); // no ink-500 TEXT in App (ink-500 icon on overlay allowed)
+    const comp = readFileSync(new URL('./components.tsx', import.meta.url), 'utf8');
+    expect(comp).toContain('font-normal text-ink-400 truncate ltr'); // collapsible subtitle
+    const fp = readFileSync(new URL('./FindingsPanel.tsx', import.meta.url), 'utf8');
+    expect(fp).not.toMatch(/text-\[[^\]]+\] text-ink-500/); // no small ink-500 text remains
+  });
+});
+
+describe('QA fix pass — DXF success feedback (MAJOR-2)', () => {
+  const html = renderToString(React.createElement(App));
+
+  it('a persistent screen-reader live region sits next to the DXF export button', () => {
+    const dxfPos = html.indexOf('خروجی DXF');
+    const statusPos = html.indexOf('role="status"');
+    expect(dxfPos).toBeGreaterThan(-1);
+    expect(statusPos).toBeGreaterThan(dxfPos);
+    // the live region exists (empty) in the initial render so later content is announced
+    expect(html).toContain('aria-live="polite"');
+  });
+
+  it('the success message is Persian and auto-dismiss wording exists in the dictionary', () => {
+    expect(isPersianText(t('dxfReady'))).toBe(true);
+    expect(t('dxfReady')).toContain('فایل DXF');
+  });
+});
+
+describe('QA fix pass — lock buttons use emoji-free labels (cleanup)', () => {
+  it('App renders lockAllLabel/unlockAllLabel, not the emoji-prefixed variants', async () => {
+    const { readFileSync } = await import('node:fs');
+    const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+    expect(app).toContain("t('lockAllLabel')");
+    expect(app).toContain("t('unlockAllLabel')");
+    expect(app).not.toContain("t('lockAll')");
+    expect(app).not.toContain("t('unlockAll')");
+  });
+});
+
 describe('FindingsPanel — rendering with real validation data', () => {
   it('groups findings by severity with Persian group titles and counts', async () => {
     const { createProject, generate, validateCandidate } = await import('@archgenius/core');

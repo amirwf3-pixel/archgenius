@@ -487,7 +487,7 @@ export function App() {
             {!busy && error && (
               <StatusNote tone="bad">
                 {error}
-                <span className="block text-[10px] text-ink-500">{t('errorDetailsPointer')}</span>
+                <span className="block text-[10px] text-ink-400">{t('errorDetailsPointer')}</span>
               </StatusNote>
             )}
             {!busy && !error && successNote && <StatusNote tone="ok">{successNote}</StatusNote>}
@@ -525,6 +525,11 @@ export function App() {
                 <IconDownload className="w-3.5 h-3.5" />
                 {t('downloadDxf')}
               </button>
+              {/* DXF success feedback — persistent live region so screen readers
+                  announce it when it appears; auto-dismisses after 5s. */}
+              <div role="status" aria-live="polite" className="min-w-0">
+                {dxfNote && <StatusNote tone="ok">{dxfNote}</StatusNote>}
+              </div>
             </div>
           </div>
 
@@ -541,10 +546,10 @@ export function App() {
             />
             {!displayCandidate && !busy && (
               <div className="absolute inset-0 p-6 flex flex-col items-center justify-center gap-2 text-center pointer-events-none">
-                <IconCube className="w-10 h-10 text-ink-600" />
+                <IconCube className="w-10 h-10 text-ink-500" />
                 <div className="text-sm font-semibold text-ink-400">{t('resultEmptyTitle')}</div>
-                <p className="text-xs text-ink-500 max-w-sm leading-6">{t('resultEmptyHint')}</p>
-                <p className="text-[10px] text-ink-600">{t('canvasPanHint')}</p>
+                <p className="text-xs text-ink-400 max-w-sm leading-6">{t('resultEmptyHint')}</p>
+                <p className="text-[10px] text-ink-400">{t('canvasPanHint')}</p>
               </div>
             )}
             {busy && (
@@ -653,8 +658,8 @@ export function App() {
                   <div className="grid grid-cols-2 gap-1.5">
                     <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doLock('position')}><IconLock className="w-3 h-3" />{t('lockedPos')}</button>
                     <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doLock('size')}><IconLock className="w-3 h-3" />{t('lockedSize')}</button>
-                    <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doLock('all')}><IconLock className="w-3 h-3" />{t('lockAll')}</button>
-                    <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doUnlock('all')}><IconUnlock className="w-3 h-3" />{t('unlockAll')}</button>
+                    <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doLock('all')}><IconLock className="w-3 h-3" />{t('lockAllLabel')}</button>
+                    <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doUnlock('all')}><IconUnlock className="w-3 h-3" />{t('unlockAllLabel')}</button>
                   </div>
                 </div>
 
@@ -688,7 +693,7 @@ export function App() {
                   <div className="p-2 rounded border border-bad/40 bg-bad/10 text-bad text-xs whitespace-pre-wrap" role="alert">{editError}</div>
                 )}
                 <EditFindingsList findings={editFindings} />
-                <p className="text-[10px] text-ink-500 leading-5">{t('editEngineNote')}</p>
+                <p className="text-[10px] text-ink-400 leading-5">{t('editEngineNote')}</p>
               </div>
             )}
           </Section>

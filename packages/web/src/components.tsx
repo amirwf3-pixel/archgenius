@@ -149,7 +149,7 @@ export function Collapsible({
       <summary>
         <IconChevron className="disc-chevron w-3.5 h-3.5" />
         <span className="truncate">{title}</span>
-        {subtitle && <span className="ms-auto text-[10px] font-normal text-ink-500 truncate ltr" dir="ltr">{subtitle}</span>}
+        {subtitle && <span className="ms-auto text-[10px] font-normal text-ink-400 truncate ltr" dir="ltr">{subtitle}</span>}
       </summary>
       <div className="disc-body">{children}</div>
     </details>
