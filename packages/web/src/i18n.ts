@@ -23,7 +23,7 @@ export const DIR: 'rtl' = 'rtl';
 const fa = {
   // Header
   appName: 'آرچ‌جنیوس',
-  headerTagline: 'طراحی پارامتریک و ویرایش قیدمحور · هندسهٔ چندضلعی (Polygon Canonical) · تعمیر محدود · قفل‌گذاری فضاها',
+  headerTagline: 'سامانهٔ طراحی پارامتریک معماری',
   headerMeta: 'نسخه v1.0.1 · آفلاین · خروجی DXF R12 · تولید قطعی (Deterministic)',
 
   // Project section
@@ -31,6 +31,7 @@ const fa = {
   projectName: 'نام پروژه',
   seedLabel: 'بذر تصادفی (Seed) — قطعی',
   seedHint: 'ورودی، بذر و ویرایش‌های یکسان ← خروجی یکسان',
+  advancedProject: 'تنظیمات پیشرفتهٔ پروژه',
 
   // Site section
   sectionSite: 'سایت — هندسهٔ چندضلعی',
@@ -49,10 +50,13 @@ const fa = {
   notchCorner: 'گوشهٔ ناچ',
   polygonVertsTitle: 'رئوس چندضلعی (پادساعتگرد، اضلاع عمودبرهم)',
   setbacksTitle: 'عقب‌نشینی‌ها (Setback) — تعریف کاربر',
+  setbacksSummary: 'شمال {n} · جنوب {s} · شرق {e} · غرب {w} متر',
   setbackNorthM: 'شمال (متر)',
   setbackSouthM: 'جنوب (متر)',
   setbackEastM: 'شرق (متر)',
   setbackWestM: 'غرب (متر)',
+  polygonJsonValid: 'قالب JSON چندضلعی معتبر است.',
+  polygonJsonInvalid: 'JSON چندضلعی نامعتبر است — باید آرایه‌ای از مختصات {x,y} باشد.',
 
   // Building section
   sectionBuilding: 'ساختمان — ۱ تا ۱۰ طبقه',
@@ -70,6 +74,7 @@ const fa = {
   kitchenSemiOpen: 'نیمه‌باز',
   parkingSpaces: 'تعداد پارکینگ',
   hasStair: 'راه‌پله',
+  stairRequiredHint: 'در ساختمان چندطبقه، راه‌پله الزامی است.',
   hasElevator: 'آسانسور',
   hasStorage: 'انباری',
 
@@ -77,14 +82,23 @@ const fa = {
   generate: 'تولید پلان',
   generating: 'در حال تولید…',
   generateWithParams: 'تولید پلان {floors} طبقه',
+  stageGenerate: 'در حال تولید پلان…',
+  stageValidate: 'در حال اعتبارسنجی…',
+  stagePrepare: 'در حال آماده‌سازی نتایج…',
+  busyHint: 'لطفاً تا پایان عملیات صبر کنید؛ ورودی‌های شما محفوظ می‌ماند.',
 
   // Plan header
   planTitle: 'پلان — {floors} طبقه — {shape}',
+  floorPickerLabel: 'انتخاب طبقهٔ نمایش‌داده‌شده',
   strategyLabel: 'راهبرد',
   floorOf: 'طبقهٔ {current} از {total}',
   floorSelect: 'طبقهٔ {index} (تراز {level})',
   candidateSelect: '{index}: {strategy}',
-  downloadDxf: '⬇ خروجی DXF (چندضلعی)',
+  downloadDxf: 'خروجی DXF',
+  downloadDxfHint: 'خروجی چندضلعی DXF R12',
+  dxfReady: 'فایل DXF آماده و دانلود شد.',
+  dxfDisabledHint: 'برای فعال‌شدن خروجی، ابتدا پلان تولید کنید.',
+  editedBadge: 'ویرایش‌شده',
 
   // Metrics
   metricUsable: 'سطح قابل‌استفاده',
@@ -100,6 +114,14 @@ const fa = {
   generateFirst: 'ابتدا یک پلان تولید کنید.',
   selectRoom: 'انتخاب فضا (طبقهٔ {floor})',
   selectPlaceholder: '— انتخاب کنید —',
+  editHint: 'یک فضا را از پلان یا فهرست «فضاها» انتخاب کنید تا ابزارهای ویرایش فعال شود.',
+  editEngineNote: 'ویرایش‌ها توسط هستهٔ طراحی به‌صورت قیدمحور و قطعی اعمال می‌شوند.',
+  editMoveTitle: 'جابه‌جایی',
+  editResizeTitle: 'تغییر اندازه',
+  editLShapeTitle: 'تبدیل به شکل L',
+  editLockTitle: 'قفل‌گذاری',
+  applyAction: 'اعمال',
+  spaceTechTitle: 'جزئیات فنی فضا',
   spaceId: 'شناسه',
   area: 'مساحت',
   shape: 'شکل هندسی',
@@ -124,6 +146,8 @@ const fa = {
   lockSize: '🔒 اندازه',
   lockAll: '🔒 همه',
   unlockAll: '🔓 رفع همهٔ قفل‌ها',
+  lockAllLabel: 'همهٔ قفل‌ها',
+  unlockAllLabel: 'رفع همهٔ قفل‌ها',
   validationAfterEdit: 'اعتبارسنجی پس از ویرایش ({count})',
   editFailed: 'ویرایش ناموفق —',
 
@@ -136,6 +160,37 @@ const fa = {
   badgeHard: 'بحرانی {count}',
   badgeSoft: 'هشدار {count}',
   badgeAdv: 'بررسی {count}',
+
+  // Result status card
+  resultTitle: 'وضعیت نتیجه',
+  resultEmptyTitle: 'هنوز پلانی تولید نشده است',
+  resultEmptyHint: 'مشخصات پروژه، سایت و نیازها را در پنل ورودی تنظیم کنید، سپس «تولید پلان» را بزنید.',
+  resultSuccess: 'پلان با موفقیت تولید شد.',
+  resultCandidatesNote: '{count} گزینهٔ معتبر تولید شد — گزینهٔ نخست (بهترین رتبه) انتخاب شده است.',
+  resultInfeasibleTitle: 'تولید پلان ممکن نشد',
+  resultInfeasibleBody: 'با این سایت و نیازهای داده‌شده، هیچ چیدمانی حداقل‌های هندسی را برآورده نمی‌کند. معمولاً بزرگ‌ترکردن ابعاد سایت، کاهش طبقات یا اتاق‌ها، یا کم‌کردن عقب‌نشینی‌ها مشکل را حل می‌کند. ورودی‌های شما محفوظ است.',
+  infeasibleAttemptsTitle: 'نخستین خطای هر راهبرد',
+  technicalDetails: 'جزئیات فنی',
+  autoCheckNote: 'اعتبارسنجی خودکار است و جایگزین بررسی حرفه‌ای و کنترل مقررات محلی نیست.',
+
+  // Findings groups
+  findingsGroupHard: 'خطاهای بحرانی',
+  findingsGroupSoft: 'هشدارها',
+  findingsGroupAdv: 'نیازمند بررسی',
+  findingsNone: 'موردی ثبت نشده است.',
+  findingsShowMore: 'نمایش موارد بیشتر ({count})',
+  findingsShowLess: 'نمایش کمتر',
+  findingEntities: 'شیءهای مرتبط',
+
+  // Candidates
+  candidatesTitle: 'گزینه‌های پلان',
+  candidateRank: 'گزینه {index}',
+  candidateBestBadge: 'بهترین رتبه',
+  candidateValidLabel: 'معتبر',
+  candidateInvalidLabel: 'نامعتبر',
+  candidateHardCount: '{count} بحرانی',
+  candidateSoftCount: '{count} هشدار',
+  candidateUsable: 'سطح قابل‌استفاده {value}٪',
 
   // Spaces / stairs
   sectionSpaces: 'فضاها — طبقهٔ {floor}',
@@ -157,10 +212,23 @@ const fa = {
   canvasStair: 'راه‌پله',
   canvasFloor: 'طبقهٔ {current} از {last} — {count} فضا — برای انتخاب فضا کلیک کنید',
   canvasNorth: 'شمال',
+  canvasAriaLabel: 'نمای پلان طبقهٔ {floor} — کلیک: انتخاب فضا، درگ: جابه‌جایی نما، اسکرول: بزرگ‌نمایی',
+  canvasPanHint: 'درگ: جابه‌جایی نما · اسکرول: بزرگ‌نمایی · کلیک: انتخاب فضا',
+  zoomInLabel: 'بزرگ‌نمایی',
+  zoomOutLabel: 'کوچک‌نمایی',
+  resetViewLabel: 'بازنشانی نما',
+  legendTitle: 'راهنمای نمای پلان',
+  legendRooms: 'فضاها',
+  legendBuildable: 'محدودهٔ ساخت',
+  legendParking: 'پارکینگ',
+  legendStair: 'راه‌پله',
+  legendOpenings: 'در و پنجره',
 
   // Errors
   errorInfeasible: 'ناممکن (INFEASIBLE) — هیچ گزینهٔ از نظر هندسی معتبری برای این سایت/برنامهٔ داده‌شده وجود ندارد.',
   errorInvalidPolygon: 'JSON چندضلعی نامعتبر است — باید آرایه‌ای از مختصات {x,y} باشد.',
+  errorDetailsPointer: 'جزئیات در پنل «وضعیت نتیجه».',
+  formAriaLabel: 'ورودی‌های پروژه',
 } as const;
 
 export type Dict = typeof fa;
@@ -742,6 +810,17 @@ export function translateInfeasibleExplanation(s: string): string {
 /** True when the string contains Persian script (used by tests). */
 export function isPersianText(s: string): boolean {
   return /[\u0600-\u06FF]/.test(s);
+}
+
+/**
+ * Format a count/step number with Persian digits — display-layer only.
+ * Technical values (dimensions, coordinates, ids, metrics) intentionally keep
+ * Western digits and stay in LTR runs; this is used for UI counts and steps
+ * (e.g. «۳ خطای بحرانی»).
+ */
+const FA_DIGITS = '۰۱۲۳۴۵۶۷۸۹';
+export function faNum(n: number | string): string {
+  return String(n).replace(/[0-9]/g, d => FA_DIGITS[+d]);
 }
 
 /** Persian-capable font stack — no external dependencies; falls back per glyph. */

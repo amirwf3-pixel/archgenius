@@ -1,14 +1,21 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { createProject, generate, exportDXF, validateCandidate, buildDocumentation, Editing } from '@archgenius/core';
+import { createProject, generate, exportDXF, validateCandidate, Editing } from '@archgenius/core';
 import type { ProjectInput, Project } from '@archgenius/core';
 import type { LayoutCandidate } from '@archgenius/core';
 import type { Space } from '@archgenius/core';
 import { PlanCanvas } from './PlanCanvas';
+import { CandidatesBar } from './CandidatesBar';
+import { FindingsPanel, EditFindingsList, ResultStatusCard, PlanLegend } from './FindingsPanel';
+import type { ResultState } from './FindingsPanel';
 import {
-  t, tf, DIR, LOCALE, spaceLabel, spaceTypeFromLabel,
-  SEVERITY_FA, STRATEGY_FA, STAIR_TYPE_FA, SHAPE_FA, SIDE_FA,
-  findingCodeTitle, persianSummary, translateEngineError,
-  findingMessageFa, translateInfeasibleExplanation,
+  Section, Field, NumField, SelectField, CheckField, Collapsible,
+  StatusNote, Segmented, Metric,
+  IconDownload, IconLock, IconUnlock, IconAlert, IconCube, IconCheckCircle,
+} from './components';
+import {
+  t, tf, faNum, DIR, LOCALE, spaceLabel, spaceTypeFromLabel,
+  STRATEGY_FA, STAIR_TYPE_FA, SHAPE_FA, SIDE_FA,
+  translateEngineError, translateInfeasibleExplanation,
 } from './i18n';
 
 interface FormState {
@@ -75,6 +82,14 @@ const DEFAULT_STATE: FormState = {
   seed: 42,
 };
 
+type Stage = 'idle' | 'generate' | 'validate' | 'prepare';
+
+/** Yield to the browser so the busy/stage UI can paint between real phases. */
+const nextPaint = () => new Promise<void>(resolve => {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => setTimeout(resolve, 0));
+  else setTimeout(resolve, 16);
+});
+
 export function App() {
   const [form, setForm] = useState<FormState>(DEFAULT_STATE);
   const [project, setProject] = useState<Project | null>(null);
@@ -86,7 +101,12 @@ export function App() {
   const [editError, setEditError] = useState<string | null>(null);
   const [editFindings, setEditFindings] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState<Stage>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [successNote, setSuccessNote] = useState<string | null>(null);
+  const [dxfNote, setDxfNote] = useState<string | null>(null);
+  const [infeasibleExplanation, setInfeasibleExplanation] = useState<string | null>(null);
+  const [infeasibleAttempts, setInfeasibleAttempts] = useState<Array<{ strategy: string; candidateId: string; reason: string }>>([]);
 
   // Move/resize local state
   const [moveX, setMoveX] = useState<number>(0);
@@ -125,8 +145,33 @@ export function App() {
     setResizeH(sp.rect.h);
   }, [selectedSpaceId, selectedFloor, displayCandidate?.id]);
 
-  const onGenerate = () => {
-    setBusy(true); setError(null);
+  // Auto-dismiss the DXF success note
+  useEffect(() => {
+    if (!dxfNote) return;
+    const id = setTimeout(() => setDxfNote(null), 5000);
+    return () => clearTimeout(id);
+  }, [dxfNote]);
+
+  // Inline validation for the polygon JSON (same rule the generator applies)
+  const polygonJsonValid = useMemo(() => {
+    if (form.siteShape !== 'polygon') return true;
+    try {
+      return Array.isArray(JSON.parse(form.polygonJson));
+    } catch {
+      return false;
+    }
+  }, [form.siteShape, form.polygonJson]);
+
+  const onGenerate = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setSuccessNote(null);
+    setDxfNote(null);
+    setInfeasibleExplanation(null);
+    setInfeasibleAttempts([]);
+    setStage('generate');
+    await nextPaint(); // paint the busy state before the synchronous engine work
     try {
       let polygonVertices: any = undefined;
       if (form.siteShape === 'polygon') {
@@ -190,33 +235,49 @@ export function App() {
         seed: Number(form.seed) || 42,
       };
       const prj = createProject(input);
-      // Phase 13.2: infeasible results expose NO usable candidate — surface the explicit
-      // infeasible state instead of silently presenting a below-minimum plan.
-      const result = generate(prj);
+      // allStrategies: expose the engine's full deterministic best-first
+      // ranking for review — ranking order is decided by the core, untouched.
+      const result = generate(prj, { allStrategies: true });
       setProject(prj);
       setCandidates(result.candidates);
       setSelectedIdx(0);
       setSelectedFloor(0);
       setEditedCandidate(result.candidates[0] ?? null);
+      setStage('validate');
+      await nextPaint(); // validation of the displayed candidate runs in the vr memo
+      setStage('prepare');
+      await nextPaint();
+      // Phase 13.2: infeasible results expose NO usable candidate — surface the explicit
+      // infeasible state instead of silently presenting a below-minimum plan.
       if (result.infeasible) {
-        setError(`${t('errorInfeasible')}\n${translateInfeasibleExplanation(result.infeasible.explanation)}`);
+        setError(`${t('errorInfeasible')}`);
+        setInfeasibleExplanation(translateInfeasibleExplanation(result.infeasible.explanation));
+        setInfeasibleAttempts(result.infeasible.attempts);
+      } else {
+        setSuccessNote(result.candidates.length > 1
+          ? tf('resultCandidatesNote', { count: faNum(result.candidates.length) })
+          : t('resultSuccess'));
       }
     } catch (e: any) {
       setError(e?.message ?? String(e));
     } finally {
       setBusy(false);
+      setStage('idle');
     }
   };
 
   const vr = useMemo(() => displayCandidate ? validateCandidate(displayCandidate) : null, [displayCandidate]);
-  const doc = useMemo(() => {
-    if (!project || !displayCandidate) return null;
-    try {
-      return buildDocumentation(project, displayCandidate);
-    } catch {
-      return null;
+
+  // Read-only validation summary per candidate (for the candidate cards)
+  const candValidations = useMemo(() => candidates.map(c => validateCandidate(c)), [candidates]);
+
+  const resultState: ResultState = useMemo(() => {
+    if (infeasibleExplanation !== null) {
+      return { kind: 'infeasible', explanation: infeasibleExplanation, attempts: infeasibleAttempts };
     }
-  }, [project, displayCandidate]);
+    if (!displayCandidate || !vr) return { kind: 'empty' };
+    return { kind: vr.ok ? 'ok' : 'invalid', vr, candidateCount: candidates.length };
+  }, [infeasibleExplanation, infeasibleAttempts, displayCandidate, vr, candidates.length]);
 
   const onDownloadDXF = () => {
     if (!displayCandidate || !project) return;
@@ -228,11 +289,13 @@ export function App() {
     a.download = `${project.input.name.replace(/\s+/g, '_')}_archgenius.dxf`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
+    setDxfNote(t('dxfReady'));
   };
 
   const floorCount = displayCandidate?.floors.length ?? form.floors;
   const currentFloor = displayCandidate?.floors[Math.max(0, Math.min(selectedFloor, (displayCandidate?.floors.length ?? 1) - 1))];
   const selectedSpace: Space | undefined = currentFloor?.spaces.find(s => s.id === selectedSpaceId);
+  const isEdited = displayCandidate != null && candidate != null && displayCandidate !== candidate;
 
   const handleEditResult = (res: any) => {
     if (res.success) {
@@ -280,321 +343,377 @@ export function App() {
     handleEditResult(res);
   };
 
+  const shapeOptions = [
+    { value: 'rectangle', label: t('shapeRectangle') },
+    { value: 'l-shape', label: t('shapeLShape') },
+    { value: 'polygon', label: t('shapePolygon') },
+  ];
+
   return (
     <div dir={DIR} lang={LOCALE} className="h-full flex flex-col overflow-x-hidden">
-      <header className="h-14 border-b border-ink-700 flex items-center justify-between px-6 bg-ink-800 min-w-0">
+      <header className="sticky top-0 z-30 h-14 border-b border-ink-700 flex items-center justify-between px-4 sm:px-6 bg-ink-800/95 backdrop-blur min-w-0">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 rounded bg-accent-500 flex items-center justify-center font-bold shrink-0">A</div>
+          <div className="w-8 h-8 rounded bg-accent-500 flex items-center justify-center font-bold shrink-0" aria-hidden="true">A</div>
           <div className="min-w-0">
-            <div className="font-semibold truncate">ArchGenius — {t('appName')}</div>
-            <div className="text-[10px] text-ink-400 truncate">{t('headerTagline')}</div>
+            <h1 className="text-sm font-semibold truncate">ArchGenius — {t('appName')}</h1>
+            <p className="text-[10px] text-ink-400 truncate">{t('headerTagline')}</p>
           </div>
         </div>
-        <div className="text-xs text-ink-400 shrink-0">{t('headerMeta')}</div>
+        <div className="text-[10px] sm:text-xs text-ink-400 shrink-0 hidden sm:block">{t('headerMeta')}</div>
       </header>
 
-      <div className="flex-1 grid grid-cols-12 gap-0 overflow-hidden overflow-x-hidden">
-        <aside className="col-span-3 border-e border-ink-700 overflow-y-auto overflow-x-hidden p-4 space-y-4 min-w-0">
-          <Section title={t('sectionProject')}>
-            <div className="field">
-              <label>{t('projectName')}</label>
-              <input value={form.name} onChange={e => update('name', e.target.value)} />
-            </div>
-            <div className="field">
-              <label>{t('seedLabel')}</label>
-              <input type="number" min={0} step={1} value={form.seed} onChange={e => update('seed', +e.target.value)} />
-              <span className="text-[10px] text-ink-400">{t('seedHint')}</span>
-            </div>
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 lg:overflow-hidden">
+        {/* ------------------------------------------------ panels: input */}
+        <aside className="lg:col-span-3 border-b lg:border-b-0 lg:border-e border-ink-700 lg:overflow-y-auto p-4 space-y-4 min-w-0" aria-label={t('formAriaLabel')}>
+          <Section id="project" step={1} title={t('sectionProject')}>
+            <Field id="f-name" label={t('projectName')}>
+              <input id="f-name" value={form.name} disabled={busy} onChange={e => update('name', e.target.value)} />
+            </Field>
+            <Collapsible title={t('advancedProject')}>
+              <NumField id="f-seed" label={t('seedLabel')} value={form.seed} min={0} step={1} disabled={busy}
+                onChange={v => update('seed', v)} hint={t('seedHint')} />
+            </Collapsible>
           </Section>
 
-          <Section title={t('sectionSite')}>
+          <Section id="site" step={2} title={t('sectionSite')}>
             <div className="grid grid-cols-2 gap-3">
-              <div className="field col-span-2">
-                <label>{t('siteShape')}</label>
-                <select value={form.siteShape} onChange={e => update('siteShape', e.target.value as any)}>
-                  <option value="rectangle">{t('shapeRectangle')}</option>
-                  <option value="l-shape">{t('shapeLShape')}</option>
-                  <option value="polygon">{t('shapePolygon')}</option>
-                </select>
-                <span className="text-[9px] text-ink-400">{t('siteShapeHint')}</span>
-              </div>
-              <div className="field">
-                <label>{t('widthM')}</label>
-                <input type="number" min={5} step={0.5} value={form.siteWidth} onChange={e => update('siteWidth', +e.target.value)} />
-              </div>
-              <div className="field">
-                <label>{t('lengthM')}</label>
-                <input type="number" min={5} step={0.5} value={form.siteLength} onChange={e => update('siteLength', +e.target.value)} />
-              </div>
-              <div className="field">
-                <label>{t('accessSide')}</label>
-                <select value={form.accessSide} onChange={e => update('accessSide', e.target.value as any)}>
-                  <option value="south">{SIDE_FA.south}</option>
-                  <option value="north">{SIDE_FA.north}</option>
-                  <option value="east">{SIDE_FA.east}</option>
-                  <option value="west">{SIDE_FA.west}</option>
-                </select>
-              </div>
-              <div className="field">
-                <label>{t('streetWidthM')}</label>
-                <input type="number" min={3} step={0.5} value={form.streetWidth} onChange={e => update('streetWidth', +e.target.value)} />
-              </div>
+              <SelectField id="f-shape" className="col-span-2" label={t('siteShape')} value={form.siteShape}
+                disabled={busy} onChange={v => update('siteShape', v as any)} options={shapeOptions} hint={t('siteShapeHint')} />
+              <NumField id="f-width" label={t('widthM')} value={form.siteWidth} min={5} step={0.5} disabled={busy}
+                onChange={v => update('siteWidth', v)} />
+              <NumField id="f-length" label={t('lengthM')} value={form.siteLength} min={5} step={0.5} disabled={busy}
+                onChange={v => update('siteLength', v)} />
+              <SelectField id="f-access" label={t('accessSide')} value={form.accessSide} disabled={busy}
+                onChange={v => update('accessSide', v as any)}
+                options={(['south', 'north', 'east', 'west'] as const).map(s => ({ value: s, label: SIDE_FA[s] }))} />
+              <NumField id="f-street" label={t('streetWidthM')} value={form.streetWidth} min={3} step={0.5} disabled={busy}
+                onChange={v => update('streetWidth', v)} />
             </div>
 
             {form.siteShape === 'l-shape' && (
-              <div className="mt-3 p-2 bg-ink-800 rounded border border-ink-700 space-y-2">
+              <div className="card">
                 <div className="text-[11px] font-semibold text-accent-300">{t('lNotchTitle')}</div>
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="field">
-                    <label>{t('notchWidthM')}</label>
-                    <input type="number" min={1} step={0.5} value={form.lNotchWidth} onChange={e => update('lNotchWidth', +e.target.value)} />
-                  </div>
-                  <div className="field">
-                    <label>{t('notchLengthM')}</label>
-                    <input type="number" min={1} step={0.5} value={form.lNotchLength} onChange={e => update('lNotchLength', +e.target.value)} />
-                  </div>
-                  <div className="field col-span-2">
-                    <label>{t('notchCorner')}</label>
-                    <select value={form.lNotchCorner} onChange={e => update('lNotchCorner', e.target.value as any)}>
-                      <option value="north-east">{SIDE_FA['north-east']}</option>
-                      <option value="north-west">{SIDE_FA['north-west']}</option>
-                      <option value="south-east">{SIDE_FA['south-east']}</option>
-                      <option value="south-west">{SIDE_FA['south-west']}</option>
-                    </select>
-                  </div>
+                  <NumField id="f-notchw" label={t('notchWidthM')} value={form.lNotchWidth} min={1} step={0.5} disabled={busy}
+                    onChange={v => update('lNotchWidth', v)} />
+                  <NumField id="f-notchl" label={t('notchLengthM')} value={form.lNotchLength} min={1} step={0.5} disabled={busy}
+                    onChange={v => update('lNotchLength', v)} />
+                  <SelectField id="f-notchc" className="col-span-2" label={t('notchCorner')} value={form.lNotchCorner} disabled={busy}
+                    onChange={v => update('lNotchCorner', v as any)}
+                    options={(['north-east', 'north-west', 'south-east', 'south-west'] as const).map(c => ({ value: c, label: SIDE_FA[c] }))} />
                 </div>
               </div>
             )}
 
             {form.siteShape === 'polygon' && (
-              <div className="mt-3 p-2 bg-ink-800 rounded border border-ink-700 space-y-2">
-                <div className="text-[11px] font-semibold text-accent-300">{t('polygonVertsTitle')}</div>
-                <textarea dir="ltr" className="w-full h-24 bg-ink-900 border border-ink-700 rounded p-2 text-xs mono text-left" value={form.polygonJson} onChange={e => update('polygonJson', e.target.value)} />
-              </div>
+              <Field
+                id="f-polyjson"
+                label={t('polygonVertsTitle')}
+                error={polygonJsonValid ? undefined : t('polygonJsonInvalid')}
+                hint={polygonJsonValid ? t('polygonJsonValid') : undefined}
+              >
+                <textarea
+                  id="f-polyjson" dir="ltr" className="w-full h-24 text-left"
+                  value={form.polygonJson} disabled={busy}
+                  aria-invalid={!polygonJsonValid}
+                  onChange={e => update('polygonJson', e.target.value)}
+                />
+              </Field>
             )}
 
-            <div className="mt-3 p-2 bg-ink-800 rounded border border-ink-700 space-y-2">
-              <div className="text-[11px] font-semibold text-accent-300">{t('setbacksTitle')}</div>
+            <Collapsible
+              title={t('setbacksTitle')}
+              subtitle={tf('setbacksSummary', { n: form.setbackNorth, s: form.setbackSouth, e: form.setbackEast, w: form.setbackWest })}
+            >
               <div className="grid grid-cols-2 gap-2">
-                <div className="field"><label>{t('setbackNorthM')}</label><input type="number" min={0} step={0.5} value={form.setbackNorth} onChange={e => update('setbackNorth', +e.target.value)} /></div>
-                <div className="field"><label>{t('setbackSouthM')}</label><input type="number" min={0} step={0.5} value={form.setbackSouth} onChange={e => update('setbackSouth', +e.target.value)} /></div>
-                <div className="field"><label>{t('setbackEastM')}</label><input type="number" min={0} step={0.5} value={form.setbackEast} onChange={e => update('setbackEast', +e.target.value)} /></div>
-                <div className="field"><label>{t('setbackWestM')}</label><input type="number" min={0} step={0.5} value={form.setbackWest} onChange={e => update('setbackWest', +e.target.value)} /></div>
+                <NumField id="f-sbn" label={t('setbackNorthM')} value={form.setbackNorth} min={0} step={0.5} disabled={busy}
+                  onChange={v => update('setbackNorth', v)} />
+                <NumField id="f-sbs" label={t('setbackSouthM')} value={form.setbackSouth} min={0} step={0.5} disabled={busy}
+                  onChange={v => update('setbackSouth', v)} />
+                <NumField id="f-sbe" label={t('setbackEastM')} value={form.setbackEast} min={0} step={0.5} disabled={busy}
+                  onChange={v => update('setbackEast', v)} />
+                <NumField id="f-sbw" label={t('setbackWestM')} value={form.setbackWest} min={0} step={0.5} disabled={busy}
+                  onChange={v => update('setbackWest', v)} />
               </div>
-            </div>
+            </Collapsible>
           </Section>
 
-          <Section title={t('sectionBuilding')}>
+          <Section id="building" step={3} title={t('sectionBuilding')}>
             <div className="grid grid-cols-2 gap-3">
-              <div className="field">
-                <label>{t('buildingType')}</label>
-                <select value={form.buildingType} onChange={e => update('buildingType', e.target.value as any)}>
-                  <option value="villa">{t('typeVilla')}</option>
-                  <option value="apartment">{t('typeApartment')}</option>
-                </select>
-              </div>
-              <div className="field">
-                <label>{t('floors')}</label>
-                <input type="number" min={1} max={10} value={form.floors} onChange={e => { const v = Math.max(1, Math.min(10, +e.target.value || 1)); update('floors', v); if (v > 1) update('hasStair', true); }} />
-              </div>
-              <div className="field"><label>{t('bedrooms')}</label><input type="number" min={1} max={6} value={form.bedrooms} onChange={e => update('bedrooms', +e.target.value)} /></div>
-              <div className="field"><label>{t('masterBedrooms')}</label><input type="number" min={0} max={2} value={form.masterBedrooms} onChange={e => update('masterBedrooms', +e.target.value)} /></div>
-              <div className="field"><label>{t('bathrooms')}</label><input type="number" min={0} max={4} value={form.bathrooms} onChange={e => update('bathrooms', +e.target.value)} /></div>
-              <div className="field"><label>{t('wc')}</label><input type="number" min={0} max={2} value={form.wc} onChange={e => update('wc', +e.target.value)} /></div>
-              <div className="field">
-                <label>{t('kitchen')}</label>
-                <select value={form.kitchenType} onChange={e => update('kitchenType', e.target.value as any)}>
-                  <option value="closed">{t('kitchenClosed')}</option>
-                  <option value="open">{t('kitchenOpen')}</option>
-                  <option value="semi-open">{t('kitchenSemiOpen')}</option>
-                </select>
-              </div>
-              <div className="field"><label>{t('parkingSpaces')}</label><input type="number" min={0} max={6} value={form.parkingSpaces} onChange={e => update('parkingSpaces', +e.target.value)} /></div>
+              <SelectField id="f-btype" label={t('buildingType')} value={form.buildingType} disabled={busy}
+                onChange={v => update('buildingType', v as any)}
+                options={[{ value: 'villa', label: t('typeVilla') }, { value: 'apartment', label: t('typeApartment') }]} />
+              <NumField id="f-floors" label={t('floors')} value={form.floors} min={1} max={10} step={1} disabled={busy}
+                onChange={v => { const c = Math.max(1, Math.min(10, v || 1)); update('floors', c); if (c > 1) update('hasStair', true); }} />
+              <NumField id="f-bed" label={t('bedrooms')} value={form.bedrooms} min={1} max={6} step={1} disabled={busy}
+                onChange={v => update('bedrooms', v)} />
+              <NumField id="f-master" label={t('masterBedrooms')} value={form.masterBedrooms} min={0} max={2} step={1} disabled={busy}
+                onChange={v => update('masterBedrooms', v)} />
+              <NumField id="f-bath" label={t('bathrooms')} value={form.bathrooms} min={0} max={4} step={1} disabled={busy}
+                onChange={v => update('bathrooms', v)} />
+              <NumField id="f-wc" label={t('wc')} value={form.wc} min={0} max={2} step={1} disabled={busy}
+                onChange={v => update('wc', v)} />
+              <SelectField id="f-kitchen" label={t('kitchen')} value={form.kitchenType} disabled={busy}
+                onChange={v => update('kitchenType', v as any)}
+                options={[{ value: 'closed', label: t('kitchenClosed') }, { value: 'open', label: t('kitchenOpen') }, { value: 'semi-open', label: t('kitchenSemiOpen') }]} />
+              <NumField id="f-parking" label={t('parkingSpaces')} value={form.parkingSpaces} min={0} max={6} step={1} disabled={busy}
+                onChange={v => update('parkingSpaces', v)} />
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-              <label className="flex items-center gap-2"><input type="checkbox" checked={form.hasStair || form.floors > 1} disabled={form.floors > 1} onChange={e => update('hasStair', e.target.checked)} /> {t('hasStair')}</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={form.hasElevator} onChange={e => update('hasElevator', e.target.checked)} /> {t('hasElevator')}</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={form.hasStorage} onChange={e => update('hasStorage', e.target.checked)} /> {t('hasStorage')}</label>
+            <div className="grid grid-cols-2 gap-1 pt-1">
+              <CheckField id="f-stair" label={t('hasStair')} checked={form.hasStair || form.floors > 1}
+                disabled={busy || form.floors > 1} onChange={v => update('hasStair', v)}
+                title={form.floors > 1 ? t('stairRequiredHint') : undefined} />
+              <CheckField id="f-elevator" label={t('hasElevator')} checked={form.hasElevator} disabled={busy}
+                onChange={v => update('hasElevator', v)} />
+              <CheckField id="f-storage" label={t('hasStorage')} checked={form.hasStorage} disabled={busy}
+                onChange={v => update('hasStorage', v)} />
             </div>
           </Section>
 
-          <div className="sticky bottom-0 pt-2 bg-ink-900/80 backdrop-blur">
-            <button className="btn-primary w-full" disabled={busy} onClick={onGenerate}>
-              {busy ? t('generating') : tf('generateWithParams', { floors: form.floors })}
+          {/* primary CTA — the ONE primary action of the app */}
+          <div className="sticky bottom-0 -mx-4 px-4 py-3 bg-ink-900/95 backdrop-blur border-t border-ink-700 z-10 space-y-2">
+            <button type="button" className="btn-primary w-full" disabled={busy} onClick={onGenerate}>
+              {busy
+                ? <><span className="spinner" aria-hidden="true" />{t('generating')}</>
+                : tf('generateWithParams', { floors: faNum(form.floors) })}
             </button>
-            {error && <div className="mt-2 text-xs text-bad border border-bad/40 bg-bad/10 p-2 rounded whitespace-pre-wrap">{error}</div>}
+            {busy && (
+              <div className="text-center text-xs text-ink-400" role="status" aria-live="polite">
+                {stage === 'generate' && t('stageGenerate')}
+                {stage === 'validate' && t('stageValidate')}
+                {stage === 'prepare' && t('stagePrepare')}
+              </div>
+            )}
+            {!busy && error && (
+              <StatusNote tone="bad">
+                {error}
+                <span className="block text-[10px] text-ink-500">{t('errorDetailsPointer')}</span>
+              </StatusNote>
+            )}
+            {!busy && !error && successNote && <StatusNote tone="ok">{successNote}</StatusNote>}
           </div>
         </aside>
 
-        <main className="col-span-6 flex flex-col border-e border-ink-700 bg-ink-900 min-w-0 overflow-x-hidden">
-          <div className="h-12 border-b border-ink-700 flex items-center justify-between px-4 min-w-0 gap-2">
-            <div className="text-sm text-ink-400 min-w-0 truncate flex items-center gap-2">
-              <span className="text-slate-200 font-medium">{tf('planTitle', { floors: floorCount, shape: SHAPE_FA[form.siteShape] ?? form.siteShape })}</span>
-              {displayCandidate && <span className="text-xs">{t('strategyLabel')}: <span className="mono" dir="ltr">{displayCandidate.metadata.strategy}</span> · {STRATEGY_FA[displayCandidate.metadata.strategy] ?? ''} · {tf('floorOf', { current: selectedFloor + 1, total: floorCount })}</span>}
+        {/* ------------------------------------------------ canvas */}
+        <main className="lg:col-span-6 lg:flex lg:flex-col border-b lg:border-b-0 lg:border-e border-ink-700 bg-ink-900 min-w-0">
+          <div className="min-h-12 border-b border-ink-700 flex flex-wrap items-center justify-between gap-2 px-3 py-2 min-w-0">
+            <div className="text-sm text-ink-400 min-w-0 truncate flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-slate-200 font-medium">{tf('planTitle', { floors: faNum(floorCount), shape: SHAPE_FA[form.siteShape] ?? form.siteShape })}</span>
+              {displayCandidate && (
+                <>
+                  {vr && (vr.ok
+                    ? <span className="badge-ok"><IconCheckCircle className="w-3 h-3" />{t('validTitle')}</span>
+                    : <span className="badge-hard"><IconAlert className="w-3 h-3" />{t('invalidTitle')}</span>)}
+                  {isEdited && <span className="badge-neutral">{t('editedBadge')}</span>}
+                  <span className="text-xs text-ink-400">
+                    {t('strategyLabel')}: <span className="mono ltr" dir="ltr">{displayCandidate.metadata.strategy}</span> · {STRATEGY_FA[displayCandidate.metadata.strategy] ?? ''}
+                  </span>
+                </>
+              )}
             </div>
-            <div className="flex gap-2 shrink-0 items-center">
+            <div className="flex gap-2 shrink-0 items-center flex-wrap">
               {displayCandidate && displayCandidate.floors.length > 1 && (
-                <select className="text-xs bg-ink-800 border border-ink-700 rounded px-2 py-1" value={selectedFloor} onChange={e => { setSelectedFloor(+e.target.value); setSelectedSpaceId(null); }}>
-                  {displayCandidate.floors.map((f, i) => <option key={i} value={i}>{tf('floorSelect', { index: i, level: f.level })}</option>)}
-                </select>
+                <Segmented
+                  ariaLabel={t('floorPickerLabel')}
+                  value={selectedFloor}
+                  onChange={i => { setSelectedFloor(i); setSelectedSpaceId(null); }}
+                  options={displayCandidate.floors.map((f, i) => ({ value: i, label: faNum(i + 1) }))}
+                />
               )}
-              {candidates.length > 1 && (
-                <select className="text-xs bg-ink-800 border border-ink-700 rounded px-2 py-1 max-w-[180px]" value={selectedIdx} onChange={e => setSelectedIdx(+e.target.value)}>
-                  {candidates.map((c, i) => <option key={c.id} value={i}>{tf('candidateSelect', { index: i + 1, strategy: STRATEGY_FA[c.metadata.strategy] ?? c.metadata.strategy })}</option>)}
-                </select>
-              )}
-              <button className="btn-secondary" disabled={!displayCandidate} onClick={onDownloadDXF}>{t('downloadDxf')}</button>
+              <button type="button" className="btn-secondary" disabled={!displayCandidate} onClick={onDownloadDXF}
+                title={!displayCandidate ? t('dxfDisabledHint') : t('downloadDxfHint')}>
+                <IconDownload className="w-3.5 h-3.5" />
+                {t('downloadDxf')}
+              </button>
             </div>
           </div>
-          <div className="flex-1 flex items-center justify-center p-4 min-w-0 overflow-hidden">
-            <div className="w-full h-full max-h-full min-w-0">
-              <PlanCanvas candidate={displayCandidate} floorIndex={selectedFloor} width={800} height={560} selectedSpaceId={selectedSpaceId} onSelectSpace={setSelectedSpaceId} />
-            </div>
+
+          {candidates.length > 1 && (
+            <CandidatesBar candidates={candidates} validations={candValidations} selectedIdx={selectedIdx} onSelect={setSelectedIdx} />
+          )}
+
+          <div className="relative h-[56vh] min-h-[320px] lg:h-auto lg:flex-1 lg:min-h-0 p-3">
+            <PlanCanvas
+              candidate={displayCandidate}
+              floorIndex={selectedFloor}
+              selectedSpaceId={selectedSpaceId}
+              onSelectSpace={setSelectedSpaceId}
+            />
+            {!displayCandidate && !busy && (
+              <div className="absolute inset-0 p-6 flex flex-col items-center justify-center gap-2 text-center pointer-events-none">
+                <IconCube className="w-10 h-10 text-ink-600" />
+                <div className="text-sm font-semibold text-ink-400">{t('resultEmptyTitle')}</div>
+                <p className="text-xs text-ink-500 max-w-sm leading-6">{t('resultEmptyHint')}</p>
+                <p className="text-[10px] text-ink-600">{t('canvasPanHint')}</p>
+              </div>
+            )}
+            {busy && (
+              <div className="absolute inset-0 bg-ink-900/75 backdrop-blur-[1px] flex flex-col items-center justify-center gap-3 z-20" role="status" aria-live="polite">
+                <span className="spinner-accent !w-6 !h-6" aria-hidden="true" />
+                <div className="text-sm text-slate-200">
+                  {stage === 'generate' && t('stageGenerate')}
+                  {stage === 'validate' && t('stageValidate')}
+                  {stage === 'prepare' && t('stagePrepare')}
+                </div>
+                <div className="text-[11px] text-ink-400">{t('busyHint')}</div>
+              </div>
+            )}
           </div>
+
           {displayCandidate && (
-            <div className="h-20 border-t border-ink-700 grid grid-cols-5 gap-px bg-ink-700 text-[11px] min-w-0">
-              <Metric label={t('metricUsable')} value={`${(displayCandidate.metrics.usableAreaRatio * 100).toFixed(0)}%`} />
-              <Metric label={t('metricCirculation')} value={`${(displayCandidate.metrics.circulationRatio * 100).toFixed(0)}%`} />
-              <Metric label={t('metricRoomDev')} value={`${(displayCandidate.metrics.roomAreaDeviation * 100).toFixed(0)}%`} />
-              <Metric label={t('metricDaylight')} value={`${(displayCandidate.metrics.daylightExposure * 100).toFixed(0)}%`} />
-              <Metric label={t('metricValid')} value={displayCandidate.valid ? t('yes') : t('no')} />
-            </div>
+            <>
+              <PlanLegend />
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-px bg-ink-700 border-t border-ink-700 text-[11px] min-w-0">
+                <Metric label={t('metricUsable')} value={`${(displayCandidate.metrics.usableAreaRatio * 100).toFixed(0)}%`} />
+                <Metric label={t('metricCirculation')} value={`${(displayCandidate.metrics.circulationRatio * 100).toFixed(0)}%`} />
+                <Metric label={t('metricRoomDev')} value={`${(displayCandidate.metrics.roomAreaDeviation * 100).toFixed(0)}%`} />
+                <Metric label={t('metricDaylight')} value={`${(displayCandidate.metrics.daylightExposure * 100).toFixed(0)}%`} />
+                <Metric label={t('metricValid')} value={vr?.ok ? t('validTitle') : t('invalidTitle')} tone={vr?.ok ? 'ok' : 'bad'} />
+              </div>
+            </>
           )}
         </main>
 
-        <aside className="col-span-3 overflow-y-auto overflow-x-hidden p-4 space-y-4 bg-ink-900 min-w-0">
-          <Section title={t('sectionEditing')}>
-            {!displayCandidate && <div className="text-xs text-ink-400">{t('generateFirst')}</div>}
-            {displayCandidate && currentFloor && (
-              <div className="space-y-3 text-xs">
-                <div className="field">
-                  <label>{tf('selectRoom', { floor: selectedFloor })}</label>
-                  <select value={selectedSpaceId ?? ''} onChange={e => setSelectedSpaceId(e.target.value || null)} className="w-full bg-ink-800 border border-ink-700 rounded px-2 py-1">
-                    <option value="">{t('selectPlaceholder')}</option>
-                    {currentFloor.spaces.map(s => (
-                      <option key={s.id} value={s.id}>{spaceLabel(s.label)} · {s.area.toFixed(1)}m² {s.locked?.position || s.locked?.geometry ? '🔒' : ''}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {selectedSpace && (
-                  <>
-                    <div className="p-2 bg-ink-800 rounded border border-ink-700 space-y-1">
-                      <div className="font-semibold text-slate-200">{spaceLabel(selectedSpace.label)} — {spaceTypeFromLabel(selectedSpace)}</div>
-                      <div className="mono text-[10px]" dir="ltr">id: {selectedSpace.id}</div>
-                      <div>{t('area')}: <span dir="ltr">{selectedSpace.area.toFixed(2)} m²</span> · {t('width')} × {t('height')}: <span dir="ltr">{selectedSpace.rect.w.toFixed(2)}×{selectedSpace.rect.h.toFixed(2)}</span></div>
-                      <div>{t('shape')}: <span dir="ltr">{selectedSpace.shapeType ?? 'rectangle'}</span> · {t('verts')}: <span dir="ltr">{selectedSpace.polygon.length}</span></div>
-                      <div>{t('privacy')}: <span dir="ltr">{selectedSpace.privacy}</span> · {t('zone')}: <span dir="ltr">{selectedSpace.zone}</span></div>
-                      {selectedSpace.constraints && (
-                        <div className="mt-1 p-1 bg-ink-900 rounded border border-ink-700">
-                          <div className="font-semibold">{t('constraints')}</div>
-                          <div dir="ltr" className="mono text-[10px]">minArea {selectedSpace.constraints.minArea ?? '-'} · target {selectedSpace.constraints.targetArea ?? '-'} · max {selectedSpace.constraints.maxArea ?? '-'}</div>
-                          <div dir="ltr" className="mono text-[10px]">minW {selectedSpace.constraints.minWidth ?? '-'} · minL {selectedSpace.constraints.minLength ?? '-'} · aspect {selectedSpace.constraints.preferredAspectRatio ?? '-'}</div>
-                        </div>
-                      )}
-                      {selectedSpace.locked && (
-                        <div className="mt-1 p-1 bg-ink-900 rounded border border-warn/30">
-                          <div className="font-semibold text-warn">{t('locked')}</div>
-                          <div className="text-[10px]">{t('lockedPos')}: {selectedSpace.locked.position ? '✓' : '✗'} · {t('lockedSize')}: {selectedSpace.locked.size ? '✓' : '✗'} · {t('lockedGeom')}: {selectedSpace.locked.geometry ? '✓' : '✗'} · {t('lockedAdj')}: {selectedSpace.locked.adjacency ? '✓' : '✗'}</div>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="field"><label dir="ltr">{t('moveX')}</label><input type="number" step={0.1} value={moveX} onChange={e => setMoveX(+e.target.value)} /></div>
-                      <div className="field"><label dir="ltr">{t('moveY')}</label><input type="number" step={0.1} value={moveY} onChange={e => setMoveY(+e.target.value)} /></div>
-                    </div>
-                    <button className="btn-secondary w-full" onClick={doMove}>{t('moveRoom')}</button>
-
-                    <div className="grid grid-cols-2 gap-2 mt-2">
-                      <div className="field"><label>{t('width')}</label><input type="number" step={0.1} min={1} value={resizeW} onChange={e => setResizeW(+e.target.value)} /></div>
-                      <div className="field"><label>{t('height')}</label><input type="number" step={0.1} min={1} value={resizeH} onChange={e => setResizeH(+e.target.value)} /></div>
-                    </div>
-                    <button className="btn-secondary w-full" onClick={doResize}>{t('resizeSafe')}</button>
-
-                    <div className="mt-3 p-2 bg-ink-800 rounded border border-ink-700 space-y-2">
-                      <div className="font-semibold">{t('setLShape')}</div>
-                      <div className="grid grid-cols-3 gap-2">
-                        <div className="field"><label>{t('notchWidthM')}</label><input type="number" step={0.1} min={0.5} value={notchW} onChange={e => setNotchW(+e.target.value)} /></div>
-                        <div className="field"><label>{t('notchLengthM')}</label><input type="number" step={0.1} min={0.5} value={notchL} onChange={e => setNotchL(+e.target.value)} /></div>
-                        <div className="field"><label>{t('notchCorner')}</label><select value={notchCorner} onChange={e => setNotchCorner(e.target.value as any)} className="w-full bg-ink-900 border border-ink-700 rounded px-1 py-1"><option value="ne">شمال‌شرقی (NE)</option><option value="nw">شمال‌غربی (NW)</option><option value="se">جنوب‌شرقی (SE)</option><option value="sw">جنوب‌غربی (SW)</option></select></div>
-                      </div>
-                      <button className="btn-secondary w-full" onClick={doSetLShape}>{t('setLShapeAction')}</button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 mt-3">
-                      <button className="btn-secondary" onClick={() => doLock('position')}>{t('lockPos')}</button>
-                      <button className="btn-secondary" onClick={() => doLock('size')}>{t('lockSize')}</button>
-                      <button className="btn-secondary" onClick={() => doLock('all')}>{t('lockAll')}</button>
-                      <button className="btn-secondary" onClick={() => doUnlock('all')}>{t('unlockAll')}</button>
-                    </div>
-
-                    {editError && <div className="mt-2 p-2 rounded border border-bad/40 bg-bad/10 text-bad text-xs whitespace-pre-wrap">{editError}</div>}
-                    {editFindings.length > 0 && (
-                      <div className="mt-2 space-y-1">
-                        <div className="font-semibold">{tf('validationAfterEdit', { count: editFindings.length })}</div>
-                        {editFindings.slice(0, 15).map((f: any, i: number) => (
-                          <div key={i} className="flex gap-1 p-1 rounded bg-ink-800 border border-ink-700 text-[10px]">
-                            <span className={f.severity === 'hard' ? 'badge-hard' : f.severity === 'soft' ? 'badge-soft' : 'badge-adv'}>{SEVERITY_FA[f.severity] ?? f.severity}</span>
-                            <span className="truncate">{findingCodeTitle(f.code)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
+        {/* ------------------------------------------------ results / findings / editing */}
+        <aside className="lg:col-span-3 lg:overflow-y-auto p-4 space-y-4 bg-ink-900 min-w-0">
+          <Section id="result" title={t('resultTitle')}>
+            <ResultStatusCard state={resultState} />
           </Section>
 
-          <Section title={tf('sectionValidation', { floors: floorCount })}>
-            {!vr && <div className="text-xs text-ink-400">{t('generateToValidate')}</div>}
-            {vr && (
-              <div className="space-y-2 text-xs">
-                <div className={`p-2 rounded border ${vr.ok ? 'border-ok/40 bg-ok/10 text-ok' : 'border-bad/40 bg-bad/10 text-bad'}`}>
-                  <div className="font-bold text-sm">{vr.ok ? t('validTitle') : t('invalidTitle')}</div>
-                  <div className="opacity-80">{tf('summaryCounts', { hard: vr.hard.length, soft: vr.soft.length, advisory: vr.advisory.length })}</div>
-                  <div className="mt-1 flex gap-1">
-                    <span className="border border-bad/40 text-bad px-1 rounded text-[9px]">{tf('badgeHard', { count: vr.hard.length })}</span>
-                    <span className="border border-warn/40 text-warn px-1 rounded text-[9px]">{tf('badgeSoft', { count: vr.soft.length })}</span>
-                    <span className="border border-ink-600 text-ink-400 px-1 rounded text-[9px]">{tf('badgeAdv', { count: vr.advisory.length })}</span>
+          <Section id="validation" title={tf('sectionValidation', { floors: faNum(floorCount) })}>
+            {!vr && <StatusNote tone="info">{t('generateToValidate')}</StatusNote>}
+            {vr && <FindingsPanel vr={vr} />}
+          </Section>
+
+          <Section id="editing" title={t('sectionEditing')}>
+            {!displayCandidate && <StatusNote tone="info">{t('generateFirst')}</StatusNote>}
+            {displayCandidate && !selectedSpace && <StatusNote tone="info">{t('editHint')}</StatusNote>}
+            {displayCandidate && currentFloor && selectedSpace && (
+              <div className="space-y-3 text-xs">
+                {/* selected space — identity card */}
+                <div className="card !p-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-200 truncate">{spaceLabel(selectedSpace.label)}</span>
+                    <span className="badge-neutral shrink-0">{spaceTypeFromLabel(selectedSpace)}</span>
+                  </div>
+                  <div className="text-ink-400 leading-6">
+                    {t('area')}: <span className="ltr" dir="ltr">{selectedSpace.area.toFixed(2)} m²</span>
+                    {' · '}
+                    {t('width')} × {t('height')}: <span className="ltr" dir="ltr">{selectedSpace.rect.w.toFixed(2)}×{selectedSpace.rect.h.toFixed(2)}</span>
+                  </div>
+                  <div className="finding-tech">{selectedSpace.id}</div>
+                  {selectedSpace.locked && (selectedSpace.locked.position || selectedSpace.locked.size || selectedSpace.locked.geometry) && (
+                    <div className="flex flex-wrap gap-1">
+                      {selectedSpace.locked.position && <span className="badge-soft"><IconLock className="w-2.5 h-2.5" />{t('lockedPos')}</span>}
+                      {selectedSpace.locked.size && <span className="badge-soft"><IconLock className="w-2.5 h-2.5" />{t('lockedSize')}</span>}
+                      {selectedSpace.locked.geometry && <span className="badge-soft"><IconLock className="w-2.5 h-2.5" />{t('lockedGeom')}</span>}
+                    </div>
+                  )}
+                </div>
+
+                {/* move */}
+                <div className="card !p-2.5">
+                  <div className="text-[11px] font-semibold text-slate-300">{t('editMoveTitle')}</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <NumField id="f-mx" label={t('moveX')} value={moveX} step={0.1} onChange={setMoveX} dir="ltr" />
+                    <NumField id="f-my" label={t('moveY')} value={moveY} step={0.1} onChange={setMoveY} dir="ltr" />
+                  </div>
+                  <button type="button" className="btn-secondary w-full !text-xs" onClick={doMove}>{t('applyAction')}</button>
+                </div>
+
+                {/* resize */}
+                <div className="card !p-2.5">
+                  <div className="text-[11px] font-semibold text-slate-300">{t('editResizeTitle')}</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <NumField id="f-rw" label={t('width')} value={resizeW} step={0.1} min={1} onChange={setResizeW} dir="ltr" />
+                    <NumField id="f-rh" label={t('height')} value={resizeH} step={0.1} min={1} onChange={setResizeH} dir="ltr" />
+                  </div>
+                  <button type="button" className="btn-secondary w-full !text-xs" onClick={doResize}>{t('applyAction')}</button>
+                </div>
+
+                {/* L-shape — advanced, collapsed by default */}
+                <Collapsible title={t('editLShapeTitle')} className="bg-ink-800/60 border border-ink-700 rounded-md">
+                  <div className="grid grid-cols-3 gap-2">
+                    <NumField id="f-nw" label={t('notchWidthM')} value={notchW} step={0.1} min={0.5} onChange={setNotchW} />
+                    <NumField id="f-nl" label={t('notchLengthM')} value={notchL} step={0.1} min={0.5} onChange={setNotchL} />
+                    <SelectField id="f-nc" label={t('notchCorner')} value={notchCorner} onChange={v => setNotchCorner(v as 'ne' | 'nw' | 'se' | 'sw')}
+                      options={[
+                        { value: 'ne', label: SIDE_FA['north-east'] },
+                        { value: 'nw', label: SIDE_FA['north-west'] },
+                        { value: 'se', label: SIDE_FA['south-east'] },
+                        { value: 'sw', label: SIDE_FA['south-west'] },
+                      ]} />
+                  </div>
+                  <button type="button" className="btn-secondary w-full !text-xs" onClick={doSetLShape}>{t('applyAction')}</button>
+                </Collapsible>
+
+                {/* locks */}
+                <div className="card !p-2.5">
+                  <div className="text-[11px] font-semibold text-slate-300">{t('editLockTitle')}</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doLock('position')}><IconLock className="w-3 h-3" />{t('lockedPos')}</button>
+                    <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doLock('size')}><IconLock className="w-3 h-3" />{t('lockedSize')}</button>
+                    <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doLock('all')}><IconLock className="w-3 h-3" />{t('lockAll')}</button>
+                    <button type="button" className="btn-tertiary !text-xs !py-1.5" onClick={() => doUnlock('all')}><IconUnlock className="w-3 h-3" />{t('unlockAll')}</button>
                   </div>
                 </div>
-                {[...vr.hard, ...vr.soft, ...vr.advisory].slice(0, 25).map((f, i) => (
-                  <div key={i} className="flex items-start gap-2 p-2 rounded border border-ink-700 bg-ink-800 min-w-0 overflow-hidden">
-                    <span className={f.severity === 'hard' ? 'badge-hard' : f.severity === 'soft' ? 'badge-soft' : 'badge-adv'}>{SEVERITY_FA[f.severity] ?? f.severity}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-slate-200 break-words">{findingCodeTitle(f.code ?? f.ruleId ?? '')}</div>
-                      <div className="break-words opacity-80">{findingMessageFa(f)}</div>
-                      <div className="text-[10px] text-ink-400 mono truncate" dir="ltr">{f.code}{f.ruleId ? ` · ${f.ruleId}` : ''}</div>
-                    </div>
+
+                {/* technical space details — preserved, progressively disclosed */}
+                <Collapsible title={t('spaceTechTitle')} className="bg-ink-800/60 border border-ink-700 rounded-md">
+                  <div className="text-ink-400 leading-6">
+                    {t('shape')}: <span className="ltr" dir="ltr">{selectedSpace.shapeType ?? 'rectangle'}</span>
+                    {' · '}
+                    {t('verts')}: <span className="ltr" dir="ltr">{selectedSpace.polygon.length}</span>
                   </div>
-                ))}
+                  <div className="text-ink-400 leading-6">
+                    {t('privacy')}: <span className="ltr" dir="ltr">{selectedSpace.privacy}</span>
+                    {' · '}
+                    {t('zone')}: <span className="ltr" dir="ltr">{selectedSpace.zone}</span>
+                  </div>
+                  {selectedSpace.constraints && (
+                    <div>
+                      <div className="font-semibold text-slate-300">{t('constraints')}</div>
+                      <div dir="ltr" className="mono text-[10px] leading-5">minArea {selectedSpace.constraints.minArea ?? '-'} · target {selectedSpace.constraints.targetArea ?? '-'} · max {selectedSpace.constraints.maxArea ?? '-'}</div>
+                      <div dir="ltr" className="mono text-[10px] leading-5">minW {selectedSpace.constraints.minWidth ?? '-'} · minL {selectedSpace.constraints.minLength ?? '-'} · aspect {selectedSpace.constraints.preferredAspectRatio ?? '-'}</div>
+                    </div>
+                  )}
+                  {selectedSpace.locked && (
+                    <div className="text-[10px] text-ink-400">
+                      {t('lockedPos')}: {selectedSpace.locked.position ? '✓' : '✗'} · {t('lockedSize')}: {selectedSpace.locked.size ? '✓' : '✗'} · {t('lockedGeom')}: {selectedSpace.locked.geometry ? '✓' : '✗'} · {t('lockedAdj')}: {selectedSpace.locked.adjacency ? '✓' : '✗'}
+                    </div>
+                  )}
+                </Collapsible>
+
+                {editError && (
+                  <div className="p-2 rounded border border-bad/40 bg-bad/10 text-bad text-xs whitespace-pre-wrap" role="alert">{editError}</div>
+                )}
+                <EditFindingsList findings={editFindings} />
+                <p className="text-[10px] text-ink-500 leading-5">{t('editEngineNote')}</p>
               </div>
             )}
           </Section>
 
           {displayCandidate && (
-            <Section title={tf('sectionStairs')}>
+            <Section id="stairs" title={t('sectionStairs')}>
               <div className="text-xs space-y-2 max-h-64 overflow-y-auto">
                 {displayCandidate.floors.every(fl => (fl.stairs ?? []).length === 0) && (
-                  <div className="text-ink-400">{t('noStairs')}</div>
+                  <StatusNote tone="info">{t('noStairs')}</StatusNote>
                 )}
                 {displayCandidate.floors.map(fl => (fl.stairs ?? []).map((st: any) => (
                   <div key={st.id} className="p-2 rounded bg-ink-800 border border-ink-700 space-y-1">
-                    <div className="flex justify-between">
-                      <span className="font-semibold text-slate-200">{STAIR_TYPE_FA[st.type] ?? st.type} — {tf('stairFloor', { level: fl.level })}</span>
-                      <span className="mono text-[10px] text-ink-400" dir="ltr">{st.id}</span>
+                    <div className="flex justify-between items-center gap-2">
+                      <span className="font-semibold text-slate-200 truncate">{STAIR_TYPE_FA[st.type] ?? st.type} — {tf('stairFloor', { level: faNum(fl.level) })}</span>
+                      <span className="mono text-[10px] text-ink-400 ltr shrink-0" dir="ltr">{st.id}</span>
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      <span>{t('stairRisers')}: <span dir="ltr">{st.totalRisers}</span></span>
-                      <span>{t('stairTread')}: <span dir="ltr">{((st.flights?.[0]?.treadDepth ?? st.treadDepth ?? st.tread ?? 0) * 1000).toFixed(0)}mm</span></span>
-                      <span>{t('stairRiser')}: <span dir="ltr">{((st.flights?.[0]?.riserHeight ?? st.riserHeight ?? st.riser ?? 0) * 100).toFixed(1)}cm</span></span>
-                      <span>{t('stairFlights')}: <span dir="ltr">{st.flights?.length ?? 0}</span></span>
-                      <span>{t('stairLandings')}: <span dir="ltr">{st.landings?.length ?? 0}</span></span>
+                      <span>{t('stairRisers')}: <span className="ltr" dir="ltr">{st.totalRisers}</span></span>
+                      <span>{t('stairTread')}: <span className="ltr" dir="ltr">{((st.flights?.[0]?.treadDepth ?? st.treadDepth ?? st.tread ?? 0) * 1000).toFixed(0)}mm</span></span>
+                      <span>{t('stairRiser')}: <span className="ltr" dir="ltr">{((st.flights?.[0]?.riserHeight ?? st.riserHeight ?? st.riser ?? 0) * 100).toFixed(1)}cm</span></span>
+                      <span>{t('stairFlights')}: <span className="ltr" dir="ltr">{st.flights?.length ?? 0}</span></span>
+                      <span>{t('stairLandings')}: <span className="ltr" dir="ltr">{st.landings?.length ?? 0}</span></span>
                     </div>
                     {(st.flights ?? []).length > 0 && (
-                      <div className="text-[10px] text-ink-400">
+                      <div className="text-[10px] text-ink-400 ltr" dir="ltr">
                         {(st.flights ?? []).map((f: any) => `${f.riserCount}R/${f.treadCount}T × ${(f.treadDepth * 100).toFixed(0)}cm`).join(' + ')}
                       </div>
                     )}
@@ -605,37 +724,33 @@ export function App() {
           )}
 
           {displayCandidate && (
-            <Section title={tf('sectionSpaces', { floor: selectedFloor })}>
-              <div className="text-xs space-y-1 max-h-64 overflow-y-auto">
+            <Section id="spaces" title={tf('sectionSpaces', { floor: faNum(selectedFloor) })}>
+              <ul className="text-xs space-y-1 max-h-64 overflow-y-auto">
                 {(displayCandidate.floors[selectedFloor]?.spaces ?? displayCandidate.floors[0].spaces).map(s => (
-                  <div key={s.id} className={`flex justify-between px-2 py-1 rounded hover:bg-ink-800 cursor-pointer ${selectedSpaceId === s.id ? 'bg-accent-500/20 border border-accent-500/40' : ''}`} onClick={() => setSelectedSpaceId(s.id)}>
-                    <span className="truncate ms-2">{spaceLabel(s.label)} {s.locked?.position ? '🔒' : ''}</span>
-                    <span className="text-ink-400 shrink-0" dir="ltr">{s.area.toFixed(1)} m² · {s.polygon.length}v</span>
-                  </div>
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      aria-pressed={selectedSpaceId === s.id}
+                      onClick={() => setSelectedSpaceId(s.id)}
+                      className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded border transition-colors text-start ${
+                        selectedSpaceId === s.id
+                          ? 'bg-accent-500/20 border-accent-500/50 text-slate-100'
+                          : 'border-transparent hover:bg-ink-800 text-slate-300'
+                      }`}
+                    >
+                      <span className="truncate flex items-center gap-1">
+                        {spaceLabel(s.label)}
+                        {(s.locked?.position || s.locked?.geometry || s.locked?.size) && <IconLock className="w-3 h-3 text-warn shrink-0" />}
+                      </span>
+                      <span className="text-ink-400 shrink-0 ltr mono text-[10px]" dir="ltr">{s.area.toFixed(1)} m² · {s.polygon.length}v</span>
+                    </button>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </Section>
           )}
         </aside>
       </div>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="panel">
-      <div className="panel-header truncate">{title}</div>
-      <div className="p-4 space-y-3">{children}</div>
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-ink-900 p-3 flex flex-col justify-center min-w-0">
-      <div className="text-[10px] text-ink-400 truncate">{label}</div>
-      <div className="text-lg font-semibold text-slate-100 truncate" dir="ltr">{value}</div>
     </div>
   );
 }
