@@ -252,6 +252,21 @@ describe('QA fix pass — lock buttons use emoji-free labels (cleanup)', () => {
   });
 });
 
+describe('DXF export gate — graceful UI handling (Phase-A hardening)', () => {
+  it('App catches exportDXF refusals and surfaces a Persian error; i18n carries the translation', async () => {
+    const { readFileSync } = await import('node:fs');
+    const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+    // The export handler must not let the core gate exception escape silently.
+    expect(app).toContain('try {');
+    expect(app).toMatch(/exportDXF\(displayCandidate, project\.input\.name\)\.dxf;/);
+    expect(app).toMatch(/setError\(translateEngineError\(/);
+    const i18n = readFileSync(new URL('./i18n.ts', import.meta.url), 'utf8');
+    expect(i18n).toContain('hard site-envelope geometry violations');
+    expect(i18n).toMatch(/exportDXF: candidate \\S\+ has/);
+    expect(i18n).toContain('خروجی DXF ممکن نیست');
+  });
+});
+
 describe('FindingsPanel — rendering with real validation data', () => {
   it('groups findings by severity with Persian group titles and counts', async () => {
     const { createProject, generate, validateCandidate } = await import('@archgenius/core');

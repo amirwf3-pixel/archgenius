@@ -349,12 +349,17 @@ describe('Phase 13.2 G: downstream output safety', () => {
     expect(all.manifest).toBeTruthy();
   });
 
-  it('CASE B project (8x12, valid geometry + HARD site findings): outputs remain available (existing semantics)', () => {
+  it('CASE B project (8x12, valid geometry + HARD site findings): candidate + documentation remain available; DXF export refused for out-of-envelope geometry', () => {
     const prj = createProject(caseB8x12());
     const res = generate(prj);
+    // CASE-B semantics preserved: NOT converted to null — the candidate remains
+    // usable for review/documentation with its findings visible.
     expect(res.bestCandidate).not.toBeNull();
-    const { dxf } = exportDXF(res.bestCandidate!, 'CaseB');
-    expect(dxf.length).toBeGreaterThan(500);
+    // Phase-A DXF hardening (field-reported misleading-CAD defect): this fixture's
+    // geometry lies outside the site/buildable envelope (36 hard envelope findings),
+    // so DXF export is refused rather than silently emitting apparently-valid CAD.
+    expect(() => exportDXF(res.bestCandidate!, 'CaseB')).toThrowError(/hard site-envelope geometry violations/);
+    // Documentation outputs remain available (existing semantics beyond DXF).
     const doc = buildDocumentation(prj, res.bestCandidate!);
     expect(doc).toBeTruthy();
   });

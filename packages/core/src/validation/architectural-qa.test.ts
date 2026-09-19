@@ -67,7 +67,10 @@ describe('Phase 6 — Architectural QA', () => {
     expect(dxf).toContain('A-WALL-SERVICE');
     expect(dxf).toContain('A-GRID');
     expect(dxf).toContain('A-AXIS');
-    expect(dxf).toContain('INSUNITS');
+    // R12 header: view variables present; $INSUNITS is post-R12 and must be absent.
+    expect(dxf).toContain('$VIEWCTR');
+    expect(dxf).toContain('$VIEWSIZE');
+    expect(dxf).not.toContain('INSUNITS');
   });
 
   it('ensures doors have hinge/leaf geometry', () => {

@@ -5,8 +5,9 @@
  * DraftSight, ARES Commander, and online viewers. The format is a flat list
  * of (group-code, value) pairs with section markers.
  *
- * All coordinates are emitted in MILLIMETERS, INSUNITS=4. Angles in degrees
- * (counter-clockwise from East, matching AutoCAD default if $INSUNITS respect).
+ * All coordinates are emitted in MILLIMETRES. (R12/AC1009 has no $INSUNITS
+ * variable — it is a post-R12 header variable — so units are implied by the
+ * millimetre-scale drawing content.) Angles in degrees (counter-clockwise from East).
  */
 import type { LayoutCandidate } from '../model/layout.js';
 import type { Floor } from '../model/floor.js';
@@ -21,6 +22,62 @@ import type { Rect } from '../geometry/rect.js';
 import { vSub, vNorm } from '../geometry/vec2.js';
 
 const CR = "\r\n";
+
+/**
+ * Phase-A DXF fix — TEXT encoding policy for R12.
+ *
+ * DXF R12 (AC1009) predates Unicode and this file declares $DWGCODEPAGE
+ * ANSI_1252, so every TEXT value must be ASCII-safe. Deterministic policy,
+ * applied ONLY to the DXF representation (the web UI keeps full Persian):
+ *   1. printable ASCII passes through unchanged;
+ *   2. common typography is mapped (— → -, ² → 2, · → ., × → x, …);
+ *   3. Persian/Arabic script is transliterated to Latin (deterministic
+ *      letter-by-letter fallback label, not a translation);
+ *   4. bidi/zero-width controls and Arabic diacritics are dropped;
+ *   5. anything else non-ASCII becomes '?'.
+ */
+const DXF_CHAR_MAP: Record<string, string> = {
+  '\u2014': '-', '\u2013': '-', '\u2012': '-', '\u2015': '-', '\u2212': '-',
+  '\u00B2': '2', '\u00B3': '3', '\u00B9': '1',
+  '\u00B7': '.', '\u2022': '.', '\u00D7': 'x', '\u00F7': '/',
+  '\u2018': "'", '\u2019': "'", '\u201C': '"', '\u201D': '"', '\u2026': '...',
+  '\u00B0': 'deg', '\u00B1': '+/-', '\u2264': '<=', '\u2265': '>=',
+  '\t': ' ', '\n': ' ', '\r': ' ',
+  '\u200B': '', '\u200C': '', '\u200D': '', '\u200E': '', '\u200F': '', '\u061C': '', '\uFEFF': '',
+};
+
+/** Persian/Arabic → Latin transliteration (deterministic fallback labels). */
+const PERSIAN_TRANSLIT: Record<string, string> = {
+  '\u0622': 'a', '\u0623': 'a', '\u0625': 'e', '\u0626': 'y', '\u0627': 'a',
+  '\u0621': '', '\u0628': 'b', '\u067E': 'p', '\u0629': 'h', '\u062A': 't',
+  '\u062B': 's', '\u062C': 'j', '\u0686': 'ch', '\u062D': 'h', '\u062E': 'kh',
+  '\u062F': 'd', '\u0630': 'z', '\u0631': 'r', '\u0632': 'z', '\u0698': 'zh',
+  '\u0633': 's', '\u0634': 'sh', '\u0635': 's', '\u0636': 'z', '\u0637': 't',
+  '\u0638': 'z', '\u0639': 'a', '\u063A': 'gh', '\u0640': '', '\u0641': 'f',
+  '\u0642': 'q', '\u06A9': 'k', '\u06AF': 'g', '\u0644': 'l', '\u0645': 'm',
+  '\u0646': 'n', '\u0648': 'v', '\u0647': 'h', '\u06D5': 'a', '\u06CC': 'y',
+  '\u064A': 'y', '\u0643': 'k',
+  '\u06F0': '0', '\u06F1': '1', '\u06F2': '2', '\u06F3': '3', '\u06F4': '4',
+  '\u06F5': '5', '\u06F6': '6', '\u06F7': '7', '\u06F8': '8', '\u06F9': '9',
+  '\u0660': '0', '\u0661': '1', '\u0662': '2', '\u0663': '3', '\u0664': '4',
+  '\u0665': '5', '\u0666': '6', '\u0667': '7', '\u0668': '8', '\u0669': '9',
+};
+
+/** Arabic diacritics / combining marks — dropped. */
+const DXF_DROP = /[\u064B-\u0655\u0670]/;
+
+/** Deterministic ASCII-safe representation of a TEXT value for DXF R12 output. */
+export function dxfSafeText(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    if (ch >= ' ' && ch <= '~') { out += ch; continue; }
+    if (Object.prototype.hasOwnProperty.call(DXF_CHAR_MAP, ch)) { out += DXF_CHAR_MAP[ch]; continue; }
+    if (Object.prototype.hasOwnProperty.call(PERSIAN_TRANSLIT, ch)) { out += PERSIAN_TRANSLIT[ch]; continue; }
+    if (DXF_DROP.test(ch)) continue;
+    out += '?';
+  }
+  return out;
+}
 
 /**
  * Phase 9 — Build a complete DXF ASCII document with multi-floor identity.
@@ -50,9 +107,7 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   b.push('0', 'SECTION');
   b.push('2', 'HEADER');
   push(9, '$ACADVER'); push(1, 'AC1009'); // R12
-  push(9, '$INSUNITS'); push(70, 4); // millimeters
-  push(9, '$LUNITS'); push(70, 2); // decimal
-  push(9, '$MEASUREMENT'); push(70, 1); // metric
+  push(9, '$LUNITS'); push(70, '2'); // decimal
   push(9, '$DWGCODEPAGE'); push(3, 'ANSI_1252');
   const extMin = { x: Infinity, y: Infinity };
   const extMax = { x: -Infinity, y: -Infinity };
@@ -81,9 +136,11 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   b.push('0', 'SECTION');
   b.push('2', 'TABLES');
   b.push('0', 'TABLE', '2', 'LTYPE', '70', '3');
+  // AutoCAD's stock CENTER/DASHED dash lengths are INCH-scale; this drawing is
+  // millimetres, so emit the x25.4-scaled patterns to stay visible at plan scale.
   writeLtype(b, 'CONTINUOUS', 'Solid line', [0.0]);
-  writeLtype(b, 'CENTER', 'Center ____ _ ____ _ ____', [1.25, -0.25, 0.25, -0.25]);
-  writeLtype(b, 'DASHED', 'Dashed __ __ __ __', [0.5, -0.25]);
+  writeLtype(b, 'CENTER', 'Center ____ _ ____ _ ____', [31.75, -6.35, 6.35, -6.35]);
+  writeLtype(b, 'DASHED', 'Dashed __ __ __ __', [12.7, -6.35]);
   b.push('0', 'ENDTAB');
   // LAYER table: base + per-floor + extra meta layers
   const allLayers = [...LAYERS, ...floorSpecificDefs];
@@ -94,11 +151,13 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     push(70, 0);
     push(62, layer.color);
     push(6, layer.linetype);
-    push(370, layer.lineweight);
+    // NOTE: no group 370 here — lineweight on layers is an R13+ feature and is
+    // not valid in an R12 LAYER record.
   }
   b.push('0', 'ENDTAB');
   b.push('0', 'TABLE', '2', 'STYLE', '70', '1');
-  b.push('0', 'STYLE', '2', 'STANDARD', '70', '0', '40', '0', '41', '1', '50', '0', '71', '0', '42', '0.2', '3', 'Arial', '4', '');
+  // R12 text styles reference SHX shape fonts; 'txt' ships with every AutoCAD.
+  b.push('0', 'STYLE', '2', 'STANDARD', '70', '0', '40', '0', '41', '1', '50', '0', '71', '0', '42', '0.2', '3', 'txt', '4', '');
   b.push('0', 'ENDTAB');
   b.push('0', 'ENDSEC');
 
@@ -141,7 +200,7 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     push(8, layer);
     push(10, mm(x)); push(20, mm(y));
     push(40, mm(heightM));
-    push(1, text);
+    push(1, dxfSafeText(text));
     push(50, 0);
     push(72, horiz);
     push(11, mm(x)); push(21, mm(y));
@@ -385,15 +444,29 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   const final = [] as string[];
   final.push('0', 'SECTION', '2', 'HEADER');
   final.push('9', '$ACADVER', '1', 'AC1009');
-  final.push('9', '$INSUNITS', '70', '4');
+  // R12-strict header: $INSUNITS/$MEASUREMENT are post-R12 variables and are
+  // deliberately absent from AC1009 output. Drawing units are millimetres.
   final.push('9', '$LUNITS', '70', '2');
-  final.push('9', '$MEASUREMENT', '70', '1');
   final.push('9', '$DWGCODEPAGE', '3', 'ANSI_1252');
   if (isFinite(extMin.x)) {
     final.push('9', '$EXTMIN', '10', String(mm(extMin.x)), '20', String(mm(extMin.y)), '30', '0');
     final.push('9', '$EXTMAX', '10', String(mm(extMax.x)), '20', String(mm(extMax.y)), '30', '0');
     final.push('9', '$LIMMIN', '10', String(mm(extMin.x)), '20', String(mm(extMin.y)));
     final.push('9', '$LIMMAX', '10', String(mm(extMax.x)), '20', String(mm(extMax.y)));
+    // Initial view computed from the ACTUAL drawing extents — AutoCAD does not
+    // auto-zoom on DXF open; without $VIEWCTR/$VIEWSIZE the file opens on the
+    // blank-template view and an 18 m plan looks empty until ZOOM EXTENTS.
+    const round2 = (v: number) => String(Math.round(v * 100) / 100);
+    const exW = mm(extMax.x) - mm(extMin.x);
+    const exH = mm(extMax.y) - mm(extMin.y);
+    const vCx = (mm(extMin.x) + mm(extMax.x)) / 2;
+    const vCy = (mm(extMin.y) + mm(extMax.y)) / 2;
+    const SCREEN_W = 1024, SCREEN_H = 768; // nominal 4:3 — narrower than modern screens; coverage only improves
+    const VIEW_MARGIN = 1.15; // 15% padding so the viewport covers the complete drawing
+    const viewH = Math.max(exH, exW * (SCREEN_H / SCREEN_W), 100) * VIEW_MARGIN;
+    final.push('9', '$VIEWCTR', '10', round2(vCx), '20', round2(vCy), '30', '0');
+    final.push('9', '$VIEWSIZE', '40', round2(viewH));
+    final.push('9', '$SCREENSIZE', '10', String(SCREEN_W), '20', String(SCREEN_H));
   }
   final.push('0', 'ENDSEC');
   const headerEndIdx = b.indexOf('ENDSEC', b.indexOf('HEADER'));
@@ -1022,6 +1095,7 @@ function writeLtype(b: string[], name: string, desc: string, pattern: number[]) 
   b.push('2', name);
   b.push('70', '0');
   b.push('3', desc);
+  b.push('72', '65'); // R12-required alignment code ('A'); every LTYPE must carry it
   const elements = pattern.filter(p => Math.abs(p) > 1e-9).length;
   b.push('73', String(elements));
   let totalLen = 0;
@@ -1045,9 +1119,13 @@ export function validateDXFStructure(dxf: string): { ok: boolean; errors: string
   for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR', 'A-GRID', 'A-AXIS', 'A-NORTH', 'A-TITLE', 'A-PARKING', 'A-SITE', 'A-SETBACK', 'A-BLDG-OUT']) {
     if (!lines.includes(name)) errors.push(`Missing layer entry: ${name}`);
   }
-  // Check INSUNITS=4 (mm)
-  if (!dxf.includes('$INSUNITS') || !dxf.includes('4')) {
-    errors.push('Missing INSUNITS=4 (mm) in HEADER');
-  }
+  // R12 header correctness: AC1009 + initial-view variables; $INSUNITS and
+  // $MEASUREMENT are post-R12 variables and must NOT appear in AC1009 output.
+  if (!dxf.includes('$ACADVER') || !dxf.includes('AC1009')) errors.push('Missing $ACADVER AC1009 (R12)');
+  if (!dxf.includes('$VIEWCTR')) errors.push('Missing $VIEWCTR (initial view) in HEADER');
+  if (!dxf.includes('$VIEWSIZE')) errors.push('Missing $VIEWSIZE (initial view) in HEADER');
+  if (!dxf.includes('$SCREENSIZE')) errors.push('Missing $SCREENSIZE (initial view) in HEADER');
+  if (dxf.includes('$INSUNITS')) errors.push('$INSUNITS is not valid in DXF R12 (AC1009)');
+  if (dxf.includes('$MEASUREMENT')) errors.push('$MEASUREMENT is not valid in DXF R12 (AC1009)');
   return { ok: errors.length === 0, errors };
 }

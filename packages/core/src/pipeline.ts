@@ -240,8 +240,28 @@ export function validateCandidate(candidate: LayoutCandidate): ValidationResult 
   return validateLayout(candidate);
 }
 
+/**
+ * Hard site-envelope geometry violations — findings whose meaning is that
+ * generated geometry physically lies outside the site/buildable/footprint
+ * envelope (e.g. SITE_WALL_OUTSIDE_BUILDABLE, GEO_ROOM_OUTSIDE_FOOTPRINT).
+ * Reuses the existing validation architecture: no new rule is invented, the
+ * gate only refuses to export candidates the validator already flags as HARD
+ * out-of-envelope. Interior-only findings (e.g. SITE_FURNITURE_OUTSIDE_ROOM)
+ * are deliberately NOT part of this envelope set.
+ */
+const SITE_ENVELOPE_VIOLATION = /^(?:SITE|GEO)_[A-Z]+_OUTSIDE(?:_BUILDABLE|_SITE|_FOOTPRINT)?$/;
+
 export function exportDXF(candidate: LayoutCandidate, projectName = 'ArchGenius Plan', dxfOptions: { includeGenericLayers?: boolean } = {}): { dxf: string; validation: ReturnType<typeof validateDXFStructure> } {
   requireUsableCandidate(candidate, 'exportDXF');
+  const envelopeViolations = validateLayout(candidate).findings.filter(
+    (f) => f.severity === 'hard' && SITE_ENVELOPE_VIOLATION.test(f.code),
+  );
+  if (envelopeViolations.length > 0) {
+    const codes = [...new Set(envelopeViolations.map((f) => f.code))].join(', ');
+    throw new Error(
+      `exportDXF: candidate ${candidate.id} has ${envelopeViolations.length} hard site-envelope geometry violations — geometry lies outside the site/buildable envelope; refusing to export a DXF that would present an out-of-envelope plan as valid CAD geometry. Violations: ${codes}. Adjust the site dimensions or the building program.`,
+    );
+  }
   const dxf = writeDXF(candidate, projectName, dxfOptions);
   return { dxf, validation: validateDXFStructure(dxf) };
 }

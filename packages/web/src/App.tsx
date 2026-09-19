@@ -281,7 +281,15 @@ export function App() {
 
   const onDownloadDXF = () => {
     if (!displayCandidate || !project) return;
-    const { dxf } = exportDXF(displayCandidate, project.input.name);
+    let dxf: string;
+    try {
+      // May refuse candidates with hard site-envelope geometry violations.
+      dxf = exportDXF(displayCandidate, project.input.name).dxf;
+    } catch (e) {
+      setError(translateEngineError(e instanceof Error ? e.message : String(e)));
+      setDxfNote(null);
+      return;
+    }
     const blob = new Blob([dxf], { type: 'application/dxf' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

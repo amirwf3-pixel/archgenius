@@ -169,8 +169,13 @@ describe('Phase 6 — Property-based invariants', () => {
     const res = validateDXFStructure(dxf);
     expect(res.ok).toBe(true);
     expect(res.errors.length).toBe(0);
-    // Check INSUNITS=4
-    expect(dxf).toContain('$INSUNITS');
+    // R12 header: initial-view variables present; $INSUNITS is a post-R12
+    // variable and must NOT appear in AC1009 output.
+    expect(dxf).toContain('$VIEWCTR');
+    expect(dxf).toContain('$VIEWSIZE');
+    expect(dxf).toContain('$SCREENSIZE');
+    expect(dxf).not.toContain('$INSUNITS');
+    expect(dxf).not.toContain('$MEASUREMENT');
     // Check layers
     expect(dxf).toContain('A-WALL-EXT');
     expect(dxf).toContain('A-DOOR');

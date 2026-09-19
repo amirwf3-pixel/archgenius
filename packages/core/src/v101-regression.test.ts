@@ -225,7 +225,8 @@ describe('AGX-01: U-stair actual flight going (rotated well)', () => {
       expect(Math.abs(s - 280)).toBeLessThanOrEqual(2.0);
     }
     // Annotation reflects the ACTUAL geometry (riser×tread), not a nominal claim.
-    expect(dxf).toContain('18R @ 18×28');
+    // (ASCII-safe DXF policy: '×' is emitted as 'x' — Phase-A hardening.)
+    expect(dxf).toContain('18R @ 18x28');
     // Determinism: byte-identical DXF on repeat generation.
     const again = generate(createProject(webDefaultInput())).bestCandidate!;
     expect(exportDXF(again, 'demo').dxf).toEqual(dxf);
@@ -384,9 +385,11 @@ describe('AGX-04: usable CASE-B candidates with HARD geometry findings are never
     // …HARD geometry findings are NOT suppressed (overlap and/or containment).
     const geoHards = vr.hard.filter(h => h.code.startsWith('GEO_') || h.code.startsWith('SITE_'));
     expect(geoHards.length).toBeGreaterThan(0);
-    // DXF export works and the manifest reports the HARD count honestly.
-    const { validation } = exportDXF(bestCandidate!, 'case-b');
-    expect(validation.ok).toBe(true);
+    // DXF export is REFUSED (Phase-A hardening): this CASE-B fixture's geometry
+    // lies outside the site/buildable envelope, so a DXF would be a misleading
+    // apparently-valid CAD file. The refusal itself is the honest behaviour.
+    expect(() => exportDXF(bestCandidate!, 'case-b')).toThrowError(/hard site-envelope geometry violations/);
+    // Documentation + manifest still work and report the HARD count honestly.
     const prj = createProject(input);
     const doc = buildDocumentation(prj, bestCandidate!);
     const manifest = buildManifest(doc, prj, bestCandidate!);
