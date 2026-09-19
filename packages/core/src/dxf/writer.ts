@@ -104,11 +104,15 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   };
 
   // ---- HEADER SECTION ----
+  // Conservative R12 AC1009 header: only variables that existed in R12.
+  // $ACADVER, $INSBASE, $EXTMIN/$EXTMAX, $LIMMIN/$LIMMAX, $VIEWCTR/$VIEWDIR/$VIEWSIZE,
+  // $LUNITS etc. $DWGCODEPAGE and $SCREENSIZE are R13+ and must be absent in AC1009.
   b.push('0', 'SECTION');
   b.push('2', 'HEADER');
   push(9, '$ACADVER'); push(1, 'AC1009'); // R12
-  push(9, '$LUNITS'); push(70, '2'); // decimal
-  push(9, '$DWGCODEPAGE'); push(3, 'ANSI_1252');
+  push(9, '$INSBASE'); push(10, '0.0'); push(20, '0.0'); push(30, '0.0');
+  push(9, '$EXTMIN'); push(10, '1e20'); push(20, '1e20'); push(30, '1e20');
+  push(9, '$EXTMAX'); push(10, '-1e20'); push(20, '-1e20'); push(30, '-1e20');
   const extMin = { x: Infinity, y: Infinity };
   const extMax = { x: -Infinity, y: -Infinity };
   b.push('0', 'ENDSEC');
@@ -182,14 +186,14 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     track(x1, y1); track(x2, y2);
     b.push('0', 'LINE');
     push(8, layer);
-    push(10, mm(x1)); push(20, mm(y1));
-    push(11, mm(x2)); push(21, mm(y2));
+    push(10, mm(x1)); push(20, mm(y1)); push(30, '0');
+    push(11, mm(x2)); push(21, mm(y2)); push(31, '0');
   };
   const emitArc = (cx: number, cy: number, r: number, startDeg: number, endDeg: number, layer: string) => {
     track(cx + r, cy + r); track(cx - r, cy - r);
     b.push('0', 'ARC');
     push(8, layer);
-    push(10, mm(cx)); push(20, mm(cy));
+    push(10, mm(cx)); push(20, mm(cy)); push(30, '0');
     push(40, mm(r));
     push(50, startDeg);
     push(51, endDeg);
@@ -198,23 +202,30 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     track(x, y);
     b.push('0', 'TEXT');
     push(8, layer);
-    push(10, mm(x)); push(20, mm(y));
+    push(10, mm(x)); push(20, mm(y)); push(30, '0');
     push(40, mm(heightM));
     push(1, dxfSafeText(text));
     push(50, 0);
     push(72, horiz);
-    push(11, mm(x)); push(21, mm(y));
+    // R12 TEXT second alignment point 11,21,31 required when 72 is non-0 (and canonical even when 0)
+    push(11, mm(x)); push(21, mm(y)); push(31, '0');
+    // Style is always STANDARD (72/73 already), height via 40 above
   };
   const emitPolyline = (pts: Vec2[], layer: string, closed = true) => {
     b.push('0', 'POLYLINE');
     push(8, layer);
-    push(66, 1);
+    // R12 POLYLINE elevation point (10,20,30) required even for 2D (0,0,0)
+    push(10, '0'); push(20, '0'); push(30, '0');
     push(70, closed ? 1 : 0);
+    push(66, 1);
+    push(40, '0'); push(41, '0'); push(71, '0'); push(72, '0');
     for (const p of pts) {
       track(p.x, p.y);
       b.push('0', 'VERTEX');
       push(8, layer);
-      push(10, mm(p.x)); push(20, mm(p.y));
+      push(10, mm(p.x)); push(20, mm(p.y)); push(30, '0');
+      // R12 VERTEX bulge 42 required (0 for straight)
+      push(42, '0');
     }
     b.push('0', 'SEQEND');
     push(8, layer);
@@ -444,17 +455,17 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   const final = [] as string[];
   final.push('0', 'SECTION', '2', 'HEADER');
   final.push('9', '$ACADVER', '1', 'AC1009');
-  // R12-strict header: $INSUNITS/$MEASUREMENT are post-R12 variables and are
-  // deliberately absent from AC1009 output. Drawing units are millimetres.
+  // Conservative R12: $ACADVER AC1009, $INSBASE, $EXTMIN/$EXTMAX, $LIMMIN/$LIMMAX, $VIEWCTR/$VIEWSIZE, $VIEWDIR.
+  // $DWGCODEPAGE, $SCREENSIZE, $INSUNITS, $MEASUREMENT are R13+ and must be absent in AC1009.
+  // $LUNITS is valid R12 (linear units = decimal)
+  final.push('9', '$INSBASE', '10', '0.0', '20', '0.0', '30', '0.0');
   final.push('9', '$LUNITS', '70', '2');
-  final.push('9', '$DWGCODEPAGE', '3', 'ANSI_1252');
   const round2 = (v: number) => String(Math.round(v * 100) / 100);
   let vCx = 0, vCy = 0, viewH = 100, aspect = 0;
   const SCREEN_W = 1024, SCREEN_H = 768;
   if (isFinite(extMin.x)) {
     final.push('9', '$EXTMIN', '10', String(mm(extMin.x)), '20', String(mm(extMin.y)), '30', '0');
     final.push('9', '$EXTMAX', '10', String(mm(extMax.x)), '20', String(mm(extMax.y)), '30', '0');
-    // Padded 30 for R12 canonical: $LIMMIN/$LIMMAX are 3D points even though Z=0
     final.push('9', '$LIMMIN', '10', String(mm(extMin.x)), '20', String(mm(extMin.y)), '30', '0');
     final.push('9', '$LIMMAX', '10', String(mm(extMax.x)), '20', String(mm(extMax.y)), '30', '0');
     // Initial view computed from the ACTUAL drawing extents — AutoCAD does not
@@ -464,57 +475,66 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     const exH = mm(extMax.y) - mm(extMin.y);
     vCx = (mm(extMin.x) + mm(extMax.x)) / 2;
     vCy = (mm(extMin.y) + mm(extMax.y)) / 2;
-    const VIEW_MARGIN = 1.15; // 15% padding so the viewport covers the complete drawing
+    const VIEW_MARGIN = 1.15;
     viewH = Math.max(exH, exW * (SCREEN_H / SCREEN_W), 100) * VIEW_MARGIN;
     aspect = SCREEN_W / SCREEN_H;
     final.push('9', '$VIEWCTR', '10', round2(vCx), '20', round2(vCy), '30', '0');
     final.push('9', '$VIEWSIZE', '40', round2(viewH));
-    // Padded 30 for canonical R12 SCREENSIZE (historically 2D but some writers emit 30/31)
-    final.push('9', '$SCREENSIZE', '10', String(SCREEN_W), '20', String(SCREEN_H), '30', '0');
+    final.push('9', '$VIEWDIR', '10', '0.0', '20', '0.0', '30', '1.0');
   } else {
     aspect = SCREEN_W / SCREEN_H;
+    final.push('9', '$LIMMIN', '10', '0.0', '20', '0.0', '30', '0.0');
+    final.push('9', '$LIMMAX', '10', '42000.0', '20', '29700.0', '30', '0.0');
+    final.push('9', '$VIEWCTR', '10', '21000.0', '20', '14850.0', '30', '0.0');
+    final.push('9', '$VIEWSIZE', '40', '29700.0');
+    final.push('9', '$VIEWDIR', '10', '0.0', '20', '0.0', '30', '1.0');
   }
   final.push('0', 'ENDSEC');
   const headerEndIdx = b.indexOf('ENDSEC', b.indexOf('HEADER'));
   let afterHeader = b.slice(headerEndIdx + 1);
-  // Inject canonical R12 TABLES: VPORT *ACTIVE, VIEW (empty), UCS (empty), APPID ACAD, DIMSTYLE STANDARD
+  // Inject canonical R12 TABLES: VPORT *ACTIVE (must be FIRST table in R12 for AutoCAD to honour viewport),
+  // then LTYPE, LAYER, STYLE, VIEW, UCS, APPID, DIMSTYLE.
   // afterHeader currently holds TABLES (LTYPE/LAYER/STYLE) ... BLOCKS ... ENTITIES ... EOF
-  // Find the ENDTAB of STYLE and the ENDSEC of TABLES to inject before it
   {
     const tablesIdx = afterHeader.indexOf('TABLES');
     if (tablesIdx !== -1) {
-      // Find the ENDSEC that closes TABLES (first ENDSEC after TABLES)
+      // Correct R12 TABLES order is VPORT, LTYPE, LAYER, STYLE, VIEW, UCS, APPID, DIMSTYLE.
+      // b currently has LTYPE, LAYER, STYLE only; inject VPORT at the very start of TABLES,
+      // then append VIEW, UCS, APPID, DIMSTYLE before the TABLES ENDSEC.
+      // Find insertion point right after '2 TABLES' (value TABLES token) -> next is '0' of first TABLE.
+      const tablesValueIdx = tablesIdx;
+      const insertAfterIdx = tablesValueIdx + 1; // after 'TABLES' value token, before next '0'
+      const vportEntries: string[] = [];
+      vportEntries.push('0','TABLE','2','VPORT','70','1');
+      vportEntries.push('0','VPORT','2','*ACTIVE','70','0',
+        '10','0.0','20','0.0',
+        '11','1.0','21','1.0',
+        '12', round2(vCx), '22', round2(vCy),
+        '40', round2(viewH),
+        '41', String(Math.round(aspect*100)/100),
+        '42','50.0','43','0.0','44','0.0','50','0.0','51','0.0','71','0','72','100','73','1','74','1','75','1','76','1','77','0','78','0');
+      vportEntries.push('0','ENDTAB');
+      // Insert VPORT as first table
+      afterHeader = [...afterHeader.slice(0, insertAfterIdx), ...vportEntries, ...afterHeader.slice(insertAfterIdx)];
+      // Now find the TABLES ENDSEC to append remaining tables before it
       let tablesEndValIdx = -1;
-      for (let i = tablesIdx; i < afterHeader.length; i++) {
+      for (let i = afterHeader.indexOf('TABLES'); i < afterHeader.length; i++) {
         if (afterHeader[i] === 'ENDSEC') { tablesEndValIdx = i; break; }
       }
       if (tablesEndValIdx !== -1) {
-        // afterHeader is code/value flat list; value ENDSEC at tablesEndValIdx has its code '0' at tablesEndValIdx-1
         const tablesEndIdx = (tablesEndValIdx > 0 && afterHeader[tablesEndValIdx - 1] === '0') ? tablesEndValIdx - 1 : tablesEndValIdx;
-        const vportEntries: string[] = [];
-        vportEntries.push('0','TABLE','2','VPORT','70','1');
-        // Canonical *ACTIVE viewport — center 12/22 = vCx/vCy, height 40 = viewH, aspect 41, plus minimal required codes
-        vportEntries.push('0','VPORT','2','*ACTIVE','70','0',
-          '10','0.0','20','0.0',
-          '11','1.0','21','1.0',
-          '12', round2(vCx), '22', round2(vCy),
-          '40', round2(viewH),
-          '41', String(Math.round(aspect*100)/100),
-          '42','50.0','43','0.0','44','0.0','50','0.0','51','0.0','71','0','72','100','73','1','74','1','75','1','76','1','77','0','78','0');
-        vportEntries.push('0','ENDTAB');
-        vportEntries.push('0','TABLE','2','VIEW','70','0');
-        vportEntries.push('0','ENDTAB');
-        vportEntries.push('0','TABLE','2','UCS','70','0');
-        vportEntries.push('0','ENDTAB');
-        vportEntries.push('0','TABLE','2','APPID','70','1');
-        vportEntries.push('0','APPID','2','ACAD','70','0');
-        vportEntries.push('0','ENDTAB');
-        vportEntries.push('0','TABLE','2','DIMSTYLE','70','1');
-        // Minimal STANDARD dimstyle — sufficient for R12 readers; 40 scale, 41 arrow size etc. not validated but canonical
-        vportEntries.push('0','DIMSTYLE','2','STANDARD','70','0','40','1.0','41','0.18','42','0.0625','43','0.38','44','0.38','45','0.0','46','0.0','47','0.0','48','0.0');
-        vportEntries.push('0','ENDTAB');
-        // Insert before the TABLES ENDSEC
-        afterHeader = [...afterHeader.slice(0, tablesEndIdx), ...vportEntries, ...afterHeader.slice(tablesEndIdx)];
+        const tailEntries: string[] = [];
+        tailEntries.push('0','TABLE','2','VIEW','70','0');
+        tailEntries.push('0','ENDTAB');
+        tailEntries.push('0','TABLE','2','UCS','70','0');
+        tailEntries.push('0','ENDTAB');
+        tailEntries.push('0','TABLE','2','APPID','70','1');
+        tailEntries.push('0','APPID','2','ACAD','70','0');
+        tailEntries.push('0','ENDTAB');
+        tailEntries.push('0','TABLE','2','DIMSTYLE','70','1');
+        tailEntries.push('0','DIMSTYLE','2','STANDARD','70','0','40','1.0','41','0.18','42','0.0625','43','0.38','44','0.38','45','0.0','46','0.0','47','0.0','48','0.0');
+        tailEntries.push('0','ENDTAB');
+        afterHeader = [...afterHeader.slice(0, tablesEndIdx), ...tailEntries, ...afterHeader.slice(tablesEndIdx)];
       }
     }
   }
@@ -1166,13 +1186,22 @@ export function validateDXFStructure(dxf: string): { ok: boolean; errors: string
   for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR', 'A-GRID', 'A-AXIS', 'A-NORTH', 'A-TITLE', 'A-PARKING', 'A-SITE', 'A-SETBACK', 'A-BLDG-OUT']) {
     if (!lines.includes(name)) errors.push(`Missing layer entry: ${name}`);
   }
-  // R12 header correctness: AC1009 + initial-view variables; $INSUNITS and
-  // $MEASUREMENT are post-R12 variables and must NOT appear in AC1009 output.
+  // R12 header correctness: AC1009 + initial-view variables.
+  // Conservative R12: $VIEWCTR/$VIEWSIZE are required for initial view; $SCREENSIZE and $DWGCODEPAGE are R13+ and must NOT appear.
+  // $INSUNITS and $MEASUREMENT are also post-R12 and must be absent.
   if (!dxf.includes('$ACADVER') || !dxf.includes('AC1009')) errors.push('Missing $ACADVER AC1009 (R12)');
   if (!dxf.includes('$VIEWCTR')) errors.push('Missing $VIEWCTR (initial view) in HEADER');
   if (!dxf.includes('$VIEWSIZE')) errors.push('Missing $VIEWSIZE (initial view) in HEADER');
-  if (!dxf.includes('$SCREENSIZE')) errors.push('Missing $SCREENSIZE (initial view) in HEADER');
+  if (!dxf.includes('$EXTMIN') || !dxf.includes('$EXTMAX')) errors.push('Missing $EXTMIN/$EXTMAX (drawing extents) in HEADER');
+  if (!dxf.includes('$LIMMIN') || !dxf.includes('$LIMMAX')) errors.push('Missing $LIMMIN/$LIMMAX (drawing limits) in HEADER');
+  if (dxf.includes('$SCREENSIZE')) errors.push('$SCREENSIZE is not valid in DXF R12 (AC1009) — remove (prompted Enter in AutoCAD)');
+  if (dxf.includes('$DWGCODEPAGE')) errors.push('$DWGCODEPAGE is not valid in DXF R12 (AC1009) — remove');
   if (dxf.includes('$INSUNITS')) errors.push('$INSUNITS is not valid in DXF R12 (AC1009)');
   if (dxf.includes('$MEASUREMENT')) errors.push('$MEASUREMENT is not valid in DXF R12 (AC1009)');
+  // VPORT *ACTIVE must exist for AutoCAD to honour view
+  if (!dxf.includes('*ACTIVE')) errors.push('Missing *ACTIVE VPORT (R12 viewport) in TABLES');
+  if (!dxf.includes('VPORT')) errors.push('Missing VPORT table in TABLES');
+  if (!dxf.includes('APPID')) errors.push('Missing APPID table in TABLES');
+  if (!dxf.includes('DIMSTYLE')) errors.push('Missing DIMSTYLE table in TABLES');
   return { ok: errors.length === 0, errors };
 }

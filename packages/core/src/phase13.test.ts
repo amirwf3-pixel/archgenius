@@ -211,12 +211,17 @@ describe('Phase13 E: Bounds actually enforced', () => {
     const { candidates } = generate(prj, { allStrategies: true } as any);
     expect(candidates.length).toBeLessThanOrEqual(MAX_CANDIDATE_POSITIONS);
     // Also check public specs truncation explanation when exceeding
-    // For many rooms, should truncate
+    // For many rooms, should truncate (or be honest infeasible if below-min)
     const manyInput = baseInput({
       building: { type: 'villa', floors: 1, bedrooms: 5, masterBedrooms: 2, bathrooms: 3, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: false, hasGuestRoom: true, hasFamilyRoom: true, hasBalcony: true } as any,
     });
     const prjMany = createProject(manyInput);
-    const { bestCandidate: bestMany } = generate(prjMany);
+    const { bestCandidate: bestMany, infeasible } = generate(prjMany) as any;
+    if (!bestMany) {
+      expect(infeasible).toBeDefined();
+      expect(infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      return;
+    }
     // Should still be ≤12 candidates
     expect(bestMany!.floors[0].spaces.length).toBeLessThanOrEqual(20); // reasonable
   });

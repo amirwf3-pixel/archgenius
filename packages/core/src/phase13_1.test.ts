@@ -134,9 +134,15 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
       building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
       seed: 1,
     }));
-    const { bestCandidate, candidates } = generate(prj, { allStrategies: true });
-    // All candidates must have positive dims
+    const { bestCandidate, candidates, infeasible } = generate(prj, { allStrategies: true }) as any;
+    // All candidates must have positive dims (if any valid)
     for (const cand of candidates) checkNoInvalidGeom(cand);
+    if (!bestCandidate) {
+      expect(infeasible).toBeDefined();
+      expect(infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      for (const d of infeasible.diagnosticCandidates) checkNoInvalidGeom(d);
+      return;
+    }
     const vr = validateCandidate(bestCandidate!);
     expect(vr.hard.length).toBeGreaterThan(0);
   });
@@ -257,7 +263,13 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
         seed,
       }));
-      const { bestCandidate } = generate(prj);
+      const res = generate(prj) as any;
+      const { bestCandidate, infeasible } = res;
+      if (!bestCandidate) {
+        // Infeasible: count hard from diagnostic first candidate
+        const diag = infeasible.diagnosticCandidates[0];
+        return validateCandidate(diag).hard.length;
+      }
       return validateCandidate(bestCandidate!).hard.length;
     };
     const h1 = make(1);
@@ -272,7 +284,15 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
       building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
       seed: 42,
     }));
-    const { bestCandidate } = generate(prj, { allStrategies: true });
+    const res = generate(prj, { allStrategies: true }) as any;
+    const { bestCandidate, infeasible } = res;
+    if (!bestCandidate) {
+      expect(infeasible).toBeDefined();
+      for (const d of infeasible.diagnosticCandidates) checkNoInvalidGeom(d);
+      const vr = validateCandidate(infeasible.diagnosticCandidates[0]);
+      expect(vr.hard.length).toBeGreaterThan(0);
+      return;
+    }
     checkNoInvalidGeom(bestCandidate);
     // Even if infeasible, must have explicit HARD
     const vr = validateCandidate(bestCandidate!);

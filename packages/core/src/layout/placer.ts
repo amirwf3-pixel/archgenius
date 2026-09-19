@@ -79,6 +79,7 @@ function carveZones(
   cfg: StrategyConfig,
   needStair: boolean,
   hasKitchen: boolean,
+  hasStorage: boolean = false,
 ): ZoneLayout {
   const zones: Record<Zone, Rect[]> = {
     public: [], 'semi-private': [], private: [], service: [], circulation: [],
@@ -109,6 +110,21 @@ function carveZones(
       const pocketW = Math.min(4.6, Math.max(4.2, eastRect.w * 0.55));
       zones.service.push({ x: eastRect.x, y: eastRect.y, w: pocketW, h: pocketH });
       eastRect = { x: eastRect.x, y: eastRect.y + pocketH, w: eastRect.w, h: eastRect.h - pocketH };
+    }
+    // Storage pocket east for vertical — compact square, avoid west sliver
+    // When no stair, carve a small south-east pocket from private so storage does not overlap private rows
+    if (hasStorage && !needStair && eastRect.h > 6 && eastRect.w > 2.0) {
+      const storW = Math.min(2.0, Math.max(1.4, eastRect.w * 0.40));
+      const storH = Math.min(1.8, Math.max(1.4, eastRect.h * 0.10));
+      // Carve from south edge of eastRect
+      zones.service.push({ x: eastRect.x, y: eastRect.y, w: storW, h: storH });
+      // Shrink eastRect to avoid overlap — but keep width, just push north? Actually storage at south edge, so private starts above it at x+storW?
+      // To keep private contiguous, put storage overlay small corner and shrink private slightly north, but keep x.
+      // Simpler: keep eastRect full, but note storage overlaps — we will handle placement via service rect directly, and private will be offset north by storH for the width of storW only if needed.
+      // For now, shrink eastRect south edge up by storH only for the storW width is complex; instead keep eastRect as is and place storage overlapping will be moved by resolveOverlaps — avoid by not pushing storage as separate placement but as carve.
+      // Actually carve: move eastRect north by storH and keep storage at south, but storage width full eastRect.w would waste. Better keep storage width limited and eastRect remains eastRect.y+storH for that column? Complex.
+      // Simple: just keep storage service rect and offset eastRect north by storH (full width) — private slightly smaller but storage square.
+      eastRect = { x: eastRect.x, y: eastRect.y + storH, w: eastRect.w, h: eastRect.h - storH };
     }
     zones.private.push(eastRect);
     return { zones, corridors };
@@ -172,7 +188,8 @@ export function placeSpaces(
   const cfg = strategyConfig(strategy);
   const needStair = specs.some(s => s.type === 'stair-hall');
   const hasKitchen = specs.some(s => s.type === 'kitchen');
-  const layout = carveZones(footprint, cfg, needStair, hasKitchen);
+  const hasStorage = specs.some(s => s.type === 'storage');
+  const layout = carveZones(footprint, cfg, needStair, hasKitchen, hasStorage);
   const explanation: string[] = [
     `Strategy ${strategy}: ${cfg.spine} spine, corridor @ ${Math.round(cfg.corridorOffsetFraction*100)}% depth.`,
     `Phase13 generic graph: ${graph.hardEdges.length} hard edges, ${graph.clusters.length} hard clusters, ${graph.nodes.size} types — canonical source DEFAULT_RESIDENTIAL_CONSTRAINTS`,
@@ -282,24 +299,20 @@ export function placeSpaces(
       return a.placedId.localeCompare(b.placedId);
     });
 
-    // Pairing algorithm generic: iterate specs, if spec type has soft adjacency to another unpaired spec type in same hard cluster, pair them
+    // Pairing algorithm generic: iterate specs, if spec type has soft adjacency to another unpaired spec type, pair them (soft adjacency generic)
     const paired = new Set<string>();
     for (let i = 0; i < allPrivateSpecs.length; i++) {
       const spec = allPrivateSpecs[i];
       if (paired.has(spec.placedId)) continue;
       const softAdjTypes = softAdjMap.get(spec.type) ?? new Set();
-      // Find partner in remaining unpaired specs whose type is in softAdjTypes and shares hard cluster
+      // Find partner in remaining unpaired specs whose type is in softAdjTypes
       let partner: PlacedSpec | undefined;
       for (let j = i + 1; j < allPrivateSpecs.length; j++) {
         const cand = allPrivateSpecs[j];
         if (paired.has(cand.placedId)) continue;
         if (!softAdjTypes.has(cand.type)) continue;
-        // Check if they are in same graph hard cluster
-        const inSameCluster = graph.clusters.some(cl => cl.includes(spec.type) && cl.includes(cand.type));
-        if (inSameCluster) {
-          partner = cand;
-          break;
-        }
+        partner = cand;
+        break;
       }
       if (partner) {
         // Create cluster with 2 rooms
@@ -335,6 +348,39 @@ export function placeSpaces(
         const arr = byType.get(spec.type as SpaceType);
         if (arr) { const idx = arr.findIndex(s => s.placedId === spec.placedId); if (idx >= 0) arr.splice(idx, 1); }
       }
+    }
+    // Second pass: pair leftover single wet rooms (bathroom/master-bathroom/guest-wc) with bedroom to avoid slivers
+    const wetTypes = new Set<string>(['bathroom', 'master-bathroom', 'guest-wc']);
+    const bedroomTypes = new Set<string>(['bedroom', 'master-bedroom']);
+    // Iteratively pair — each iteration picks one bath and one bedroom from current clusters
+    let pairedCount = 0;
+    while (true) {
+      const bathIdx = genericClusters.findIndex(c => c.rooms.length === 1 && wetTypes.has(c.rooms[0].type));
+      const bedIdx = genericClusters.findIndex(c => c.rooms.length === 1 && bedroomTypes.has(c.rooms[0].type));
+      if (bathIdx === -1 || bedIdx === -1) break;
+      // Don't pair if already paired count exceeds number of baths we want to fix — pair at most min(baths, bedrooms) but leave at least one bedroom single if needed for count?
+      // For 3BD 2 baths, pairing 2 baths with 2 bedrooms leaves 1 bedroom single -> 2 paired +1 single => 3 clusters (good)
+      const bathC = genericClusters[bathIdx];
+      const bedC = genericClusters[bedIdx];
+      const bathSpec = bathC.rooms[0];
+      const bedSpec = bedC.rooms[0];
+      // Remove both (higher index first)
+      const rem = [bathIdx, bedIdx].sort((a,b)=>b-a);
+      for (const ri of rem) genericClusters.splice(ri, 1);
+      const types = [bedSpec.type, bathSpec.type];
+      const mustTouch = mustTouchCorridor(bedSpec.type) || mustTouchCorridor(bathSpec.type);
+      const sep = [...new Set([...getHardSeparated(bedSpec.type), ...getHardSeparated(bathSpec.type)])];
+      genericClusters.push({
+        id: `cluster-paired-${bedSpec.type}-${bathSpec.type}-${pairedCount}`,
+        rooms: [bedSpec, bathSpec],
+        types,
+        mustTouchCorridor: mustTouch,
+        separationConstraints: sep,
+      });
+      explanation.push(`Phase13 wet pairing: paired ${bathSpec.type} with ${bedSpec.type} to avoid sliver`);
+      pairedCount++;
+      // Safety cap
+      if (pairedCount > 10) break;
     }
 
     // Also handle any remaining private specs that were not in orderedPrivateTypes (e.g., extra master-bathroom)
@@ -715,36 +761,47 @@ export function placeSpaces(
   if (stor) {
     if (cfg.spine === 'vertical') {
       // For vertical spine the kitchen is the north pocket west of the corridor;
-      // splitting storage off it would leave dining/storage stacked west with a
-      // 0.01 m rounding overlap (AGX-01 GEO_OVERLAPPING). Put storage east,
-      // stacked above the stair pocket so it does not compete with public west.
-      if (stairPocket) {
+      // put storage east (service) to avoid west sliver (5.0x1.4) and keep storage square-ish.
+      // Prefer service pocket carved for storage (south-east small) if present.
+      const storagePocket = serviceRects.find(r =>
+        r.y <= footprint.y + 0.1 && r.w >= 1.4 && r.w <= 2.2 && r.h >= 1.4 && r.h <= 2.2 &&
+        r.x > footprint.x + footprint.w * 0.4
+      );
+      if (storagePocket) {
+        placed.push(mkSpace('storage', storagePocket, stor.placedLabel, stor.placedId, 'service'));
+      } else if (stairPocket) {
         const sx = stairPocket.x;
         const sy = stairPocket.y + stairPocket.h;
         const sh = Math.min(2.0, Math.max(1.4, stairPocket.h * 0.60));
         const remainingH = footprint.y + footprint.h - sy;
         const finalH = Math.min(sh, Math.max(1.4, remainingH > 1.4 ? Math.min(remainingH, sh) : sh));
-        // Ensure storage stays inside footprint; clamp if needed
         const storRect: Rect = { x: sx, y: sy, w: stairPocket.w, h: finalH > 0 ? finalH : sh };
-        // If not enough height east, fall back to kitchen split
         if (storRect.y + storRect.h <= footprint.y + footprint.h + 1e-6 && storRect.h >= 1.4) {
           placed.push(mkSpace('storage', storRect, stor.placedLabel, stor.placedId, 'service'));
         } else {
+          const ex = footprint.x + footprint.w * 0.5 + CORRIDOR_W/2;
+          const ew = Math.min(2.0, Math.max(1.4, layout.zones.private[0].w * 0.35));
+          const eh = Math.min(1.6, Math.max(1.4, layout.zones.private[0].h * 0.10));
+          const small: Rect = { x: ex, y: footprint.y, w: ew, h: eh };
+          placed.push(mkSpace('storage', small, stor.placedLabel, stor.placedId, 'service'));
+        }
+      } else {
+        // Single-storey vertical: no stair pocket and no carved pocket (narrow site), place compact east storage near south
+        const ex = footprint.x + footprint.w * 0.5 + CORRIDOR_W/2;
+        const ew = Math.min(2.0, Math.max(1.4, layout.zones.private[0].w * 0.35));
+        const eh = Math.min(1.6, Math.max(1.4, layout.zones.private[0].h * 0.10));
+        const small: Rect = { x: ex, y: footprint.y, w: ew, h: eh };
+        if (small.x + small.w <= footprint.x + footprint.w - 0.1) {
+          placed.push(mkSpace('storage', small, stor.placedLabel, stor.placedId, 'service'));
+        } else {
           const k = placed.find(p => p.type === 'kitchen');
           if (k) {
-            const storeH = Math.min(2.0, Math.max(1.4, k.rect.h * 0.20));
-            placed.push(mkSpace('storage', { x: k.rect.x, y: k.rect.y, w: k.rect.w, h: storeH }, stor.placedLabel, stor.placedId, 'service'));
+            const storeH = Math.min(1.6, Math.max(1.4, k.rect.h * 0.25));
+            const sw = Math.min(1.6, k.rect.w * 0.5);
+            placed.push(mkSpace('storage', { x: k.rect.x + k.rect.w - sw, y: k.rect.y, w: sw, h: storeH }, stor.placedLabel, stor.placedId, 'service'));
             k.rect = { x: k.rect.x, y: k.rect.y + storeH, w: k.rect.w, h: k.rect.h - storeH };
             k.polygon = rCorners(k.rect); k.area = rArea(k.rect);
           }
-        }
-      } else {
-        const k = placed.find(p => p.type === 'kitchen');
-        if (k) {
-          const storeH = Math.min(2.0, Math.max(1.4, k.rect.h * 0.20));
-          placed.push(mkSpace('storage', { x: k.rect.x, y: k.rect.y, w: k.rect.w, h: storeH }, stor.placedLabel, stor.placedId, 'service'));
-          k.rect = { x: k.rect.x, y: k.rect.y + storeH, w: k.rect.w, h: k.rect.h - storeH };
-          k.polygon = rCorners(k.rect); k.area = rArea(k.rect);
         }
       }
     } else {
