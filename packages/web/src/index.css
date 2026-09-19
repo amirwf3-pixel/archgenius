@@ -3,9 +3,14 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; }
-body { margin: 0; font-family: 'Inter', system-ui, sans-serif; }
+/* Persian-first font stack — per-glyph fallback, no external dependencies:
+   Vazirmatn (if installed), then Windows/macOS Persian-capable system fonts. */
+body { margin: 0; font-family: 'Vazirmatn', 'Segoe UI', Tahoma, 'Inter', ui-sans-serif, system-ui, sans-serif; }
 
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+/* Latin-only technical runs (codes, ids, coordinates, JSON) inside RTL text. */
+.ltr { direction: ltr; unicode-bidi: isolate; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -16,14 +21,16 @@ body { margin: 0; font-family: 'Inter', system-ui, sans-serif; }
 .panel {
   @apply bg-ink-800 border border-ink-700 rounded-lg;
 }
+/* NOTE: no `uppercase`/letter-spacing here — Persian script is joined and
+   must not be letter-spaced or transformed. */
 .panel-header {
-  @apply px-4 py-2 border-b border-ink-700 text-sm uppercase tracking-wider text-ink-400;
+  @apply px-4 py-2 border-b border-ink-700 text-sm text-ink-400;
 }
 .field {
   @apply flex flex-col gap-1;
 }
 .field label {
-  @apply text-xs text-ink-400 uppercase tracking-wider;
+  @apply text-xs text-ink-400;
 }
 .field input, .field select {
   @apply bg-ink-900 border border-ink-700 rounded px-2 py-1.5 text-sm text-slate-100 focus:outline-none focus:border-accent-500;
@@ -37,7 +44,7 @@ body { margin: 0; font-family: 'Inter', system-ui, sans-serif; }
 .btn-secondary {
   @apply btn bg-ink-700 hover:bg-ink-600 text-slate-200;
 }
-.badge-hard { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-bad/20 text-bad border border-bad/40 uppercase tracking-wide; }
-.badge-soft { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-warn/20 text-warn border border-warn/40 uppercase tracking-wide; }
-.badge-adv { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-accent-500/20 text-accent-500 border border-accent-500/40 uppercase tracking-wide; }
-.badge-ok { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-ok/20 text-ok border border-ok/40 uppercase tracking-wide; }
+.badge-hard { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-bad/20 text-bad border border-bad/40; }
+.badge-soft { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-warn/20 text-warn border border-warn/40; }
+.badge-adv { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-accent-500/20 text-accent-500 border border-accent-500/40; }
+.badge-ok { @apply inline-block px-1.5 py-0.5 text-[10px] font-bold rounded bg-ok/20 text-ok border border-ok/40; }

@@ -3,6 +3,11 @@ export default {
   content: [
     './index.html',
     './src/**/*.{ts,tsx}',
+    // The translation dictionaries contain no class names; excluding them keeps
+    // English words in comments/strings (e.g. "table", "fixed") from generating
+    // dead utility selectors in the production CSS.
+    '!./src/i18n.ts',
+    '!./src/i18n.test.tsx',
   ],
   theme: {
     extend: {
@@ -24,7 +29,7 @@ export default {
         bad: '#ef4444',
       },
       fontFamily: {
-        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans: ['Vazirmatn', 'Segoe UI', 'Tahoma', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
       },
     },

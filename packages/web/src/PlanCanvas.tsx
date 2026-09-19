@@ -1,5 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import type { LayoutCandidate } from '@archgenius/core';
+import { t, tf, spaceLabel, PERSIAN_FONT_STACK } from './i18n';
+
+/** Canvas font with Persian-capable fallback stack (per-glyph fallback). */
+const fontStr = (px: number) => `${px}px ${PERSIAN_FONT_STACK}`;
 
 interface Props {
   candidate: LayoutCandidate | null;
@@ -24,9 +28,9 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
 
     if (!candidate) {
       ctx.fillStyle = '#64748b';
-      ctx.font = '14px Inter, sans-serif';
+      ctx.font = fontStr(14);
       ctx.textAlign = 'center';
-      ctx.fillText('No plan generated yet. Enter parameters and click Generate.', canvas.width / 2, canvas.height / 2);
+      ctx.fillText(t('canvasEmpty'), canvas.width / 2, canvas.height / 2);
       return;
     }
 
@@ -126,7 +130,7 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
     for (const stall of floor.parkingStalls) {
       drawRect(stall.rect.x, stall.rect.y, stall.rect.w, stall.rect.h, 'rgba(100,116,139,0.15)', '#475569');
       ctx.fillStyle = '#94a3b8';
-      ctx.font = `10px Inter, sans-serif`;
+      ctx.font = fontStr(10);
       ctx.textAlign = 'center';
       ctx.fillText(`P${stall.index} F${fi}`, tx(stall.rect.x + stall.rect.w / 2), ty(stall.rect.y + stall.rect.h / 2) + 3);
     }
@@ -169,7 +173,7 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
       // Locked indicator
       if (s.locked?.position || s.locked?.geometry || s.locked?.size) {
         ctx.fillStyle = '#f59e0b';
-        ctx.font = '11px Inter, sans-serif';
+        ctx.font = fontStr(11);
         ctx.textAlign = 'left';
         const rx = s.rect.x;
         const ry = s.rect.y + s.rect.h;
@@ -232,34 +236,34 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
         ctx.stroke();
       }
       ctx.fillStyle = '#c084fc';
-      ctx.font = '10px Inter, sans-serif';
+      ctx.font = fontStr(10);
       ctx.textAlign = 'left';
-      ctx.fillText(`STAIR F${fi}`, tx(sx), ty(sy + sh) - 4);
+      ctx.fillText(`${t('canvasStair')} ${fi}`, tx(sx), ty(sy + sh) - 4);
     }
 
     ctx.fillStyle = '#e2e8f0';
     ctx.textAlign = 'center';
     for (const s of floor.spaces) {
       const fs = Math.max(9, Math.min(13, Math.min(s.rect.w, s.rect.h) * scale * 0.18));
-      ctx.font = `${fs}px Inter, sans-serif`;
+      ctx.font = fontStr(fs);
       const cx = s.rect.x + s.rect.w / 2;
       const cy = s.rect.y + s.rect.h / 2;
       const isSel = selectedSpaceId === s.id;
       ctx.fillStyle = isSel ? '#fbbf24' : '#e2e8f0';
-      ctx.fillText(s.label, tx(cx), ty(cy) + fs * 0.2);
-      ctx.font = `${fs * 0.75}px Inter, sans-serif`;
+      ctx.fillText(spaceLabel(s.label), tx(cx), ty(cy) + fs * 0.2);
+      ctx.font = fontStr(fs * 0.75);
       ctx.fillStyle = isSel ? '#fde68a' : '#94a3b8';
       ctx.fillText(`${s.area.toFixed(1)} m² ${s.polygon.length}v`, tx(cx), ty(cy) + fs * 1.1);
       ctx.fillStyle = '#e2e8f0';
     }
 
     ctx.fillStyle = '#f1f5f9';
-    ctx.font = '12px Inter, sans-serif';
+    ctx.font = fontStr(12);
     ctx.textAlign = 'left';
     const nx = tx(minX) + 12, ny = ty(maxY) + 18;
     ctx.beginPath(); ctx.moveTo(nx, ny - 10); ctx.lineTo(nx - 4, ny + 2); ctx.lineTo(nx + 4, ny + 2); ctx.closePath(); ctx.fill();
-    ctx.fillText('N', nx - 3, ny + 18);
-    ctx.fillText(`Floor ${fi} / ${candidate.floors.length - 1} — ${floor.spaces.length} spaces — Polygon Canonical — Click to select`, tx(minX), ty(minY) - 8);
+    ctx.fillText(t('canvasNorth'), nx - 12, ny + 18);
+    ctx.fillText(tf('canvasFloor', { current: fi, last: candidate.floors.length - 1, count: floor.spaces.length }), tx(minX), ty(minY) - 8);
 
     const barLen = 5;
     const bx = tx(maxX) - barLen * scale - 20;
@@ -268,7 +272,7 @@ export function PlanCanvas({ candidate, floorIndex = 0, width = 900, height = 60
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + barLen * scale, by); ctx.stroke();
     ctx.fillStyle = '#94a3b8';
-    ctx.font = '10px Inter, sans-serif';
+    ctx.font = fontStr(10);
     ctx.textAlign = 'center';
     ctx.fillText(`0`, bx, by + 14);
     ctx.fillText(`${barLen}m`, bx + barLen * scale, by + 14);
