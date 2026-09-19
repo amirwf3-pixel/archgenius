@@ -169,13 +169,18 @@ describe('Phase 6 — Property-based invariants', () => {
     const res = validateDXFStructure(dxf);
     expect(res.ok).toBe(true);
     expect(res.errors.length).toBe(0);
-    // R12 header: initial-view variables present; $SCREENSIZE/$DWGCODEPAGE are R13+ and must be absent; $INSUNITS/$MEASUREMENT also absent.
-    expect(dxf).toContain('$VIEWCTR');
-    expect(dxf).toContain('$VIEWSIZE');
-    expect(dxf).toContain('$EXTMIN');
-    expect(dxf).toContain('$EXTMAX');
-    expect(dxf).toContain('$LIMMIN');
-    expect(dxf).toContain('$LIMMAX');
+    // Minimal R12: ONLY $ACADVER, all other HEADER vars absent (they trigger Real AutoCAD Enter prompts / black views)
+    expect(dxf).toContain('$ACADVER');
+    expect(dxf).toContain('AC1009');
+    expect(dxf).not.toContain('$VIEWCTR');
+    expect(dxf).not.toContain('$VIEWSIZE');
+    expect(dxf).not.toContain('$EXTMIN');
+    expect(dxf).not.toContain('$EXTMAX');
+    expect(dxf).not.toContain('$LIMMIN');
+    expect(dxf).not.toContain('$LIMMAX');
+    expect(dxf).not.toContain('$VIEWDIR');
+    expect(dxf).not.toContain('$INSBASE');
+    expect(dxf).not.toContain('$LUNITS');
     expect(dxf).not.toContain('$SCREENSIZE');
     expect(dxf).not.toContain('$DWGCODEPAGE');
     expect(dxf).not.toContain('$INSUNITS');

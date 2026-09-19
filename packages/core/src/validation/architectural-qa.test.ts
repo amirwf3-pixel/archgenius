@@ -67,9 +67,12 @@ describe('Phase 6 — Architectural QA', () => {
     expect(dxf).toContain('A-WALL-SERVICE');
     expect(dxf).toContain('A-GRID');
     expect(dxf).toContain('A-AXIS');
-    // R12 header: view variables present; $INSUNITS is post-R12 and must be absent.
-    expect(dxf).toContain('$VIEWCTR');
-    expect(dxf).toContain('$VIEWSIZE');
+    // Minimal R12: ONLY $ACADVER, no view/extents; $INSUNITS is post-R12 and must be absent.
+    expect(dxf).toContain('$ACADVER');
+    expect(dxf).toContain('AC1009');
+    expect(dxf).not.toContain('$VIEWCTR');
+    expect(dxf).not.toContain('$VIEWSIZE');
+    expect(dxf).not.toContain('$EXTMIN');
     expect(dxf).not.toContain('INSUNITS');
   });
 

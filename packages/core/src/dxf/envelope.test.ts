@@ -4,9 +4,11 @@ import { writeDXF } from './writer.js';
 
 /**
  * Regression: Downloaded DXF must contain visible modelspace geometry inside sane envelope.
- * Verifies that browser Blob download path (via writeDXF) produces same bytes as exportDXF,
- * and that all LINE entities lie inside header envelope and VIEWCTR/VIEWSIZE covers it.
- * Also verifies that header contains conservative R12 variables and VPORT *ACTIVE.
+ * Verifies that browser Blob download path (via writeDXF) produces same bytes as exportDXF.
+ * Also verifies strict minimal R12 AC1009: ONLY $ACADVER, no R13+ headers, no VPORT dependency,
+ * and that all LINE entities lie within sane world coordinates.
+ * Minimal R12 was chosen because real AutoCAD 2024 opens minimal AC1009 but shows black/empty
+ * and Enter prompts when $EXTMIN/$EXTMAX/$VIEWCTR/$VIEWSIZE/$VIEWDIR/$LIMMIN/$LIMMAX/$INSBASE/$LUNITS/VPORT are malformed.
  */
 describe('DXF envelope regression', () => {
   it('Downloaded DXF must contain visible modelspace geometry inside sane envelope', () => {
@@ -25,65 +27,33 @@ describe('DXF envelope regression', () => {
     // Browser Blob path must be byte-identical to exportDXF string (no transformation loss)
     expect(dxf2).toBe(dxf);
 
-    // Structural checks
+    // Structural checks — minimal R12 AC1009: ONLY $ACADVER, no R13+ headers
     expect(dxf).toContain('$ACADVER');
     expect(dxf).toContain('AC1009');
-    expect(dxf).toContain('$INSBASE');
-    expect(dxf).toContain('$EXTMIN');
-    expect(dxf).toContain('$EXTMAX');
-    expect(dxf).toContain('$LIMMIN');
-    expect(dxf).toContain('$LIMMAX');
-    expect(dxf).toContain('$VIEWCTR');
-    expect(dxf).toContain('$VIEWSIZE');
-    expect(dxf).toContain('$VIEWDIR');
+    // All non-minimal HEADER vars must be absent (they trigger Real AutoCAD Enter prompts / black views)
+    expect(dxf).not.toContain('$INSBASE');
+    expect(dxf).not.toContain('$EXTMIN');
+    expect(dxf).not.toContain('$EXTMAX');
+    expect(dxf).not.toContain('$LIMMIN');
+    expect(dxf).not.toContain('$LIMMAX');
+    expect(dxf).not.toContain('$VIEWCTR');
+    expect(dxf).not.toContain('$VIEWSIZE');
+    expect(dxf).not.toContain('$VIEWDIR');
+    expect(dxf).not.toContain('$LUNITS');
     expect(dxf).not.toContain('$SCREENSIZE');
     expect(dxf).not.toContain('$DWGCODEPAGE');
-    expect(dxf).toContain('*ACTIVE');
-    expect(dxf).toContain('VPORT');
+    expect(dxf).not.toContain('$INSUNITS');
+    expect(dxf).not.toContain('$MEASUREMENT');
+    // Minimal TABLES: LTYPE/LAYER/STYLE only, no VPORT dependency
+    expect(dxf).toContain('LTYPE');
+    expect(dxf).toContain('LAYER');
+    expect(dxf).toContain('STYLE');
+    // VPORT is NOT required for minimal R12 — AutoCAD opens minimal file with default view
+    // Do not assert presence of *ACTIVE or VPORT; they are intentionally absent in minimal
+    expect(dxf.split('\r\n').join('')).not.toMatch(/[\r\n]/); // pure CRLF
 
-    // Parse header envelope
+    // Parse and check LINE entities are within sane world coordinates (no extents header to compare)
     const lines = dxf.split('\r\n');
-    const getHeader = (key: string) => {
-      const idx = lines.indexOf(key);
-      if (idx === -1) return null;
-      let x=NaN,y=NaN;
-      for(let i=idx+1;i<Math.min(lines.length,idx+10);i++){
-        if(lines[i]==='10') x=Number(lines[i+1]);
-        if(lines[i]==='20') y=Number(lines[i+1]);
-        if(lines[i]==='0' || lines[i]==='9') break;
-      }
-      return {x,y};
-    };
-    const extmin = getHeader('$EXTMIN')!;
-    const extmax = getHeader('$EXTMAX')!;
-    const viewctr = getHeader('$VIEWCTR')!;
-    const viewsize = (() => {
-      const idx=lines.indexOf('$VIEWSIZE');
-      if(idx===-1) return NaN;
-      for(let i=idx+1;i<idx+10;i++) if(lines[i]==='40') return Number(lines[i+1]);
-      return NaN;
-    })();
-    expect(extmax.x).toBeGreaterThan(extmin.x);
-    expect(extmax.y).toBeGreaterThan(extmin.y);
-    expect(viewsize).toBeGreaterThan(0);
-    // VIEWCTR inside envelope
-    expect(viewctr.x).toBeGreaterThanOrEqual(extmin.x);
-    expect(viewctr.x).toBeLessThanOrEqual(extmax.x);
-    expect(viewctr.y).toBeGreaterThanOrEqual(extmin.y);
-    expect(viewctr.y).toBeLessThanOrEqual(extmax.y);
-    // VIEWSIZE covers envelope
-    const viewH = viewsize;
-    // Aspect from VPORT 41
-    const vportIdx = lines.indexOf('*ACTIVE');
-    let aspect=1.33;
-    if(vportIdx!==-1){
-      for(let i=vportIdx;i<Math.min(lines.length,vportIdx+40);i++) if(lines[i]==='41') { aspect=Number(lines[i+1]); break; }
-    }
-    const viewW = viewH * aspect;
-    expect(viewH).toBeGreaterThanOrEqual(extmax.y - extmin.y);
-    expect(viewW).toBeGreaterThanOrEqual(extmax.x - extmin.x);
-
-    // All LINE entities inside envelope
     const pairs: Array<{code:number,value:string}> = [];
     for(let i=0;i+1<lines.length;i+=2) pairs.push({code:Number(lines[i]), value:lines[i+1]});
     let section='';
@@ -105,17 +75,26 @@ describe('DXF envelope regression', () => {
     if(curEnt) entities.push(curEnt);
     const linesEnt = entities.filter(e=>e.type==='LINE');
     expect(linesEnt.length).toBeGreaterThan(100);
+    // All LINEs must have finite coordinates within sane mm range (site 15.5x22m => 0..~25000 mm, with offset)
     for(const e of linesEnt){
       const x1=Number(e.codes[10]), y1=Number(e.codes[20]), x2=Number(e.codes[11]), y2=Number(e.codes[21]);
-      expect(x1).toBeGreaterThanOrEqual(extmin.x - 1e-6);
-      expect(x1).toBeLessThanOrEqual(extmax.x + 1e-6);
-      expect(y1).toBeGreaterThanOrEqual(extmin.y - 1e-6);
-      expect(y1).toBeLessThanOrEqual(extmax.y + 1e-6);
-      expect(x2).toBeGreaterThanOrEqual(extmin.x - 1e-6);
-      expect(x2).toBeLessThanOrEqual(extmax.x + 1e-6);
-      expect(y2).toBeGreaterThanOrEqual(extmin.y - 1e-6);
-      expect(y2).toBeLessThanOrEqual(extmax.y + 1e-6);
+      expect(Number.isFinite(x1)).toBe(true);
+      expect(Number.isFinite(y1)).toBe(true);
+      expect(Number.isFinite(x2)).toBe(true);
+      expect(Number.isFinite(y2)).toBe(true);
+      // Sane bounds: allow up to 100m (100000mm) to account for multi-floor stacking; allow negative for title block offset
+      expect(x1).toBeGreaterThanOrEqual(-10000);
+      expect(x1).toBeLessThanOrEqual(100000);
+      expect(y1).toBeGreaterThanOrEqual(-10000);
+      expect(y1).toBeLessThanOrEqual(100000);
+      expect(x2).toBeGreaterThanOrEqual(-10000);
+      expect(x2).toBeLessThanOrEqual(100000);
+      expect(y2).toBeGreaterThanOrEqual(-10000);
+      expect(y2).toBeLessThanOrEqual(100000);
+      // R12 LINE must have 30/31 = 0
+      expect(e.codes[30]).toBe('0');
+      expect(e.codes[31]).toBe('0');
     }
-    // AutoCAD display verification unavailable in CI — this test proves structural visibility, not application rendering
+    // AutoCAD display verification unavailable in CI — this test proves structural minimal R12, not application rendering
   });
 });

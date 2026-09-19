@@ -158,49 +158,23 @@ describe('DXF R12 compatibility — writer output (Phase-A hardening)', () => {
       expect(dxf.split('\r\n').join('')).not.toMatch(/[\r\n]/);
       expect(dxf.split('\r\n').length % 2).toBe(1); // pairs + final empty split element
 
-      // Header: R12 version tag; initial-view variables present; post-R12 vars absent.
-      // Conservative R12: $ACADVER AC1009, $EXTMIN/$EXTMAX, $LIMMIN/$LIMMAX, $VIEWCTR/$VIEWSIZE, $VIEWDIR are present; $SCREENSIZE/$DWGCODEPAGE/$INSUNITS/$MEASUREMENT are R13+ and must be absent.
+      // Header: minimal R12 AC1009 — ONLY $ACADVER, all other HEADER vars absent (they trigger Real AutoCAD Enter prompts)
       expect(a.header['$ACADVER'][0].value).toBe('AC1009');
-      expect(a.header['$VIEWCTR']).toBeDefined();
-      expect(a.header['$VIEWSIZE']).toBeDefined();
-      expect(a.header['$EXTMIN']).toBeDefined();
-      expect(a.header['$EXTMAX']).toBeDefined();
-      expect(a.header['$LIMMIN']).toBeDefined();
-      expect(a.header['$LIMMAX']).toBeDefined();
-      expect(a.header['$VIEWDIR']).toBeDefined();
+      expect(a.header['$VIEWCTR']).toBeUndefined();
+      expect(a.header['$VIEWSIZE']).toBeUndefined();
+      expect(a.header['$EXTMIN']).toBeUndefined();
+      expect(a.header['$EXTMAX']).toBeUndefined();
+      expect(a.header['$LIMMIN']).toBeUndefined();
+      expect(a.header['$LIMMAX']).toBeUndefined();
+      expect(a.header['$VIEWDIR']).toBeUndefined();
+      expect(a.header['$INSBASE']).toBeUndefined();
+      expect(a.header['$LUNITS']).toBeUndefined();
       expect(a.header['$SCREENSIZE']).toBeUndefined();
       expect(a.header['$DWGCODEPAGE']).toBeUndefined();
       expect(a.header['$INSUNITS']).toBeUndefined();
       expect(a.header['$MEASUREMENT']).toBeUndefined();
-
-      // Geometry coherence of the viewport: EXTMIN < EXTMAX, center inside,
-      // VIEWSIZE positive and the viewport covers the complete drawing
-      // (width via aspect from VPORT 41 / VIEWDIR).
-      const extmin = headerPoint(a, '$EXTMIN');
-      const extmax = headerPoint(a, '$EXTMAX');
-      const ctr = headerPoint(a, '$VIEWCTR');
-      const viewH = Number(a.header['$VIEWSIZE'][0].value);
-      expect(extmax.x).toBeGreaterThan(extmin.x);
-      expect(extmax.y).toBeGreaterThan(extmin.y);
-      expect(ctr.x).toBeGreaterThanOrEqual(extmin.x);
-      expect(ctr.x).toBeLessThanOrEqual(extmax.x);
-      expect(ctr.y).toBeGreaterThanOrEqual(extmin.y);
-      expect(ctr.y).toBeLessThanOrEqual(extmax.y);
-      expect(viewH).toBeGreaterThan(0);
-      // Viewport aspect is stored in TABLES VPORT 41; header $VIEWSIZE is height, width = height * aspect
-      const vportAspect = (() => {
-        // Find VPORT *ACTIVE 41 value from pairs (fallback to 1024/768)
-        const idx = a.pairs.findIndex(p => p.code === 2 && p.value === '*ACTIVE');
-        if (idx >= 0) {
-          for (let j = idx; j < Math.min(a.pairs.length, idx + 40); j++) {
-            if (a.pairs[j].code === 41) return Number(a.pairs[j].value);
-          }
-        }
-        return 1024 / 768;
-      })();
-      const viewW = viewH * vportAspect;
-      expect(viewH).toBeGreaterThanOrEqual(extmax.y - extmin.y);
-      expect(viewW).toBeGreaterThanOrEqual(extmax.x - extmin.x);
+      // Minimal header has exactly one variable: $ACADVER
+      expect(Object.keys(a.header)).toEqual(['$ACADVER']);
     });
 
     it(`tables + text: ${sc.key}`, () => {
