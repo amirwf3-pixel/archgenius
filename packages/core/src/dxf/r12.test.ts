@@ -223,15 +223,17 @@ describe('DXF R12 compatibility — writer output (Phase-A hardening)', () => {
     for (const ch of dxf) expect(ch.charCodeAt(0)).toBeLessThanOrEqual(0x7e);
   });
 
-  it('linetype dash patterns are millimetre-scale (x25.4), not inch-scale', () => {
+  it('linetype tables contain no dash pattern elements (49/74) — W1 PASS without 49, W2 FAIL with 49 31.75', () => {
     const res = generate(createProject(makeInput(15, 20, 3, 2)), { allStrategies: true });
     const { dxf } = exportDXF(res.candidates[0], 'T');
     const a = analyze(dxf);
-    const center = a.ltypes.find(l => l.name === 'CENTER')!;
-    const dashed = a.ltypes.find(l => l.name === 'DASHED')!;
-    expect(Number(center.codes[40])).toBeCloseTo(50.8, 2);  // (31.75+6.35+6.35+6.35)
-    expect(Number(dashed.codes[40])).toBeCloseTo(19.05, 2); // (12.7+6.35)
-    expect(Number(center.codes[40])).toBeGreaterThanOrEqual(25.4); // visible at mm plan scale
+    // All LTYPEs must be solid (73 0, 40 0, no 49/74) — dash pattern caused AutoCAD empty (W1 PASS, W2 FAIL)
+    for (const lt of a.ltypes) {
+      expect(lt.codes[73]).toBe('0');
+      expect(lt.codes[40]).toBe('0');
+    }
+    expect(a.pairs.some(p => p.code === 49)).toBe(false);
+    expect(a.pairs.some(p => p.code === 74)).toBe(false);
   });
 });
 

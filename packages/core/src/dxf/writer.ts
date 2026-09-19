@@ -1065,25 +1065,16 @@ function drawDirArrowWithLayer(
 }
 
 function writeLtype(b: string[], name: string, desc: string, pattern: number[]) {
+  // Minimal R12 fix: 49/74 dash pattern elements cause AutoCAD to open empty (W1 PASS without 49, W2 FAIL with 49 31.75)
+  // Keep names (CONTINUOUS/CENTER/DASHED) for layer references, but emit no dash elements — solid linetype, AutoCAD-compatible.
+  // Deterministic: 73 0, 40 0 for all, no 49/74.
   b.push('0', 'LTYPE');
   b.push('2', name);
   b.push('70', '0');
   b.push('3', desc);
-  b.push('72', '65'); // R12-required alignment code ('A'); every LTYPE must carry it
-  const elements = pattern.filter(p => Math.abs(p) > 1e-9).length;
-  b.push('73', String(elements));
-  let totalLen = 0;
-  for (const p of pattern) totalLen += Math.abs(p);
-  // Round to avoid JS floating artifacts like 50.800000000000004 / 19.049999999999997 which ezdxf tolerates but AutoCAD may reject
-  totalLen = Math.round(totalLen * 10000) / 10000;
-  b.push('40', String(totalLen || 0));
-  for (const p of pattern) {
-    if (Math.abs(p) < 1e-9) continue;
-    // Round pattern values to 4 decimals as well (31.75 etc. are exact but guard against artifacts)
-    const v = Math.round(p * 10000) / 10000;
-    b.push('49', String(v));
-    b.push('74', '0');
-  }
+  b.push('72', '65'); // R12-required alignment code ('A')
+  b.push('73', '0');
+  b.push('40', '0');
 }
 
 /** Validate the structural integrity of a generated DXF string (lightweight). */

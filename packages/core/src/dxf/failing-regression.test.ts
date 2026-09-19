@@ -8,14 +8,10 @@ import { createProject, generate, exportDXF } from '../pipeline.js';
 /**
  * Evidence-based regression for DXF black-screen failure (15.5×22 south 6m 3BD 2BA 1F).
  *
- * Root cause (proven by analyzer + isolation):
- * 1) LTYPE 40 floating artifacts 50.800000000000004 / 19.049999999999997 (binary sum 31.75+6.35*3)
- *    written via String(totalLen) without rounding — AutoCAD rejects, ezdxf audit still passes.
- * 2) ARC angles -90 (south-wall doors) left negative via drawDoorWithLayer without 0..360 norm.
- *    AutoCAD may blank the viewport when ARC start is negative.
- *
- * This test proves the fix: new writer emits 50.8 / 19.05 and ARC 0..360, and that the
- * saved failing fixture (original) still carries the bug for isolation evidence.
+ * Root cause (proven by AutoCAD isolation T2/W1/W2/V1/V2):
+ * - LTYPE dash pattern 49/74 causes AutoCAD to open empty (W1 PASS without 49, W2 FAIL with 49 31.75)
+ * - Previous LTYPE 40 floating 50.800000000000004 and ARC -90 were also fixed but insufficient alone.
+ * - Minimal fix: LTYPE 73 0, 40 0, no 49/74 for all 3 types (CONTINUOUS/CENTER/DASHED) — T2 PASS.
  */
 
 function generate15_5x22(): string {
@@ -33,7 +29,7 @@ function generate15_5x22(): string {
   return dxf;
 }
 
-describe('DXF failing 15.5x22 — regression (LTYPE floating, ARC negative)', () => {
+describe('DXF failing 15.5x22 — regression (LTYPE dash pattern, ARC negative)', () => {
   it('saved failing fixture still carries the original bug (for isolation evidence)', () => {
     const dir = path.dirname(fileURLToPath(import.meta.url));
     const p = path.join(dir, 'fixtures/failing-15_5x22.dxf');
@@ -48,28 +44,25 @@ describe('DXF failing 15.5x22 — regression (LTYPE floating, ARC negative)', ()
     expect(a.arcNegative).toBe(6);
   });
 
-  it('fixed writer emits exact decimals and ARC 0..360 for the same input (no floating, no negative)', () => {
+  it('fixed writer emits minimal LTYPE (no 49/74) and ARC 0..360 for the same input (no floating, no negative)', () => {
     const dxf = generate15_5x22();
     const a = analyzeDXF(dxf, 'fixed-15_5x22');
-    // LTYPE must be exact 0, 50.8, 19.05
-    expect(a.ltype40.sort()).toEqual(['0', '19.05', '50.8']);
+    // LTYPE must be minimal 3x 40 0, 73 0, no dash pattern — W1 PASS, W2 FAIL proved 49/74 fatal
+    expect(a.ltype40.sort()).toEqual(['0', '0', '0']);
     expect(a.hasFloatingLtype).toBe(false);
+    // No 49/74 dash elements in LTYPE section (AutoCAD fails on them: W1 PASS without 49, W2 FAIL with 49 31.75)
+    const ltypeSection = dxf.split('0\r\nSECTION\r\n2\r\nTABLES\r\n')[1]?.split('0\r\nENDSEC\r\n')[0] ?? '';
+    expect(ltypeSection).not.toContain('\r\n49\r\n');
+    expect(ltypeSection).not.toContain('\r\n74\r\n');
+    // LTYPE 73 must be 0 for all (no dash elements)
+    const ltype73 = [...ltypeSection.matchAll(/\r\n73\r\n(\d+)/g)].map(m=>m[1]);
+    expect(ltype73).toEqual(['0','0','0']);
     // ARC must have no negative angles
     expect(a.arcNegative).toBe(0);
     // Verify raw DXF does not contain the floating strings
     expect(dxf).not.toContain('50.800000000000004');
     expect(dxf).not.toContain('19.049999999999997');
-    expect(dxf).not.toContain('\r\n 50\r\n-90\r\n');
-    // Verify ARC lines are 0..360
-    const lines = dxf.split('\r\n');
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i] === '50' || lines[i] === '51') {
-        const v = Number(lines[i + 1]);
-        if (lines[i - 2] === 'ARC' || lines[i - 4] === 'ARC' || lines[i - 6] === 'ARC') {
-          // Only check ARC 50/51
-        }
-      }
-    }
+    expect(dxf).not.toContain('\r\n50\r\n-90\r\n');
     // Parse ARC 50/51 specifically
     const pairs: Array<{code:number,value:string}> = [];
     const ls = dxf.split('\r\n'); if (ls[ls.length-1]==='') ls.pop();
@@ -118,10 +111,20 @@ describe('DXF failing 15.5x22 — regression (LTYPE floating, ARC negative)', ()
     expect(aRef.arcNegative).toBe(0);
     expect(aFail.hasFloatingLtype).toBe(true);
     expect(aFail.arcNegative).toBe(6);
-    // Both must be structurally valid (ezdxf would pass), but AutoCAD blanks failing — proves ezdxf PASS insufficient
     expect(aRef.sections).toEqual(aFail.sections);
-    expect(aFail.entitiesTotal).toBe(1032); // raw entities (including VERTEX/SEQEND)
-    // Logical entities (POLYLINE counted as one) is 872, matches ezdxf
+    expect(aFail.entitiesTotal).toBe(1032);
     expect(aRef.entitiesTotal).toBe(11);
+  });
+
+  it('generated DXF contains no LTYPE 49/74 dash pattern (regression for W2 FAIL)', () => {
+    const dxf = generate15_5x22();
+    // Global check: no 49/74 in LTYPE — W1 PASS without them, W2 FAIL with 49 31.75
+    expect(dxf).not.toContain('\r\n49\r\n31.75\r\n');
+    expect(dxf).not.toContain('\r\n49\r\n-6.35\r\n');
+    expect(dxf).not.toContain('\r\n49\r\n12.7\r\n');
+    // Ensure LTYPE section has no 49 at all
+    const tables = dxf.split('0\r\nSECTION\r\n2\r\nTABLES\r\n')[1]?.split('0\r\nENDSEC\r\n')[0] ?? '';
+    const has49InLtype = tables.includes('\r\n49\r\n');
+    expect(has49InLtype).toBe(false);
   });
 });
