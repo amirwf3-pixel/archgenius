@@ -106,6 +106,6 @@ No fabricated legal claims. VERIFIED rules carry clause, page, snippet, digest. 
 ## Further reading
 
 - [REGULATION_AUDIT.md](./REGULATION_AUDIT.md) — full audit with images, corrections, Phase 5.2 report
-- [PHASE_5.2_REPORT.md](./PHASE_5.2_REPORT.md) — Phase 5.2 engineering report
+- [history/PHASE_5.2_REPORT.md](./history/PHASE_5.2_REPORT.md) — Phase 5.2 engineering report
 - `sources/README.md` — how to register PDFs
 - `packages/core/src/regulations/packs/source-registry.ts` — registry with hashes

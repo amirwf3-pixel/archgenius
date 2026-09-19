@@ -1,11 +1,16 @@
 # Iranian Regulation Engine — Architecture & Rule Inventory
 
-> Status: **DRAFT — REQUIRES SOURCE VERIFICATION**. Every rule in this pack is
-> transcribed from publicly-available secondary sources (engineer-practitioner
-> summaries, continuing-education material, forum Q&A) and must be verified
-> against the official *Mabhas* publications of the Iranian National Building
-> Code (INBC / مقررات ملی ساختمان) issued by the *Road, Housing & Urban
-> Development Research Center (BHRC)* before being used for permitting.
+> **Status: HISTORICAL (pre-Phase 5.2 draft — superseded).** This document is the
+> original architecture/rule-inventory draft written when every rule was
+> transcribed from publicly-available secondary sources. It is retained as
+> engineering history. The **authoritative, current regulation status is
+> [`REGULATIONS.md`](REGULATIONS.md)** (Phase 5.2 — primary Tier-1 source
+> integration: 9 rules promoted to VERIFIED with SHA-256/page/clause evidence
+> from the official *Mabhas* PDFs; see also
+> [`REGULATION_AUDIT.md`](REGULATION_AUDIT.md) and
+> [`../sources/README.md`](../sources/README.md)). Rule thresholds and
+> verification states below the line reflect the pre-verification draft and must
+> not be quoted as the current status of any rule.
 
 ---
 

@@ -1,172 +1,410 @@
-# ArchGenius — AI Architectural Planning & Professional CAD System
+# ArchGenius
+## سیستم هوشمند برنامه‌ریزی معماری و تولید CAD حرفه‌ای
 
-**Phase 11 — PARAMETRIC PLANNING & CONSTRAINT-AWARE EDITING** — Space.polygon canonical authoritative (rect 4, L-shape 6, concave up to 8 verts), parametric constraints (minArea/targetArea/maxArea/minWidth/minLength/preferredAspectRatio/MUST_ADJACENT/PREFER_ADJACENT/MUST_BE_SEPARATED/PREFER_SEPARATED/DIRECT_ACCESS_REQUIRED/PRIVACY_REQUIRED/zone/privacy), core-level locking (position/size/geometry/adjacency/all), bounded editing (move/resize/lock/unlock/setLShape) with deterministic repair, site-aware buildableBoundary, DXF polygon canonical R12, deterministic offline-first.
+**ArchGenius** یک موتور برنامه‌ریزی معماری با هندسه قطعی (Deterministic Geometry) است که از ورودی‌های پارامتریک پروژه، پلان معماری معتبر تولید می‌کند و خروجی‌های مهندسی واقعی ارائه می‌دهد: فایل DXF قابل ویرایش در AutoCAD، فایل PDF، جدول مساحت‌ها در XLSX، گزارش کیفیت و مانیفست سازگاری. این سیستم به‌صورت آفلاین و کاملاً قطعی کار می‌کند و برای طراحی مسکونی در بازار ایران و با توجه به ساختار مقررات ملی ساختمان توسعه یافته است.
 
-Phase 10.1 — SITE-AWARE HARDENING — rectangle, L-shape, orthogonal polygon (V1 3..8 verts, deterministic decomposition), canonical buildable geometry, site-aware placement, complete containment HARD, DXF per-floor canonical site/buildable layers, area semantics actual vs bounding, deterministic, offline-first, R12 DXF A-SITE/A-BLDG-OUT/A-SETBACK.
+وضعیت فعلی: **V1.0 Release Candidate** — توسعه پس از Phase 13.2 متوقف و فریز شده است.
 
-## Phase 11 — Parametric Planning & Constraint-Aware Editing (Current)
+| شاخص | مقدار تأییدشده |
+|---|---|
+| آزمون‌های خودکار | ۶۱۳ تست PASS در ۲۷ فایل |
+| Type Check هسته (Core) | PASS — TypeScript strict |
+| Type Check رابط کاربری (Web) | PASS |
+| بیلد رابط کاربری | PASS — ۳۱۱ ماژول (Vite) |
+| آخرین QA مستقل | VERIFIED WITH MEDIUM FINDINGS |
+| قطعیت تولید | ورودی + seed یکسان → پلان و خروجی‌های کاملاً یکسان |
 
-### Canonical Geometry
-- `Space.polygon` authoritative, `Space.rect` derived bounding compatibility, `Space.area` from polygonArea, no dual drift.
-- Rectangle 4-vert, L-shape 6-vert (notch), bounded orthogonal concave up to 8 verts, area/containment/intersection/adjacency, shared-wall, wall gen from polygon edges.
-- Unsupported (curved/non-orthogonal/self-intersect/>8) → explicit fail, no silent bbox fallback.
+> کلیدواژه‌ها: هندسه قطعی (Deterministic Geometry) · گراف قیود (Constraint Graph) · اعتبارسنجی (Validation) · خروجی CAD ساختاریافته · مقررات ملی ساختمان ایران
 
-### Constraint Model
-- Size: minArea/targetArea/maxArea/minWidth/minLength/preferredAspectRatio
-- Adjacency: MUST_ADJACENT/PREFER_ADJACENT/MUST_BE_SEPARATED/PREFER_SEPARATED/DIRECT_ACCESS_REQUIRED/PRIVACY_REQUIRED/zone/privacy
-- Hard vs heuristic separate, Phase 8 semantics compatible, no Pareto weighting.
+---
 
-### Locking & Editing (Core, Bounded)
-- Locking: core-level locked position/size/geometry/adjacency/all, survives repair, impossible edit → deterministic failure, no silent violation.
-- Editing: move/resize/lock/unlock/setLShape in CORE, flow op → constraint-aware mutation → bounded repair unlocked (max 4 iter × 4 dirs 0.1m) → validation → intelligence, deterministic seed-stable no Math.random no unbounded search.
-- UI thin: select floor/room, move, resize safe, lock/unlock, show validation HARD/SOFT/ADVISORY, constraint/lock state, calls Core APIs.
+## ۱. معرفی
 
-### Site-Aware
-- siteBoundary/buildableBoundary/buildableRects authoritative, placement respects actual buildable polygon, cannot fit → deterministic repair or explicit reject.
+### ArchGenius چیست و چه مسئله‌ای را حل می‌کند؟
 
-### Outputs
-- Same canonical candidate, DXF actual polygon on A-FLOOR-n-A-ROOM + generic A-ROOM, site/buildable layers canonical per-floor, R12/AC1009/INSUNITS=4 mm, PDF/XLSX/report/manifest consistent.
+تولید پلان معماری معمولاً یا به ابزارهای طراحی دستی (نیازمند ترسیم صحنه به صحنه) وابسته است یا به ابزارهای «هوشمند» غیرقطعی که خروجی تکرارپذیر ندارند. ArchGenius مسیر سومی را پیاده می‌کند:
 
-### Testing
-- 449 PASS (402 baseline + 47 Phase11), A-J behavioral + canonical invariants, deterministic repeat PASS, performance bounded candidates≤12 no 4^floors.
+- **ورودی پارامتریک**: مشخصات سایت، عقب‌نشینی‌ها، برنامه فیزیکی ساختمان و seed تعیین‌کننده.
+- **موتور تولید قطعی**: الگوریتم‌های قطعی و محدودشده (Bounded) که همیشه یک نتیجه قابل بازتولید می‌دهند.
+- **اعتبارسنجی صادقانه**: هر پلان با یافته‌های HARD / SOFT / ADVISORY اعتبارسنجی می‌شود؛ هیچ نقضی بی‌صدا نادیده گرفته نمی‌شود.
+- **خروجی مهندسی واقعی**: DXF ساختاریافته با لایه‌بندی استاندارد، نه تصویر یا فایل نمایشی.
 
-### Build
-- `npm run test:core` 449 PASS
-- `npx tsc -p packages/core/tsconfig.json --noEmit` PASS
-- `vite build` PASS 309 modules
+### ورودی‌های پارامتریک
 
-## Site Geometry First-Class — Not BBox Fallback (Phase 10.1 Hardened)
+- **سایت**: شکل (مستطیل، L شکل، چندضلعی متعامد تا ۸ رأس)، عرض، طول، ضلع دسترسی (Access Side)، عرض خیابان، عقب‌نشینی‌های N/S/E/W، حوزه قضایی (Jurisdiction) و شهر.
+- **برنامه فیزیکی (Building Program)**: نوع ساختمان، تعداد طبقات (۱ تا ۱۰)، تعداد اتاق خواب و مستر، حمام، WC، نوع آشپزخانه (باز/بسته)، انباری و تعداد جای پارکینگ.
+- **Seed**: کلید قطعیت تولید؛ با ثابت‌ماندن ورودی‌ها و seed، نتیجه همیشه یکسان است.
 
-### Supported shapes (genuinely supported)
-- `rectangle` — width x length, CCW 4 verts, area = W*L, decomposition 1 rect (canonical = bounding, actual == bounding)
-- `l-shape` — overall W/L minus rectangular notch from corner (ne/nw/se/sw or north-east etc), deterministic 6-vert polygon, area = W*L - notchW*notchL, decomposition into 2 rects via concave vertex + missing corner (canonical, area sum = polygon area, not bounding), genuinely supported
-- `polygon` — simple orthogonal polygon, 3..8 verts V1, finite, no duplicate consecutive, no zero-length, no self-intersection, deterministic CCW ordering, EPS 1e-6m, decomposition via vertical scanline into up to 6 rects (deterministic, bounded, area sum = polygon area, no silent bbox fallback), affects placement. 8-vertex orthogonal polygons fully decomposed when orthogonal simple; if decomposition fails safely, returns null (no bbox as canonical) and validation marks SITE_GEOM_INVALID HARD.
+### خروجی چیست؟
 
-### Validation (finite, min valid verts, no duplicate consecutive, no zero-length, no self-intersection, deterministic ordering, max 8 verts V1, EPS handling)
-- `validateSitePolygon(poly, maxVerts=8, minArea=10)` → {valid, isValid, errors, area}
-- Checks: <3 verts, >8 verts, duplicate consecutive (dist <=1e-6), zero-length edges (dist <=1e-6), area <10m², self-intersection (segment intersection excluding shared endpoints), non-orthogonal (V1 axis-aligned only)
-- Buildable geometry: `computeBuildableGeometry(siteInput)` → {siteBoundary CCW canonical, siteArea actual polygon area, siteBoundingRect compatibility/bounding, appliedSetbacks [{direction,value,source,status,reference}], buildableBoundary canonical polygon (inset), buildableArea actual polygon area, buildableBoundingRect compatibility/bounding, buildableRect legacy bounding compatibility, buildableRects canonical decomposition (rectangle 1, L-shape 2, 8-vert up to 6, null on failure), isValid, validationErrors, source}
-- Canonical vs compatibility: siteBoundary/buildableBoundary/buildableRects are canonical for placement/validation/outputs; siteBoundingRect/buildableBoundingRect/buildableRect are compatibility/bounding helpers only (presentation, legacy footprint), NOT canonical for L-shape/polygon placement.
+یک Candidate منتخب (پلان) به‌همراه: فایل DXF (R12)، فایل PDF (یک صفحه به ازای هر طبقه)، فایل XLSX یازده‌شیتی، گزارش QA و مانیفست سازگاری با checksum قطعی — همه از یک منبع واحد هندسی تولید می‌شوند و با هم سازگارند.
 
-### Site-boundary validation findings (complete containment Phase 10.1)
-- Codes: `SITE_INVALID_POLYGON`, `SITE_ZERO_AREA` (<10m²), `SITE_INSUFFICIENT_BUILDABLE` (<5m² or consumed), `SITE_ROOM_OUTSIDE_BUILDABLE`, `SITE_CORRIDOR_OUTSIDE_BUILDABLE` (now HARD, not skipped), `SITE_WALL_OUTSIDE_BUILDABLE` (now HARD, checks start+end+mid), `SITE_OPENING_OUTSIDE_BUILDABLE`, `SITE_OPENING_HOST_WALL_OUTSIDE`, `SITE_FURNITURE_OUTSIDE_BUILDABLE`, `SITE_FURNITURE_OUTSIDE_ROOM`, `SITE_STAIR_OUTSIDE_BUILDABLE`, `SITE_STAIR_FLIGHT_OUTSIDE_BUILDABLE`, `SITE_PARKING_OUTSIDE_SITE`, `SITE_PARKING_OVERLAPS_BUILDING` — all HARD except advisory, deterministic, geometric integrity checks not legal
-- Containment guarantees: every space (rooms + corridors/circulation) inside buildableBoundary via `rectInsidePolygon`, walls inside (start+end+mid), openings center inside + host wall inside, furniture inside containing room + inside buildable, stairs footprint + flights inside, parking inside siteBoundary + no overlap building footprint (buildableRects canonical, or buildableBoundary if rects empty due to decomposition failure)
+### چرا هندسه قطعی (Deterministic) است؟
 
-### Buildable-Area Geometry (canonical)
-- Original site boundary (input shape)
-- Applied setbacks: user-defined DESIGN INPUT vs default-assumption, source/status per setback, reference "User-defined design input — NOT a legal requirement" or "Default assumption — REQUIRES_SOURCE_VERIFICATION", NOT invented legal
-- Buildable boundary: inset orthogonal polygon by directional setbacks (north/south/east/west), inward shift, CCW, area, bounding rect, containment check inside original site
-- For rectangle: inset rect {x+west, y+south, w - west-east, h - south-north}
-- For L-shape/polygon: `insetOrthogonalPolygon(poly, setbacks)` — shifts each edge inward by setback value based on outward direction, reconstructs vertices via intersection of shifted edges, validates duplicate/zero-length/self-intersection/containment, returns polygon + errors
-- Buildable rects: `decomposeOrthogonalPolygonToRects(poly)` → Rect[] | null — rectangle 1 rect, L-shape 2 rects via concave vertex + missing corner (area sum = polygon area), 8-vert via vertical scanline: xs = unique x sorted, slabs between xs, midX, collect y intersections of horizontal edges crossing midX, sort y, pair as inside intervals, create rects, validate rectInsidePolygon + area sum ≈ polygon area, merge horizontally/vertically deterministic, returns null on failure (no silent bbox fallback). Bounded: xs ≤8, slabs ≤7, intervals ≤4, total rects ≤12, no combinatorial explosion.
+- کل مسیر تولید (سایت → برنامه فیزیکی → چیدمان → رتبه‌بندی → خروجی) قطعی است؛ در کد هسته هیچ تصادفی در تولید هندسه وجود ندارد.
+- seed یک پارامتر ورودی صریح است و شناسه Candidate ها مستقیماً از استراتژی و seed ساخته می‌شود (مثل `cand-area-efficiency-42`).
+- جستجوها همیشه محدودشده‌اند (بند ۳)؛ نه حلقه بی‌پایان وجود دارد و نه جستجوی ترکیبیاتی کنترل‌نشده.
+- آزمون‌های قطعیت (Determinism) در مجموعه تست‌ها، برابری کامل پلان، یافته‌ها و خروجی‌ها را در اجرای مکرر بررسی می‌کنند.
 
-### Setback Representation/Resolution
-- User-defined DESIGN INPUT vs VERIFIED Tier-1 with source ID/SHA256/page/clause/snippet/verification state else REQUIRES_SOURCE_VERIFICATION
-- In V1: setbacks are design inputs, NOT legal requirements unless VERIFIED via regulation pack Tier-1
-- AppliedSetback: {direction, value, source: 'user-defined'|'default-assumption'|'verified', status: 'VERIFIED'|'REQUIRES_SOURCE_VERIFICATION'|'USER_DEFINED'|'DEFAULT', reference}
-- UI: setback inputs N/S/E/W with badges showing source/status, jurisdiction field, parking layout selector
+### چرا DXF «واقعی» و قابل ویرایش است؟
 
-### Site-Aware Room Placement
-- Every space inside buildable: `rectInsidePolygon(rect, buildableBoundary)` checks all corners + center + edge midpoints, no bbox fallback for canonical
-- Walls/openings/furniture/circulation/stair/parking inside buildable via HARD checks
-- L-shape deterministic decomposition: `placeSpacesAcrossRects(buildableRects, buildableBoundary, specs, strategy, access, mkSpace)` — sorts rects by area descending then y, assigns public/semi-private/service to south rect, private + stair-hall to north rect for 2-rect L-shape, proportional by area for >2 rects, deterministic
-- Polygon safe strategy: candidate regions (buildableRects) → placement → reject/repair → validate: `repairSpacesToBuildable` moves rooms outside buildable to alternative positions inside buildableRects via `findPositionForRect` scanning step 0.5m, `snapCorridorsToRoomsSiteAware` clamps to buildableRect bounding and re-repairs if still outside, final check rectInsidePolygon
-- 8-vertex: scanline decomposition provides canonical rects, not bounding rect fallback; if decomposition fails, returns null, candidate marked SITE_GEOM_INVALID HARD, placement uses bounding rect as presentation fallback but validation flags outside
-- Parking fit/orientation alternatives perpendicular/parallel deterministic geometric (no overlap site/buildable/building/other stalls): `placeParkingSiteAware(siteBoundary, buildableBoundary, buildableRects, siteRect, buildableRect, accessSide, count, level, layoutPref)` — tries perpendicular then parallel, checks `rectInsidePolygon(stall, siteBoundary)` and `!rIntersects(stall, buildingFootprint)` and no overlap other stalls, deterministic attempts[] array, layout 'perpendicular'|'parallel'|'auto'
-- Placement quality preserve adjacency/privacy/circulation/daylight/furniture/kitchen/bedroom/entrance/stair Phase 8/9 intelligence intact
+خروجی DXF یک فایل ASCII استاندارد R12 (AC1009) با `INSUNITS=4` (میلی‌متر) است که از موجودیت‌های واقعی CAD (POLYLINE، LINE، TEXT، ARC) روی لایه‌های نام‌گذاری‌شده ساخته می‌شود و مستقیماً در AutoCAD و نرم‌افزارهای مشابه باز و ویرایش می‌شود. قبل از تحویل، ساختار فایل با پارسر DXF داخلی اعتبارسنجی می‌شود (`validation.ok`).
 
-## DXF Multi-Floor Layers — Per-Floor Canonical (Phase 10.1 Fixed)
+---
 
-### Authoritative floor-specific geometry (canonical)
-- `A-FLOOR-{n}-{base}` is authoritative floor-specific geometry namespace, `{n}` = floor index 0..N-1 deterministic sorted by level
-- `{base}` = `A-WALL-EXT`, `A-WALL-INT`, `A-WALL-CORE`, `A-WALL-SERVICE`, `A-WALL-PART`, `A-DOOR`, `A-WINDOW`, `A-STAIR`, `A-STAIR-TREAD`, `A-STAIR-DIR`, `A-ROOM`, `A-DIMS`, `A-PARKING`, `A-BLDG-OUT`, `A-SITE`, `A-SETBACK`
-- For EVERY floor (not just ground): 
-  - `A-FLOOR-{n}-A-SITE` = actual siteBoundary polygon shifted by floorOffset (canonical)
-  - `A-FLOOR-{n}-A-SETBACK` = actual buildableBoundary polygon (setback-applied) shifted (canonical)
-  - `A-FLOOR-{n}-A-BLDG-OUT` = actual buildableBoundary polygon shifted (canonical), NOT bounding rect for L-shape/polygon
-- Generic base layers `A-SITE`, `A-SETBACK`, `A-BLDG-OUT` emitted for floor 0 ONLY for backward compatibility (still canonical polygon, controlled by includeGenericLayers flag)
-- Multi-floor L-shape and polygon candidates: upper-floor DXF geometry genuinely non-rectangular when canonical building geometry is non-rectangular (verified via parsing polyline coordinates, not string presence)
+## ۲. منظور از «هوشمند / AI» در ArchGenius
 
-### Layer table
-- `A-SITE` color 3 green DASHED — original site boundary polygon
-- `A-BLDG-OUT` color 1 red — buildable boundary (setback-applied) canonical
-- `A-SETBACK` color 2 yellow DASHED — setback lines (buildable boundary duplicated) + label N/S/E/W
-- INSUNITS=4 mm, R12 ASCII AC1009, deterministic entity ordering
+صادقانه و شفاف:
 
-### Multi-floor presentation transformation (presentation only)
-- Floors north-stacked in model space Y offset, `FLOOR_GAP_M=4m`, `floorOffset(fi)=fi*(maxFootprintH+4)` deterministic presentation, architectural elevation stored in Floor.elevation
-- No second independent geometry: only one source of truth candidate.floors + siteBoundary/buildableBoundary
+**ArchGenius V1.0 برای تولید هندسه از ML یا LLM استفاده نمی‌کند.** هیچ مدل زبانی یا شبکه عصبی‌ای پلان تولید نمی‌کند و سیستم هیچ وابستگی ابری یا اینترنتی ندارد.
 
-## PDF Drawing Numbers — Whole-Building + Site Context
+«هوشمندی» این نسخه از **روش‌های الگوریتمی و قطعی** حاصل می‌شود:
 
-- DrawingNumber = `AG-{candidateId}-WB` whole-building, per-floor `AG-{id}-WB-F{level}`
-- PDF title block includes site shape, width x length, area, buildable area (actual), setbacks N/S/E/W
-- PDF ground floor page draws siteBoundary green + buildableBoundary orange + labels, upper floors show floor-specific geometry
-- Multi-page per floor, site/context info
+- **امتیازدهی چندمحوری (Scoring)**: ارزیابی کیفیت پلان در محورهای همجواری (Adjacency)، گردش و دسترسی (Circulation)، نور و جهت‌گیری (Daylight/Orientation)، حریم خصوصی (Privacy)، هم‌پوشانی طبقات (Stacking) و کیفیت کل‌ساختمان.
+- **گراف قیود (Constraint Graph)**: قیود سخت همجواری، دسترسی مستقیم و تفکیک به‌صورت یک گراف عمومی از انواع فضاها ساخته و مصرف می‌شود؛ بدون شاخه‌های هاردکد برای نوع اتاق خاص.
+- **جستجوی محدودشده Candidate**: حداکثر ۸ تلاش چیدمان، ۴ تکرار ترمیم موضعی و ۱۲ موقعیت کاندید — همیشه محدود و قابل پیش‌بینی.
+- **رتبه‌بندی قطعی (Deterministic Ranking)**: چهار استراتژی تولید با یک comparator مشترک رتبه‌بندی می‌شوند: اول کمترین نقض HARD، سپس کمترین SOFT، سپس معیارهای وزنی کیفیت و در نهایت ترتیب استراتژی.
+- **چارچوب استراتژی‌ها**: area-efficiency، functional-circulation، daylight-orientation، alternative-zoning — انتخاب بهترین نتیجه بر اساس کیفیت، نه شانس.
 
-## XLSX — 11 Sheets Including Site
+عنوان «هوشمند» به همین مجموعه روش‌های تصمیم‌گیری الگوریتمی اشاره دارد؛ نه به مدل‌های زبانی. این مرز عمداً شفاف نگه داشته شده است.
 
-- Sheets: `01_Project`, `02_Room_Schedule`, `03_Area_Summary`, `04_Openings`, `05_QA`, `06_Regulations`, `07_Intelligence`, `08_PerFloor`, `09_Vertical`, `10_Stacking`, `11_Site`
-- `11_Site`: shape, width, length, area actual, buildable area actual, bounding rect compatibility, rects count + each rect, access side, jurisdiction, city, parking layout, setbacks N/S/E/W with source/status/reference, site boundary vertices, buildable boundary vertices, site validation isValid/errors, L-shape JSON, polygon vertices — structurally meaningful
-- `01_Project` includes site shape, buildable area actual, buildable rects, setbacks, jurisdiction, city, parking layout
+---
 
-## Area Semantics (Phase 10.1 Fixed)
+## ۳. معماری سیستم
 
-- Actual buildable polygon area used for site/buildable area (siteAreaValue, buildableAreaValue from computeBuildableGeometry)
-- Actual canonical building footprint area used for building footprint: areaSummary.buildingFootprint = actual buildableBoundary polygon area (not bounding rect), grossFloorArea = sum actual per floor = buildingFootprint * floors for same site
-- For rectangle: actual == bounding (verified)
-- For L-shape/polygon: actual != bounding where applicable (verified, actual < bounding)
-- Legacy fields: footprint x,y,w,h remain bounding rect as compatibility/presentation, area field is canonical actual; clearly labeled in docs as compatibility/bounding vs canonical actual
-- Cross-output consistency: doc=report=manifest=DXF/PDF/XLSX agree on site shape/area/buildable/setbacks/jurisdiction/validation/floor count/checksum, area semantics consistent
+خط تولید (Pipeline) تأییدشده:
 
-## Report/Manifest — Site Metadata Cross-Output Consistent
+```
+ورودی‌های پروژه (سایت + برنامه فیزیکی + seed)
+        ↓
+هندسه سایت و محدوده قابل ساخت (Buildable Geometry)
+        ↓
+برنامه فیزیکی فضاها (Space Programming)
+        ↓
+گراف قیود (Constraint Graph)
+        ↓
+تولید Candidate ها (۴ استراتژی، جستجوی محدودشده)
+        ↓
+Placement / بهینه‌سازی محدود
+        ↓
+اعتبارسنجی (Validation)
+        ↓
+رتبه‌بندی و انتخاب Candidate
+        ↓
+خروجی‌های CAD و مستندات (DXF / PDF / XLSX / Report / Manifest)
+```
 
-- DocumentationModel.site extended: buildableArea actual, buildableBoundingRect compatibility, buildableRects canonical, siteBoundary canonical, buildableBoundary canonical, setbacks, setbackSources, jurisdiction, city, parkingLayout, lShape, polygonVertices, siteValidation
-- QAReport.site, ProjectManifest input.site + geometry.siteShape/buildableArea actual/siteValidation, areaSummary gross/net/circ/service/parking/residual actual
-- Consistency checksum deterministic
+اصول معماری:
 
-## UI — Site Shape Selector
+- **چندضلعی مرجع است (Polygon-Authoritative)**: `Space.polygon` منبع حقیقت هندسه است (مستطیل ۴ رأس، L شکل ۶ رأس، چندضلعی مقعر تا ۸ رأس) و `rect` فقط مقدار مشتق برای سازگاری. هیچ انحراف دوگانه‌ای بین این دو وجود ندارد.
+- **بدون Fallback بی‌صدا به Bounding Box**: اگر تجزیه چندضلعی شکست بخورد، نتیجه `null` و یافته HARD صریح صادر می‌شود؛ هرگز جعبه محیطی به‌جای هندسه واقعی جایگزین نمی‌شود.
+- **هندسه سایت‌آگاه (Site-Aware)**: `siteBoundary` و `buildableBoundary` و `buildableRects` مرجع چیدمان و اعتبارسنجی‌اند؛ همه فضاها باید داخل محدوده قابل ساخت باشند (بند ۶).
+- **Seed قطعی و جستجوی محدود**: شرح داده‌شده در بند ۲.
+- **آفلاین-محور (Offline-First)**: هیچ فراخوانی شبکه‌ای در تولید هندسه یا اعتبارسنجی وجود ندارد.
 
-- Site Shape selector: Rectangle / L-shape / Polygon
-- Rectangle: width, length, access side, street width
-- L-shape: notch width, notch length, notch corner (ne/nw/se/sw or north-east etc), deterministic decomposition info
-- Polygon: vertex editor textarea JSON array of {x,y}, orthogonal V1 3..8 verts, validation feedback, deterministic ordering
-- Setbacks: N/S/E/W inputs with badge REQUIRES_SOURCE_VERIFICATION unless VERIFIED
-- Jurisdiction, city, parking layout (auto/perpendicular/parallel), floor selector, seed, deterministic
-- Site validation feedback: shape, area actual, buildable area actual, rects count, vertices count, valid yes/no + errors, setback sources badges
+مستندات تکمیلی: [ARCHITECTURE.md](ARCHITECTURE.md) و [DECISIONS.md](DECISIONS.md).
 
-## Testing — Phase 10.1
+---
 
-- 402 tests PASS (328 Phase1-9 + 46 Phase10 + 28 Phase10.1)
-- Phase10 A-H + site validation findings preserved
-- Phase10.1 new:
-  - DXF per-floor canonical: every floor has A-FLOOR-n-A-SITE actual siteBoundary, A-FLOOR-n-A-SETBACK actual buildable, A-FLOOR-n-A-BLDG-OUT actual buildableBoundary not bounding rect, multi-floor L-shape/polygon upper floor genuinely non-rectangular (parsed polyline coordinates geometry, not string presence)
-  - 8-vertex: C-shape 3 rects not bounding, staircase shape, concave 8-vert containment every room, final geometry differs from bounding rect, deterministic repeated generation, invalid cases self-intersect/duplicate/9 verts, decomposition failure returns null not bounding rect and validation HARD
-  - Complete containment: rooms outside HARD, corridors outside HARD (not skipped), walls outside HARD (start+end+mid), openings outside HARD, furniture outside buildable HARD + outside room HARD, stairs outside HARD, parking outside site HARD + overlaps building HARD, valid candidate zero HARD site findings
-  - Area semantics: rectangle actual==bounding, L-shape actual!=bounding, polygon actual!=bounding where applicable, cross-output consistency actual areas, rectangle area semantics, gross = footprint * floors
-  - Determinism: same input+seed → identical site geometry, buildable geometry, candidate IDs, quality, DXF geometry
-  - Performance bounded: floors≤10 verts≤8 candidates≤12 no 4^floors, 10F 20x30 8-vert <10s
-- No reduction in validation strictness, Phase9 scoring weights unchanged, no accidental floors[0] regression
+## ۴. قابلیت‌های اصلی V1.0
 
-## Determinism
+| قابلیت | وضعیت | توضیح |
+|---|---|---|
+| سایت مستطیلی | ✅ IMPLEMENTED | عرض × طول، ضلع دسترسی، عرض خیابان |
+| سایت L شکل | ✅ IMPLEMENTED | ناچ مستطیلی از گوشه، تجزیه قطعی به ۲ مستطیل |
+| سایت چندضلعی متعامد (۳ تا ۸ رأس) | ✅ IMPLEMENTED | تجزیه Scanline تا ۶ مستطیل، بدون bbox بی‌صدا |
+| عقب‌نشینی N/S/E/W | ✅ IMPLEMENTED | با مدل منبع/وضعیت (طراحی کاربر / فرض پیش‌فرض / تأییدشده) |
+| ورودی‌های Jurisdiction / City | ✅ IMPLEMENTED | برای تفکیک مقررات ملی و ضوابط محلی |
+| برنامه‌ریزی مسکونی (Programming) | ✅ IMPLEMENTED | مشتق‌سازی فضاها، مساحت هدف/حداقل، قیود |
+| ۱ تا ۱۰ طبقه | ✅ IMPLEMENTED | تست‌شده تا ۱۰ طبقه با پلکان |
+| Bedrooms / Master / Bathroom / WC | ✅ IMPLEMENTED | — |
+| آشپزخانه باز / بسته | ✅ IMPLEMENTED | open / closed |
+| انباری (Storage) | ✅ IMPLEMENTED | تولید فضا در برنامه فیزیکی |
+| چهار استراتژی تولید | ✅ IMPLEMENTED | area-efficiency · functional-circulation · daylight-orientation · alternative-zoning |
+| کنترل Seed | ✅ IMPLEMENTED | در هسته و رابط کاربری |
+| گراف قیود عمومی (Constraint Graph) | ✅ IMPLEMENTED | MUST_BE_ADJACENT / MUST_BE_SEPARATED / DIRECT_ACCESS_REQUIRED + خوشه‌ها (Clusters) |
+| جستجوی محدودشده | ✅ IMPLEMENTED | ۸ تلاش / ۴ ترمیم / ۱۲ موقعیت |
+| اعتبارسنجی HARD / SOFT / ADVISORY | ✅ IMPLEMENTED | هندسی، سایت، گردش، پلکان، مبلمان، مقررات |
+| Site Containment | ✅ IMPLEMENTED | همه فضاها داخل Buildable Boundary |
+| پلکان (Stairs) | ✅ IMPLEMENTED | u-stair دو رمه، اعتبارسنجی STAIR_* |
+| چندطبقه با پلکان | ✅ IMPLEMENTED | از ۲ طبقه به بالا |
+| قطعیت کامل تولید | ✅ IMPLEMENTED | — |
+| DXF | ✅ IMPLEMENTED | بند ۹ |
+| PDF / XLSX / Report / Manifest | ✅ هسته · ⚠️ UI محدود | در API هسته کامل؛ در رابط کاربری فقط DXF دکمه دانلود دارد |
+| معناشنسی پروژه غیرقابل تحقق (INFEASIBLE) | ✅ IMPLEMENTED | بند ۶ |
+| ویرایش پارامتریک | ✅ هسته · ⚠️ UI محدود | move/resize/lock/unlock/setLShape در هسته؛ رابط کاربری فعلی Move و انتخاب فضا |
+| امتیازدهی کیفیت (Intelligence) | ✅ هسته · ⚠️ UI محدود | در هسته و مستندات محاسبه می‌شود؛ نمایش اختصاصی در UI ندارد |
+| آپارتمان (Apartment) | ⚠️ PARTIAL | فقط اولین برش عمودی: یک یونیت در هر طبقه؛ بدون هسته مشترک |
+| جای پارکینگ (Parking) | ⚠️ PARTIAL / محدودیت شناخته‌شده | زیرساخت ورودی و موتور چیدمان وجود دارد اما در همه سناریوهای آزمون‌شده ۰ جای پارک قرار گرفته؛ بند ۱۰ |
+| چرخش شمال (North Rotation) | ⚠️ PARTIAL | فیلد مدل موجود؛ UI فعلی `northRotationDeg = 0` |
+| بالکن / حیاط | ⚠️ PARTIAL | Spec در Programming تعریف شده؛ در UI در دسترس نیست |
+| ذخیره‌سازی پروژه (Persistence) | ⚠️ PARTIAL | ماژول هسته موجود؛ داشبورد کامل Save/Load در UI نیست |
+| آسانسور (Elevator) | ❌ NOT IMPLEMENTED | قواعد LIFT در پک مقررات موجود است اما هندسه آسانسور تولید نمی‌شود |
 
-- Same input + seed → same geometry, siteBoundary, buildableBoundary, buildableRects, floors, candidateId, evaluation, ranking, DXF geometry (parsed), PDF/XLSX/report/manifest deterministic fields
-- mulberry32 PRNG, no Math.random in core, Date.now only for generatedAt/updatedAt metadata (not geometry), no Math.random in geometry
+---
 
-## Regulation Discipline
+## ۵. روند تولید پلان
 
-- No fabricated legal claims; use "REQUIRES SOURCE VERIFICATION"/"Professional Review Required"/"NOT_IMPLEMENTED" for unknowns
-- Setbacks USER-DEFINED DESIGN INPUTS unless VERIFIED Tier-1 with source ID/SHA256/page/clause/snippet
-- Vertical/stacking/interFloor isHeuristic=true, never legal claim
-- Statuses VERIFIED/REQUIRES_SOURCE_VERIFICATION/NOT_IMPLEMENTED preserved, 9 VERIFIED rules unchanged
+۱. **تعریف سایت** — شکل، ابعاد، ضلع دسترسی، عرض خیابان.
+۲. **تعریف عقب‌نشینی‌ها** — N/S/E/W با نشانگر منبع و وضعیت هرکدام.
+۳. **تعریف برنامه فیزیکی** — طبقات، اتاق‌ها، آشپزخانه، انباری، seed.
+۴. **ساخت قیود** — گراف قیود از قیود پیش‌فرض مسکونی ساخته می‌شود (همجواری، دسترسی مستقیم، تفکیک، حریم).
+۵. **تولید چند Candidate** — چهار استراتژی، هرکدام با جستجوی محدودشده و ترمیم موضعی.
+۶. **اعتبارسنجی** — هر Candidate با یافته‌های HARD / SOFT / ADVISORY بررسی می‌شود.
+۷. **رتبه‌بندی** — فقط Candidate های معتبر (بدون نقض هندسی HARD) رتبه‌بندی می‌شوند.
+۸. **انتخاب Candidate** — بهترین Candidate معتبر به‌عنوان `bestCandidate`.
+۹. **نمایش پلان** — بوم رابط کاربری، لیست فضاها، اعتبارسنجی و امکان ویرایش محدود.
+۱۰. **خروجی CAD / گزارش** — DXF در UI؛ PDF / XLSX / Report / Manifest از API هسته.
 
-## Build
+**اصل مهم:** پروژه غیرقابل تحقق هرگز بی‌صدا به یک «پلان به‌ظاهر معتبر» تبدیل نمی‌شود (بند ۶).
 
-- `npm run test:core` 402 PASS (19+1 files)
-- `npx tsc -p packages/core/tsconfig.json --noEmit` PASS
-- `npm run build --workspace=@archgenius/web` PASS (vite 304 modules, 1,770kB)
+---
 
-## Out of Scope (Phase 10.1)
+## ۶. اعتبارسنجی و رفتار پروژه‌های غیرقابل تحقق (INFEASIBLE)
 
-- 3D/BIM/IFC/Revit/DWG/image-to-CAD/topography/terrain/neighbor sim/full solar/structural/MEP/municipality approval automation/unrestricted AI geometry/invented regs/FAR/coverage legal enforcement without Tier-1
-- Unrestricted polygon decomposition (only orthogonal ≤8 verts, deterministic scanline, bounded, no combinatorial explosion)
+اعتبارسنجی یکی از اجزای اصلی سیستم است: یافته‌ها با شدت‌های **HARD** (نقض قید قطعی)، **SOFT** (انحراف از هدف) و **ADVISORY** (توصیه) صادر می‌شوند و شامل کنترل‌های هم‌پوشانی فضاها، ابعاد حداقل، درگیری با محدوده قابل ساخت (مثل `SITE_ROOM_OUTSIDE_BUILDABLE` و `GEO_ROOM_OUTSIDE_FOOTPRINT`)، گردش، پلکان و قواعد مقرراتی است.
+
+### CASE A — هیچ Candidate معتبری وجود ندارد
+
+اگر هیچ Candidate ای حداقل‌های هندسی (ابعاد مثبت، polygon سالم، minWidth/minLength/minArea) را برآورده نکند:
+
+- `bestCandidate = null` — هرگز از بین Candidate های نامعتبر انتخاب نمی‌شود.
+- `candidates = []` — لیست Candidate های قابل استفاده خالی است.
+- یک وضعیت صریح **INFEASIBLE** با کد `HARD_CONSTRAINT_INFEASIBLE_DIMENSION` و توضیح قطعی (Deterministic) برگردانده می‌شود.
+- اطلاعات تلاش هر استراتژی (`attempts`) حفظ می‌شود: هر استراتژی چه کرد و به کدام حداقل برخورد.
+- **diagnosticCandidates** ممکن است برای بررسی نگهداری شوند — این‌ها «پلان» نیستند؛ صرفاً مدرک تشخیصی‌اند، هرگز به‌عنوان Candidate معمولی در جریان downstream قرار نمی‌گیرند و توابع خروجی (`exportDXF` / `exportAll` / `buildDocumentation`) روی آن‌ها خطای صریح می‌دهند. هیچ پلانی که معتبر نباشد، خروجی CAD یا گزارش نمی‌شود.
+
+### CASE B — هندسه معتبر ولی با یافته‌های HARD سایت
+
+اگر هندسه معتبر وجود داشته باشد اما اعتبارسنجی یافته‌های HARD سایت/مقرراتی گزارش کند (مثلاً سایت تنگ ۸×۱۲ متر):
+
+- Candidate باقی می‌ماند و قابل استفاده/خروجی است — مطابق قرارداد تأییدشده؛
+- یافته‌های HARD حذف یا پنهان نمی‌شوند؛ مصرف‌کننده باید یافته‌ها را بخواند.
+
+**نکته شفاف:** وجود یافته HARD در CASE B به معنای «تأیید قانونی» نیست؛ فقط هندسه از حداقل‌های برنامه عبور کرده است. همچنین ادعا نمی‌شود که همه diagnosticCandidates در همه حالت‌ها هندسه مثبت دارند (بند ۱۰، مورد M1).
+
+---
+
+## ۷. مقررات ایران
+
+رکن مهندسی پروژه، **انضباط مقرراتی** است؛ بدون هیچ ادعای ساختگی:
+
+- **منبع‌محوری (Source Provenance)**: قواعد فقط از منابع Tier-1 (اسناد اصلی) قابل تأییدند. دو سند اصلی در مخزن ثبت شده‌اند: **مبحث چهارم** (چاپ ۱۳۹۶، ۱۲۸ صفحه) و **مبحث پانزدهم** (۱۳۹۲، ۸۴ صفحه) — با SHA-256، تعداد صفحه و مسیر سند در Registry منابع (`sources/`).
+- **وضعیت‌های قاعده**: `VERIFIED` (تأییدشده با صفحه/بند/متن سند) · `REQUIRES_SOURCE_VERIFICATION` (نیازمند راستی‌آزمایی منبع) · `NOT_IMPLEMENTED` · `DEPRECATED`. در حال حاضر ۹ قاعده VERIFIED دارد (از جمله ROOM-001/002/004/007، STAIR-001/002/003، LIFT-001، DYL-001).
+- **تفکیک ملی/محلی**: مقررات ملی ساختمان (مباحث) از ضوابط محلی و شهرداری (مثل عقب‌نشینی‌ها و پارکینگ محلی) جدا نگه داشته می‌شود؛ ضوابط محلی تا زمان تأیید منبع در وضعیت REQUIRES_SOURCE_VERIFICATION می‌مانند.
+- **عقب‌نشینی‌ها = ورودی طراحی**: عقب‌نشینی ورودی کاربر «تعهد قانونی» تلقی نمی‌شود مگر اینکه از منبع Tier-1 تأیید شود؛ منبع و وضعیت هر عقب‌نشینی در خروجی‌ها ثبت می‌شود.
+- **شدت یافته‌ها**: HARD / SOFT / ADVISORY — بدون ادعای انطباق ۱۰۰٪.
+
+این سیستم **ادعای تأیید شهرداری، تأیید قانونی خودکار یا انطباق کامل نمی‌کند**؛ خروجی آن یک ابزار طراحی و بررسی مهندسی است، نه جایگزین نظر اشخاص حقیقی دارای صلاحیت.
+
+مستندات: [docs/REGULATIONS.md](docs/REGULATIONS.md) · [docs/REGULATION_AUDIT.md](docs/REGULATION_AUDIT.md) · [sources/README.md](sources/README.md)
+
+---
+
+## ۸. نمونه دموی تأییدشده
+
+نمونه زیر به‌صورت قطعی و قابل بازتولید اجرا و تأیید شده است (همین نتیجه با همان ورودی و seed همیشه تولید می‌شود):
+
+**پروژه `ArchGenius-Demo-Villa`**
+
+| ورودی | مقدار |
+|---|---|
+| سایت | مستطیل ۱۵ × ۲۰ متر — مساحت ۳۰۰ m² |
+| محدوده قابل ساخت (Buildable) | ۱۷۰٫۵ m² (پس از عقب‌نشینی) |
+| برنامه | ویلا · ۱ طبقه · ۲ خواب · ۱ مستر · ۱ حمام · ۱ WC · آشپزخانه بسته · ۰ پارکینگ |
+| دسترسی / خیابان | جنوبی / ۸ متر |
+| Seed | ۴۲ |
+
+**نتیجه:** `cand-area-efficiency-42` — هر ۴ استراتژی Candidate معتبر تولید کردند (۴/۴) · **۰ HARD · ۵ SOFT · ۱۰ ADVISORY**
+
+فضاهای تولیدشده (۸ فضا، همه با polygon چهار رأس و بالاتر از حداقل‌ها):
+
+| فضا | مساحت |
+|---|---|
+| master-bedroom | ۳۳٫۳ m² |
+| bedroom | ۳۲٫۹ m² |
+| living | ۲۶٫۲ m² |
+| dining | ۱۹٫۱ m² |
+| master-bathroom | ۱۹٫۲ m² |
+| kitchen | ۱۵٫۰ m² |
+| corridor | ۱۶٫۵ m² |
+| entrance | ۲٫۴ m² |
+
+**خروجی‌های تولیدشده برای این نمونه:** DXF (با اعتبارسنجی ساختاری موفق) · PDF · XLSX · گزارش QA · مانیفست سازگاری — همه سازگار با هم (مساحت سایت و Buildable در همه خروجی‌ها یکسان).
+
+> در رابط کاربری وب، دانلود DXF دکمه اختصاصی دارد؛ PDF / XLSX / گزارش در API هسته پیاده‌سازی شده‌اند اما در حال حاضر دکمه دانلود اختصاصی در UI ندارند.
+
+این نمونه به‌صورت قطعی از **API هسته** با همین ورودی‌ها قابل بازتولید است (ورودی + seed یکسان → نتیجه یکسان). در **رابط کاربری وب** نیز با واردکردن همین مقادیر و عقب‌نشینی‌های N=3، S=1.5، E=2، W=2 متر، همان Candidate با همان پروفایل اعتبارسنجی (۰ HARD) تولید می‌شود؛ با این تفاوت که فرم UI به‌صورت پیش‌فرض انباری (Storage) را فعال دارد (غیرفعال‌کردن آن در UI فعلی ممکن نیست) و یک فضای انباری حدود ۳٫۴ m² به پلان اضافه می‌شود.
+
+---
+
+## ۹. خروجی‌ها
+
+| خروجی | وضعیت | توضیح |
+|---|---|---|
+| **DXF** | ✅ IMPLEMENTED | ASCII R12 / AC1009 · `INSUNITS=4` (mm) · لایه‌بندی ساختاریافته و ترتیب موجودیت‌های قطعی · اعتبارسنجی ساختاری با پارسر داخلی قبل از تحویل · دانلود از UI فعال |
+| **PDF** | ✅ هسته پیاده‌سازی شده | یک صفحه به ازای هر طبقه، شماره نقشه `AG-{candidateId}-WB` و `-F{level}` · دکمه دانلود اختصاصی در UI ندارد |
+| **XLSX** | ✅ هسته پیاده‌سازی شده | ۱۱ شیفت: `01_Project` · `02_Room_Schedule` · `03_Area_Summary` · `04_Openings` · `05_QA` · `06_Regulations` · `07_Intelligence` · `08_PerFloor` · `09_Vertical` · `10_Stacking` · `11_Site` · دکمه دانلود اختصاصی در UI ندارد |
+| **گزارش (Report)** | ✅ هسته پیاده‌سازی شده | یافته‌های QA و مقرراتی به‌صورت ساختاریافته |
+| **Manifest** | ✅ هسته پیاده‌سازی شده | نسخه مانیفست و checksum سازگاری قطعی |
+
+لایه‌های DXF: لایه‌های عمومی (`A-SITE`، `A-SETBACK`، `A-BLDG-OUT` در طبقه همکف) و فضای‌نام طبقه‌محور `A-FLOOR-{n}-{base}` برای هر طبقه (شامل `A-WALL-EXT`، `A-WALL-INT`، `A-DOOR`، `A-WINDOW`، `A-STAIR`، `A-ROOM`، `A-DIMS` و …) — هندسه هر طبقه از سایت و Buildable واقعی همان طبقه رسم می‌شود، نه از جعبه محیطی.
+
+معناشنسی مساحت در همه خروجی‌ها «مساحت واقعی polygon» است (نه مساحت جعبه محیطی) و Site/Buildable/Gross بین DXF و PDF و XLSX و گزارش و مانیفست یکسان است.
+
+---
+
+## ۱۰. محدودیت‌های V1.0
+
+این بخش عمداً صریح نوشته شده است.
+
+### پارکینگ (Parking)
+زیرساخت ورودی و موتور چیدمان پارکینگ (عمود/موازی) وجود دارد، اما در همه سناریوهای آزمون‌شده QA، **۰ جای پارک** قرار گرفته است — چون پلان ساختمان، محدوده قابل ساخت را پر می‌کند و نوار پارکینگ جا نمی‌شود. این وضعیت در توضیحات Candidate ثبت می‌شود اما به‌صورت یافته اعتبارسنجی گزارش نمی‌گردد. پارکینگ یک قابلیت PARTIAL و محدودیت شناخته‌شده V1.0 است.
+
+### آسانسور (Elevator)
+پیاده‌سازی نشده. قواعد LIFT در پک مقررات موجود است اما هیچ هندسه آسانسوری تولید نمی‌شود.
+
+### آپارتمان (Apartment)
+فقط اولین برش عمودی: یک یونیت کامل در هر طبقه. هسته مشترک، آسانسور و چیدمان چندیونیتی پیاده‌سازی نشده است.
+
+### M1 — عیب شناخته‌شده مولد (در Diagnostic ها)
+در برخی سناریوهای L شکل بسیار تنگ (مثلاً ۱۰×۱۰ با ناچ ۴×۴ و برنامه کم‌اتاق)، ممکن است ابعاد منفی (مثل ارتفاع ‎−۰٫۰۷ متر‎) در **diagnosticCandidates** تولید شود. وضعیت این عیب:
+
+- پیش‌از Phase 13.2 وجود داشته (Pre-existing)؛
+- توسط معناشنسی Phase 13.2 **قرنطینه** شده: هرگز به‌عنوان Candidate قابل استفاده exposure نمی‌شود؛
+- هرگز به‌عنوان پلان معمولی قابل خروجی گرفتن نیست (گاردهای خروجی خطای صریح می‌دهند)؛
+- در رابط کاربری فقط وضعیت INFEASIBLE نمایش داده می‌شود، نه پلان.
+
+### M2 — خطای نگارشی مستندات
+برخی عبارات مستندات Phase 13.2 درباره «مثبت‌بودن هندسه همه diagnostic ها» صریح‌تر از واقعیت نوشته شده‌اند؛ این تضمین فقط برای Fixture های تست‌شده برقرار است، نه به‌صورت عمومی.
+
+### محدودیت‌های رابط کاربری
+برخی قابلیت‌های API هسته در UI در دسترس نیست: دانلود PDF/XLSX/گزارش (فقط DXF)، نمایش امتیازهای کیفیت، داشبورد مدیریت پروژه، ویرایش کامل (UI فعلی Move و انتخاب فضا دارد؛ resize/lock/setLShape فقط از API هسته)، و چرخش شمال (UI فعلاً `northRotationDeg = 0`).
+
+### ذخیره‌سازی پروژه (Persistence)
+ماژول ذخیره‌سازی در هسته (localStorage/JSON) موجود است، اما داشبورد کامل Save/Load در رابط کاربری پیاده‌سازی نشده است.
+
+### 3D / BIM / DWG / Image
+پیاده‌سازی نشده و خارج از اهداف پروژه است.
+
+---
+
+## ۱۱. تست و کیفیت مهندسی
+
+اعداد زیر همگی اجرا و تأیید شده‌اند:
+
+- **۶۱۳ تست PASS** در **۲۷ فایل تست** — بدون fail و بدون skip.
+- **Core TSC**: PASS (TypeScript strict).
+- **Web TSC**: PASS.
+- **بیلد وب**: PASS — **۳۱۱ ماژول** (Vite).
+
+محورهای پوشش تست:
+
+- **قطعیت (Determinism)**: اجرای مکرر با ورودی/seed یکسان → برابری کامل پلان، یافته‌ها، ترتیب Diagnostic ها و خروجی‌ها.
+- **چندطبقه**: ۱ تا ۱۰ طبقه، پلکان، عدم وابستگی به طبقه همکف.
+- **اعتبارسنجی ساختاری CAD**: خروجی DXF با پارسر واقعی تجزیه و لایه‌ها/موجودیت‌ها بررسی می‌شود (نه فقط جستجوی رشته‌ای).
+- **رگرسیون قیود و هندسه**: ماتریس‌های Adversarial (سایت‌های تنگ، L شکل، چندضلعی ۸ رأس)، containment، ابعاد حداقل، جستجوی محدودشده.
+- **معماری Canon**: آزمون‌های invariant چندضلعی مرجع (polygon مرجع، rect مشتق، بدون bbox بی‌صدا).
+
+**نکته شفاف:** در حال حاضر **CI Pipeline وجود ندارد**؛ نتایج بالا از اجرای محلی مجموعه تست و بیلد در زمان Release گرفته شده است، نه از تأیید خودکار GitHub Actions.
+
+---
+
+## ۱۲. شواهد مهندسی و مستندات
+
+| سند | نقش |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | معماری فنی سیستم |
+| [DECISIONS.md](DECISIONS.md) | تاریخچه تصمیم‌های طراحی |
+| [docs/REGULATIONS.md](docs/REGULATIONS.md) | وضعیت موتور مقررات (۹ قاعده VERIFIED) |
+| [docs/REGULATION_AUDIT.md](docs/REGULATION_AUDIT.md) | Audit Trail کامل قواعد (۴۴KB) |
+| [sources/README.md](sources/README.md) | شناسایی منابع Tier-1 با SHA-256 و شواهد صفحه/بند |
+| [docs/LAYOUT_ENGINE.md](docs/LAYOUT_ENGINE.md) · [docs/STAIR_ENGINE.md](docs/STAIR_ENGINE.md) · [docs/ARCHITECTURAL_INTELLIGENCE.md](docs/ARCHITECTURAL_INTELLIGENCE.md) · [docs/ARCHITECTURAL_QA.md](docs/ARCHITECTURAL_QA.md) | مستندات اجزای موتور |
+| PHASE_*_REPORT.md (ریشه مخزن) | **تاریخچه توسعه و Audit** — سند محصول نیستند؛ گزارش‌های فاز به فاز توسعه‌اند (Phase 9 تا 13.2) |
+
+---
+
+## ۱۳. خارج از محدوده (Non-Goals)
+
+- 3D / BIM / IFC / Revit
+- DWG و Image-to-CAD و Import تصویر
+- اتوماسیون تأیید شهرداری
+- ادعاهای مقرراتی بدون منبع تأییدشده
+- تولید هندسه مبتنی بر ML/LLM در V1.0
+- Topography / Terrain / شبیه‌سازی همسایه / تحلیل خورشیدی کامل / سازه و تأسیسات
+
+---
+
+## ۱۴. وضعیت پروژه
+
+- **وضعیت: V1.0 Release Candidate**
+- توسعه پس از **Phase 13.2** متوقف و فریز شده است. Phase جدیدی آغاز نشده است.
+- آخرین QA مستقل: **VERIFIED WITH MEDIUM FINDINGS** (دو یافته غیرمسدودکننده — بند ۱۰، موارد M1 و M2 — گزارش و مستند شده‌اند).
+- این پروژه «۱۰۰٪ کامل»، «بدون باگ»، «تأییدشده توسط شهرداری» یا «Production-Certified» **تلقی نمی‌شود**؛ وضعیت واقعی آن در همین سند شفاف بیان شده است.
+
+---
+
+## ۱۵. ساختار مخزن
+
+```
+archgenius/
+├── packages/
+│   ├── core/                 # موتور اصلی (@archgenius/core — TypeScript, ESM)
+│   │   └── src/
+│   │       ├── generator/    # تولید پلان، دیوار، بازشو، پلکان، پارکینگ، مبلمان
+│   │       ├── layout/       # Constraint Graph، Placement، Ranking، قیود پارامتریک
+│   │       ├── geometry/     # هندسه پایه (polygon، rect، عملیات)
+│   │       ├── site/         # هندسه سایت و محدوده قابل ساخت
+│   │       ├── validation/   # اعتبارسنجی (هندسی، سایت، گردش، پلکان، مبلمان)
+│   │       ├── intelligence/ # امتیازدهی کیفیت (adjacency، daylight، privacy، …)
+│   │       ├── regulations/  # موتور مقررات + پک مقررات ملی ایران
+│   │       ├── documentation/# PDF، XLSX، گزارش، مانیفست
+│   │       ├── dxf/          # Writer و پارسر اعتبارسنجی DXF
+│   │       ├── editing/      # ویرایش محدودشده و Lock
+│   │       └── …             # model، programming، storage، pipeline
+│   └── web/                  # رابط کاربری (@archgenius/web — React + Vite + Tailwind)
+├── docs/                     # مستندات فنی موتور + docs/history/ (گزارش‌های تاریخی فازها)
+├── sources/                  # اسناد Tier-1 مقررات (PDF مبحث ۴ و ۱۵) + Registry منابع
+├── ARCHITECTURE.md · DECISIONS.md · ROADMAP.md · RELEASE_NOTES.md
+└── docs/history/             # گزارش‌های توسعه و QA فازهای ۵ تا ۱۳.۲ (تاریخچه، نه سند محصول)
+```
+
+گزارش‌های تاریخی فازها در `docs/history/` نگهداری می‌شوند (بند ۱۲).
+
+---
+
+## ۱۶. شروع سریع
+
+پیش‌نیاز: **Node.js ≥ 20**
+
+```bash
+# نصب وابستگی‌ها
+npm install
+
+# اجرای مجموعه تست هسته (۶۱۳ تست)
+npm run test:core
+
+# اجرای رابط کاربری (سرور توسعه Vite)
+npm run dev          # http://localhost:5173
+
+# بیلد رابط کاربری
+npm run build --workspace=@archgenius/web
+
+# Type Check هر پکیج
+npx tsc -p packages/core/tsconfig.json --noEmit
+npx tsc -p packages/web/tsconfig.json --noEmit
+```
+
+مسیر اصلی استفاده، **رابط کاربری وب** است: تعریف سایت و برنامه فیزیکی در فرم، تولید پلان، مشاهده اعتبارسنجی و دانلود DXF. قابلیت‌های کامل (PDF / XLSX / گزارش / ویرایش پارامتریک / امتیازدهی) از **API هسته** (`@archgenius/core`) در دسترس‌اند.
+
+راهنمای Quick Start کامل (نصب تا خروجی) در حال آماده‌سازی برای Release است.
+
+---
+
+## ۱۷. مجوز (License)
+
+در وضعیت فعلی مخزن **فایل LICENSE ندارد** و هیچ مجوز متن‌بازی برای آن ادعا نمی‌شود. برای هر نوع استفاده، ابتدا با مالک پروژه هماهنگ کنید.
+
+---
+
+*ArchGenius V1.0 Release Candidate — موتور مهندسی واقعی و تست‌شده برای برنامه‌ریزی معماری و تولید CAD؛ قابلیت‌ها، محدودیت‌ها و وضعیت آن به‌صورت شفاف در همین سند مستند شده‌اند.*

@@ -30,7 +30,9 @@ async function main() {
   }
   const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate);
 
-  const outDir = '/home/user/archgenius/outputs';
+  // Portable output directory: relative to the current working directory (repo root when run
+  // as a dev utility). The `outputs/` directory is gitignored.
+  const outDir = join(process.cwd(), 'outputs');
   const { mkdirSync } = await import('fs');
   mkdirSync(outDir, { recursive: true });
 

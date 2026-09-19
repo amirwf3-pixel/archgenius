@@ -188,7 +188,7 @@ Plus generic base layers for floor 0 only backward compat (still canonical polyg
 - `packages/core/src/geometry/room-polygon.ts` — canonical polygon, thresholds 0.9/1.0, overlap fixed positive-area, insideBuildable checks vertices+centroid+midpoints
 - `packages/core/src/model/space.ts` — locked, shapeType, constraints, minWidth/minLength/preferredAspectRatio
 - `packages/core/src/model/room-constraints.ts` — parametric constraints, RoomLock, validateRoomSizeConstraints
-- `documentation/builder.ts` — phase11 version 1.0.0-phase11, qaConfig phase11-v1, software 0.11.0-phase11 schema 6
+- `documentation/builder.ts` — revision version 1.0.0, qaConfig v1, software 1.0.0, schema 6
 - `phase11.test.ts` — 47 tests A-J + canonical invariants
 
 ### Pipeline Phase 11

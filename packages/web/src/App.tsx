@@ -219,7 +219,7 @@ export function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${project.input.name.replace(/\s+/g, '_')}_phase11.dxf`;
+    a.download = `${project.input.name.replace(/\s+/g, '_')}_archgenius.dxf`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   };
@@ -281,10 +281,10 @@ export function App() {
           <div className="w-8 h-8 rounded bg-accent-500 flex items-center justify-center font-bold shrink-0">A</div>
           <div className="min-w-0">
             <div className="font-semibold tracking-wide truncate">ArchGenius</div>
-            <div className="text-[10px] text-ink-400 uppercase tracking-widest truncate">Parametric Planning & Constraint-Aware Editing · Phase 11 — Polygon Canonical · Bounded Repair · Locking</div>
+            <div className="text-[10px] text-ink-400 uppercase tracking-widest truncate">Parametric Planning & Constraint-Aware Editing · Polygon Canonical · Bounded Repair · Locking</div>
           </div>
         </div>
-        <div className="text-xs text-ink-400 mono shrink-0">v0.11.0-phase11 · offline-first · DXF R12 polygon · Deterministic</div>
+        <div className="text-xs text-ink-400 mono shrink-0">v1.0.0 · offline-first · DXF R12 polygon · Deterministic</div>
       </header>
 
       <div className="flex-1 grid grid-cols-12 gap-0 overflow-hidden overflow-x-hidden">
@@ -301,7 +301,7 @@ export function App() {
             </div>
           </Section>
 
-          <Section title="Site — Phase 11 Polygon Canonical">
+          <Section title="Site — Polygon Canonical">
             <div className="grid grid-cols-2 gap-3">
               <div className="field col-span-2">
                 <label>Site Shape *</label>
@@ -457,7 +457,7 @@ export function App() {
         </main>
 
         <aside className="col-span-3 overflow-y-auto overflow-x-hidden p-4 space-y-4 bg-ink-900 min-w-0">
-          <Section title="Editing — Phase 11">
+          <Section title="Editing">
             {!displayCandidate && <div className="text-xs text-ink-400">Generate a plan first.</div>}
             {displayCandidate && currentFloor && (
               <div className="space-y-3 text-xs">
