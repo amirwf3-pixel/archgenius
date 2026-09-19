@@ -89,7 +89,19 @@ function carveZones(
   if (cfg.spine === 'vertical') {
     const vx = footprint.x + footprint.w * (cfg.verticalCorridorFraction ?? 0.5) - CORRIDOR_W / 2;
     corridors.push({ x: vx, y: footprint.y, w: CORRIDOR_W, h: footprint.h });
-    zones.public.push({ x: footprint.x, y: footprint.y, w: vx - footprint.x, h: footprint.h });
+    let publicRect: Rect = { x: footprint.x, y: footprint.y, w: vx - footprint.x, h: footprint.h };
+    // Kitchen pocket at NORTH end of public band for vertical spine — keeps living/dining
+    // south and directly adjacent to the central corridor (so CIRC_INACCESSIBLE does not
+    // appear), while still giving the ground floor a dedicated service zone for the kitchen.
+    // Full-height east strip would block living from the corridor (AGX-01 regression).
+    if (hasKitchen && publicRect.h > 6 && publicRect.w > 2.5) {
+      const kH = Math.min(4.2, Math.max(3.0, publicRect.h * 0.26));
+      if (publicRect.h > kH + 2.5) {
+        zones.service.push({ x: publicRect.x, y: publicRect.y + publicRect.h - kH, w: publicRect.w, h: kH });
+        publicRect = { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: publicRect.h - kH };
+      }
+    }
+    zones.public.push(publicRect);
     let eastRect: Rect = { x: vx + CORRIDOR_W, y: footprint.y, w: footprint.x + footprint.w - (vx + CORRIDOR_W), h: footprint.h };
     // Stair pocket for vertical spine: at south end of private band (near entrance)
     if (needStair && eastRect.h > 5.5) {
@@ -648,11 +660,32 @@ export function placeSpaces(
 
   // --- Service band (kitchen / storage / stair-hall / utility) ---
   const serviceRects = layout.zones.service;
-  const kitchenRect = serviceRects.find(r => r.x > footprint.x + footprint.w * 0.6) ?? null;
+  const kitchenRect = (() => {
+    if (!hasKitchen) return null;
+    // Horizontal: kitchen is east of centre (x > 0.6W)
+    let r = serviceRects.find(s => s.x > footprint.x + footprint.w * 0.6);
+    if (r) return r;
+    // Vertical: kitchen is the north pocket west of corridor (y north, x west, h ~3-4.2, w ~public width)
+    r = serviceRects.find(s => s.x + s.w <= footprint.x + footprint.w * 0.5 + 0.5 && s.y > footprint.y + footprint.h * 0.5);
+    if (r) return r;
+    // Single-floor vertical east pocket fallback (older path)
+    r = serviceRects.find(s => s.x > footprint.x + footprint.w * 0.5 && s.w >= 1.5 && s.w <= 3.5);
+    if (r) return r;
+    r = serviceRects.find(s => s.w >= 1.5 && s.w <= 5.0 && s.h >= 2.5);
+    return r ?? null;
+  })();
   let stairPocket: Rect | null = null;
   if (needStair) {
     if (cfg.spine === 'vertical') {
-      stairPocket = serviceRects.find(r => r.y <= footprint.y + footprint.h * 0.4) ?? serviceRects[0] ?? null;
+      // Stair pocket is the east service rect with stair dimensions (wider than kitchen)
+      stairPocket = serviceRects.find(r => r.x > footprint.x + footprint.w * 0.5 && r.w > 3.0) ??
+                   serviceRects.find(r => r.y <= footprint.y + footprint.h * 0.4 && r.x > footprint.x + footprint.w * 0.4) ??
+                   serviceRects[0] ?? null;
+      // If the found pocket is actually the kitchen (narrow), prefer the wider stair-like rect
+      if (stairPocket && stairPocket.w <= 3.0) {
+        const alt = serviceRects.find(r => r.x > footprint.x + footprint.w * 0.5 && r.w > 3.0);
+        if (alt) stairPocket = alt;
+      }
     } else {
       stairPocket = serviceRects.find(r => r.x <= footprint.x + footprint.w * 0.4) ?? null;
     }
@@ -680,14 +713,50 @@ export function placeSpaces(
   }
   const stor = take('storage');
   if (stor) {
-    const k = placed.find(p => p.type === 'kitchen');
-    if (k) {
-      const storeH = Math.min(2.0, Math.max(1.4, k.rect.h * 0.20));
-      placed.push(mkSpace('storage',
-        { x: k.rect.x, y: k.rect.y, w: k.rect.w, h: storeH },
-        stor.placedLabel, stor.placedId, 'service'));
-      k.rect = { x: k.rect.x, y: k.rect.y + storeH, w: k.rect.w, h: k.rect.h - storeH };
-      k.polygon = rCorners(k.rect); k.area = rArea(k.rect);
+    if (cfg.spine === 'vertical') {
+      // For vertical spine the kitchen is the north pocket west of the corridor;
+      // splitting storage off it would leave dining/storage stacked west with a
+      // 0.01 m rounding overlap (AGX-01 GEO_OVERLAPPING). Put storage east,
+      // stacked above the stair pocket so it does not compete with public west.
+      if (stairPocket) {
+        const sx = stairPocket.x;
+        const sy = stairPocket.y + stairPocket.h;
+        const sh = Math.min(2.0, Math.max(1.4, stairPocket.h * 0.60));
+        const remainingH = footprint.y + footprint.h - sy;
+        const finalH = Math.min(sh, Math.max(1.4, remainingH > 1.4 ? Math.min(remainingH, sh) : sh));
+        // Ensure storage stays inside footprint; clamp if needed
+        const storRect: Rect = { x: sx, y: sy, w: stairPocket.w, h: finalH > 0 ? finalH : sh };
+        // If not enough height east, fall back to kitchen split
+        if (storRect.y + storRect.h <= footprint.y + footprint.h + 1e-6 && storRect.h >= 1.4) {
+          placed.push(mkSpace('storage', storRect, stor.placedLabel, stor.placedId, 'service'));
+        } else {
+          const k = placed.find(p => p.type === 'kitchen');
+          if (k) {
+            const storeH = Math.min(2.0, Math.max(1.4, k.rect.h * 0.20));
+            placed.push(mkSpace('storage', { x: k.rect.x, y: k.rect.y, w: k.rect.w, h: storeH }, stor.placedLabel, stor.placedId, 'service'));
+            k.rect = { x: k.rect.x, y: k.rect.y + storeH, w: k.rect.w, h: k.rect.h - storeH };
+            k.polygon = rCorners(k.rect); k.area = rArea(k.rect);
+          }
+        }
+      } else {
+        const k = placed.find(p => p.type === 'kitchen');
+        if (k) {
+          const storeH = Math.min(2.0, Math.max(1.4, k.rect.h * 0.20));
+          placed.push(mkSpace('storage', { x: k.rect.x, y: k.rect.y, w: k.rect.w, h: storeH }, stor.placedLabel, stor.placedId, 'service'));
+          k.rect = { x: k.rect.x, y: k.rect.y + storeH, w: k.rect.w, h: k.rect.h - storeH };
+          k.polygon = rCorners(k.rect); k.area = rArea(k.rect);
+        }
+      }
+    } else {
+      const k = placed.find(p => p.type === 'kitchen');
+      if (k) {
+        const storeH = Math.min(2.0, Math.max(1.4, k.rect.h * 0.20));
+        placed.push(mkSpace('storage',
+          { x: k.rect.x, y: k.rect.y, w: k.rect.w, h: storeH },
+          stor.placedLabel, stor.placedId, 'service'));
+        k.rect = { x: k.rect.x, y: k.rect.y + storeH, w: k.rect.w, h: k.rect.h - storeH };
+        k.polygon = rCorners(k.rect); k.area = rArea(k.rect);
+      }
     }
   }
 
@@ -725,14 +794,29 @@ export function placeSpaces(
         if (publicRect.w < requiredMinW - 1e-6) {
           // Not enough width side-by-side — check if we can stack vertically (tall publicRect)
           if (publicRect.h >= livingMinH + diningMinH - 1e-6) {
-            const livingH = Math.max(livingMinH, publicRect.h * 0.55);
-            const diningH = Math.max(diningMinH, publicRect.h - livingH);
-            placed.push(mkSpace('living',
-              { x: publicRect.x, y: publicRect.y, w: Math.max(publicRect.w, livingMinW), h: livingH },
-              living.placedLabel, living.placedId, 'public'));
-            placed.push(mkSpace('dining',
-              { x: publicRect.x, y: publicRect.y + livingH, w: Math.max(publicRect.w, diningMinW), h: diningH },
-              dining.placedLabel, dining.placedId, 'public'));
+            let livingH = Math.max(livingMinH, publicRect.h * 0.55);
+            // Round to 2 decimals and make next rect exactly fill publicRect to avoid 0.01 overlap with north kitchen pocket
+            livingH = Math.round(livingH * 100) / 100;
+            const diningY = Math.round((publicRect.y + livingH) * 100) / 100;
+            let diningH = Math.round((publicRect.y + publicRect.h - diningY) * 100) / 100;
+            if (diningH < diningMinH - 1e-6) { // ensure min
+              livingH = Math.round((publicRect.h - diningMinH) * 100) / 100;
+              const dy2 = Math.round((publicRect.y + livingH) * 100) / 100;
+              diningH = Math.round((publicRect.y + publicRect.h - dy2) * 100) / 100;
+              placed.push(mkSpace('living',
+                { x: publicRect.x, y: publicRect.y, w: Math.max(publicRect.w, livingMinW), h: livingH },
+                living.placedLabel, living.placedId, 'public'));
+              placed.push(mkSpace('dining',
+                { x: publicRect.x, y: dy2, w: Math.max(publicRect.w, diningMinW), h: diningH },
+                dining.placedLabel, dining.placedId, 'public'));
+            } else {
+              placed.push(mkSpace('living',
+                { x: publicRect.x, y: publicRect.y, w: Math.max(publicRect.w, livingMinW), h: livingH },
+                living.placedLabel, living.placedId, 'public'));
+              placed.push(mkSpace('dining',
+                { x: publicRect.x, y: diningY, w: Math.max(publicRect.w, diningMinW), h: diningH },
+                dining.placedLabel, dining.placedId, 'public'));
+            }
           } else {
             // Genuinely infeasible — preserve min width, allow overflow but never negative
             livingW = livingMinW;

@@ -18,6 +18,7 @@ import { buildManifest } from './documentation/manifest.js';
 import type { DocumentationModel } from './documentation/model.js';
 import type { QAReport } from './documentation/report.js';
 import type { ProjectManifest } from './documentation/manifest.js';
+import { compareCandidates } from './layout/ranking.js';
 
 export interface GenerateOptions {
   strategies?: CandidateStrategy[];
@@ -110,21 +111,13 @@ function isValidRoomGeometry(c: any): { valid: boolean; reason?: string } {
  * kept out of the usable result.
  */
 function rankCandidatesBestFirst(cands: LayoutCandidate[], strategies: CandidateStrategy[]): LayoutCandidate[] {
-  const scored = cands.map(c => {
-    const m = computeMetrics(c);
-    const hardCount = c.findings.filter(f => f.severity === 'hard').length;
-    const softCount = c.findings.filter(f => f.severity === 'soft').length;
-    return { c, m, hardCount, softCount };
+  const copy = [...cands];
+  copy.sort((a, b) => {
+    const c = compareCandidates(a, b);
+    if (c !== 0) return c;
+    return strategies.indexOf(a.metadata.strategy) - strategies.indexOf(b.metadata.strategy);
   });
-  scored.sort((a, b) => {
-    if (a.hardCount !== b.hardCount) return a.hardCount - b.hardCount;
-    if (a.softCount !== b.softCount) return a.softCount - b.softCount;
-    const as = a.m.usableAreaRatio * 0.35 + a.m.daylightExposure * 0.35 + a.m.adjacencySatisfaction * 0.2 + a.m.privacySatisfaction * 0.1;
-    const bs = b.m.usableAreaRatio * 0.35 + b.m.daylightExposure * 0.35 + b.m.adjacencySatisfaction * 0.2 + b.m.privacySatisfaction * 0.1;
-    if (Math.abs(as - bs) > 1e-6) return bs - as;
-    return strategies.indexOf(a.c.metadata.strategy) - strategies.indexOf(b.c.metadata.strategy);
-  });
-  return scored.map(x => x.c);
+  return copy;
 }
 
 export function generate(project: Project, opts: GenerateOptions = {}): GenerateResult {

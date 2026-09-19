@@ -448,29 +448,76 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   // deliberately absent from AC1009 output. Drawing units are millimetres.
   final.push('9', '$LUNITS', '70', '2');
   final.push('9', '$DWGCODEPAGE', '3', 'ANSI_1252');
+  const round2 = (v: number) => String(Math.round(v * 100) / 100);
+  let vCx = 0, vCy = 0, viewH = 100, aspect = 0;
+  const SCREEN_W = 1024, SCREEN_H = 768;
   if (isFinite(extMin.x)) {
     final.push('9', '$EXTMIN', '10', String(mm(extMin.x)), '20', String(mm(extMin.y)), '30', '0');
     final.push('9', '$EXTMAX', '10', String(mm(extMax.x)), '20', String(mm(extMax.y)), '30', '0');
-    final.push('9', '$LIMMIN', '10', String(mm(extMin.x)), '20', String(mm(extMin.y)));
-    final.push('9', '$LIMMAX', '10', String(mm(extMax.x)), '20', String(mm(extMax.y)));
+    // Padded 30 for R12 canonical: $LIMMIN/$LIMMAX are 3D points even though Z=0
+    final.push('9', '$LIMMIN', '10', String(mm(extMin.x)), '20', String(mm(extMin.y)), '30', '0');
+    final.push('9', '$LIMMAX', '10', String(mm(extMax.x)), '20', String(mm(extMax.y)), '30', '0');
     // Initial view computed from the ACTUAL drawing extents — AutoCAD does not
     // auto-zoom on DXF open; without $VIEWCTR/$VIEWSIZE the file opens on the
     // blank-template view and an 18 m plan looks empty until ZOOM EXTENTS.
-    const round2 = (v: number) => String(Math.round(v * 100) / 100);
     const exW = mm(extMax.x) - mm(extMin.x);
     const exH = mm(extMax.y) - mm(extMin.y);
-    const vCx = (mm(extMin.x) + mm(extMax.x)) / 2;
-    const vCy = (mm(extMin.y) + mm(extMax.y)) / 2;
-    const SCREEN_W = 1024, SCREEN_H = 768; // nominal 4:3 — narrower than modern screens; coverage only improves
+    vCx = (mm(extMin.x) + mm(extMax.x)) / 2;
+    vCy = (mm(extMin.y) + mm(extMax.y)) / 2;
     const VIEW_MARGIN = 1.15; // 15% padding so the viewport covers the complete drawing
-    const viewH = Math.max(exH, exW * (SCREEN_H / SCREEN_W), 100) * VIEW_MARGIN;
+    viewH = Math.max(exH, exW * (SCREEN_H / SCREEN_W), 100) * VIEW_MARGIN;
+    aspect = SCREEN_W / SCREEN_H;
     final.push('9', '$VIEWCTR', '10', round2(vCx), '20', round2(vCy), '30', '0');
     final.push('9', '$VIEWSIZE', '40', round2(viewH));
-    final.push('9', '$SCREENSIZE', '10', String(SCREEN_W), '20', String(SCREEN_H));
+    // Padded 30 for canonical R12 SCREENSIZE (historically 2D but some writers emit 30/31)
+    final.push('9', '$SCREENSIZE', '10', String(SCREEN_W), '20', String(SCREEN_H), '30', '0');
+  } else {
+    aspect = SCREEN_W / SCREEN_H;
   }
   final.push('0', 'ENDSEC');
   const headerEndIdx = b.indexOf('ENDSEC', b.indexOf('HEADER'));
-  const afterHeader = b.slice(headerEndIdx + 1);
+  let afterHeader = b.slice(headerEndIdx + 1);
+  // Inject canonical R12 TABLES: VPORT *ACTIVE, VIEW (empty), UCS (empty), APPID ACAD, DIMSTYLE STANDARD
+  // afterHeader currently holds TABLES (LTYPE/LAYER/STYLE) ... BLOCKS ... ENTITIES ... EOF
+  // Find the ENDTAB of STYLE and the ENDSEC of TABLES to inject before it
+  {
+    const tablesIdx = afterHeader.indexOf('TABLES');
+    if (tablesIdx !== -1) {
+      // Find the ENDSEC that closes TABLES (first ENDSEC after TABLES)
+      let tablesEndValIdx = -1;
+      for (let i = tablesIdx; i < afterHeader.length; i++) {
+        if (afterHeader[i] === 'ENDSEC') { tablesEndValIdx = i; break; }
+      }
+      if (tablesEndValIdx !== -1) {
+        // afterHeader is code/value flat list; value ENDSEC at tablesEndValIdx has its code '0' at tablesEndValIdx-1
+        const tablesEndIdx = (tablesEndValIdx > 0 && afterHeader[tablesEndValIdx - 1] === '0') ? tablesEndValIdx - 1 : tablesEndValIdx;
+        const vportEntries: string[] = [];
+        vportEntries.push('0','TABLE','2','VPORT','70','1');
+        // Canonical *ACTIVE viewport — center 12/22 = vCx/vCy, height 40 = viewH, aspect 41, plus minimal required codes
+        vportEntries.push('0','VPORT','2','*ACTIVE','70','0',
+          '10','0.0','20','0.0',
+          '11','1.0','21','1.0',
+          '12', round2(vCx), '22', round2(vCy),
+          '40', round2(viewH),
+          '41', String(Math.round(aspect*100)/100),
+          '42','50.0','43','0.0','44','0.0','50','0.0','51','0.0','71','0','72','100','73','1','74','1','75','1','76','1','77','0','78','0');
+        vportEntries.push('0','ENDTAB');
+        vportEntries.push('0','TABLE','2','VIEW','70','0');
+        vportEntries.push('0','ENDTAB');
+        vportEntries.push('0','TABLE','2','UCS','70','0');
+        vportEntries.push('0','ENDTAB');
+        vportEntries.push('0','TABLE','2','APPID','70','1');
+        vportEntries.push('0','APPID','2','ACAD','70','0');
+        vportEntries.push('0','ENDTAB');
+        vportEntries.push('0','TABLE','2','DIMSTYLE','70','1');
+        // Minimal STANDARD dimstyle — sufficient for R12 readers; 40 scale, 41 arrow size etc. not validated but canonical
+        vportEntries.push('0','DIMSTYLE','2','STANDARD','70','0','40','1.0','41','0.18','42','0.0625','43','0.38','44','0.38','45','0.0','46','0.0','47','0.0','48','0.0');
+        vportEntries.push('0','ENDTAB');
+        // Insert before the TABLES ENDSEC
+        afterHeader = [...afterHeader.slice(0, tablesEndIdx), ...vportEntries, ...afterHeader.slice(tablesEndIdx)];
+      }
+    }
+  }
   const doc = [...final, ...afterHeader].join(CR) + CR;
   return doc;
 }
