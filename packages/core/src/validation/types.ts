@@ -85,6 +85,8 @@ export type FindingCode =
   | 'STAIR_OUTSIDE_BUILDING'
   | 'STAIR_SELF_INTERSECTION'
   | 'STAIR_NARROW_WIDTH'
+  | 'STAIR_MISSING'
+  | 'STAIR_CORE_MISALIGNED'
   | 'NO_FEASIBLE_STAIR_CONFIGURATION';
 
 import type { RuleStatus, SourceRef } from '../regulations/types.js';

@@ -22,6 +22,50 @@ export function validateStairs(floor: Floor): Finding[] {
   return findings;
 }
 
+/**
+ * v1.0.1 (AGX-02 / AGX-05): cross-floor vertical-circulation invariants.
+ *
+ * 1. STAIR_MISSING (hard) — in a multi-floor building, every non-top floor
+ *    must contain at least one stair element. A multi-floor plan without
+ *    vertical circulation is architecturally impossible and must never
+ *    validate clean, no matter how the program/input produced it (omitted
+ *    hasStair, dropped stair-hall placement, editing, …).
+ * 2. STAIR_CORE_MISALIGNED (hard) — stairs sharing a coreId on adjacent
+ *    floors are intended to stack (see Stair.nextFloorStairId); if their
+ *    footprints do not overlap in plan, the stair arriving from below does
+ *    not land on the continuing stair — broken circulation.
+ *
+ * Stairs are V1's only generated vertical-circulation mechanism (elevator
+ * cabins are not generated — documented limitation).
+ */
+export function validateVerticalCirculation(floors: Floor[]): Finding[] {
+  const out: Finding[] = [];
+  const top = floors.length - 1;
+  for (const fl of floors) {
+    if (fl.level < top && (fl.stairs ?? []).length === 0) {
+      out.push(f('STAIR_MISSING', 'hard',
+        `Multi-floor building: floor ${fl.level} has no vertical circulation element (no stair) connecting it to the floor above.`,
+        undefined, undefined));
+    }
+  }
+  for (let i = 0; i + 1 < floors.length; i++) {
+    const a = floors[i], b = floors[i + 1];
+    for (const sa of a.stairs ?? []) {
+      for (const sb of b.stairs ?? []) {
+        if (sa.coreId !== sb.coreId) continue;
+        const ra = sa.footprint ?? sa.rect;
+        const rb = sb.footprint ?? sb.rect;
+        if (rOverlapArea(ra, rb) <= 0.001) {
+          out.push(f('STAIR_CORE_MISALIGNED', 'hard',
+            `Stair core ${sa.coreId}: stairs on floors ${a.level} and ${b.level} do not stack vertically (footprints do not overlap in plan).`,
+            [sa.id, sb.id]));
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function validateOneStair(st: Stair, floor: Floor): Finding[] {
   const out: Finding[] = [];
   // Footprint inside buildable floor area.

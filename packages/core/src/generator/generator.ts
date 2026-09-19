@@ -267,6 +267,10 @@ function buildFloorSiteAware(
   const spaces: Space[] = [];
   let entrancePlaced = placedRooms.some(r => r.type === 'entrance');
   spaces.push(...placedRooms);
+  // v1.0.1 (AGX-06): corridor ids must be globally unique across floors —
+  // the placer numbers them per floor only ('corridor-0' on every level),
+  // which collides in the candidate JSON and any id-keyed consumer.
+  for (const [ci, corr] of corridors.entries()) corr.id = `corridor-${level}-${ci}`;
   spaces.push(...corridors);
 
   const repaired = repairSpacesToBuildable(spaces, buildableBoundary, buildableRects, buildableRect);
@@ -317,7 +321,28 @@ function buildFloorSiteAware(
 
   const finalSpaces = repaired.spaces;
 
-  const stairSpace = finalSpaces.find(s => s.type === 'stair-hall') || null;
+  let stairSpace = finalSpaces.find(s => s.type === 'stair-hall') || null;
+  // v1.0.1 (AGX-05): a stair-hall must live INSIDE the buildable boundary.
+  // Repair an out-of-bounds hall when an in-bounds position exists; otherwise
+  // remove the phantom space entirely — the STAIR_MISSING validation finding
+  // then flags the missing vertical circulation deterministically, so a failed
+  // stair placement can never silently disappear or leak outside the property.
+  if (stairSpace && needStairForFloor(input, level) && !rectInsidePolygon(stairSpace.rect, buildableBoundary, 1e-3)) {
+    const repairedStairRect = findPositionForRect(
+      stairSpace.rect, buildableBoundary, buildableRects,
+      finalSpaces.filter(s => s.type !== 'stair-hall').map(s => s.rect),
+    );
+    if (repairedStairRect) {
+      stairSpace.rect = repairedStairRect;
+      stairSpace.polygon = createRectangleRoomPolygon(repairedStairRect);
+      stairSpace.area = polygonArea(stairSpace.polygon);
+      explanations.push(`Stair hall outside buildable polygon — repaired for level ${level}.`);
+    } else {
+      explanations.push(`Stair hall outside buildable polygon and no in-bounds position found — stair-hall removed for level ${level}; expect STAIR_MISSING HARD finding (no vertical circulation on this floor).`);
+      finalSpaces.splice(finalSpaces.indexOf(stairSpace), 1);
+      stairSpace = null;
+    }
+  }
   const stairRect = stairSpace ? stairSpace.rect : null;
 
   const walls: Wall[] = generateWalls(finalSpaces, level);
@@ -325,15 +350,6 @@ function buildFloorSiteAware(
 
   const stairs: any[] = [];
   if (stairRect && needStairForFloor(input, level)) {
-    if (!rectInsidePolygon(stairRect, buildableBoundary, 1e-3)) {
-      explanations.push(`Stair hall outside buildable polygon — attempting repair for level ${level}`);
-      const repairedStairRect = findPositionForRect(stairRect, buildableBoundary, buildableRects, finalSpaces.filter(s => s.type !== 'stair-hall').map(s => s.rect));
-      if (repairedStairRect) {
-        stairSpace!.rect = repairedStairRect;
-        stairSpace!.polygon = createRectangleRoomPolygon(repairedStairRect);
-        stairSpace!.area = polygonArea(stairSpace!.polygon);
-      }
-    }
     const corridorSide: 'south'|'north'|'east'|'west' = 'south';
     const cfg = { ...DEFAULT_STAIR_CONFIG, floorHeight: DEFAULT_FLOOR_HEIGHT };
     const sol = solveStair(stairSpace ? stairSpace.rect : stairRect!, cfg, corridorSide, 'core-main', level);
@@ -744,6 +760,25 @@ export function validateInput(input: ProjectInput): void {
     }
     if (!['north', 'south', 'east', 'west'].includes(input.site.accessSide)) errs.push('site.accessSide must be one of north/south/east/west');
     if (input.site.parkingLayout && !['perpendicular','parallel','auto'].includes(input.site.parkingLayout)) errs.push('site.parkingLayout must be perpendicular/parallel/auto');
+    // v1.0.1 (AGX-03): setbacks are user-defined design inputs measured INWARD
+    // from the property line. Negative or non-finite values would push the
+    // buildable boundary outside the site (or corrupt it) — reject both the
+    // field form (setbackNorth/...) and the legacy object form (setbacks.{n,s,e,w}).
+    const sbSite = input.site as any;
+    const checkSetback = (name: string, v: unknown) => {
+      if (v === undefined || v === null) return;
+      if (typeof v !== 'number' || !Number.isFinite(v)) errs.push(`site.${name} must be a finite number`);
+      else if (v < 0) errs.push(`site.${name} must be >= 0 — setbacks shrink the buildable area inward; negative values would extend it outside the property`);
+    };
+    checkSetback('setbackNorth', sbSite.setbackNorth);
+    checkSetback('setbackSouth', sbSite.setbackSouth);
+    checkSetback('setbackEast', sbSite.setbackEast);
+    checkSetback('setbackWest', sbSite.setbackWest);
+    if (sbSite.setbacks !== undefined && sbSite.setbacks !== null) {
+      for (const dir of ['north', 'south', 'east', 'west'] as const) {
+        checkSetback(`setbacks.${dir}`, (sbSite.setbacks as Record<string, unknown>)?.[dir]);
+      }
+    }
   }
   if (!input.building) errs.push('building is required');
   else {
@@ -760,6 +795,31 @@ export function validateInput(input: ProjectInput): void {
     if (!(input.building.bedrooms >= 0)) errs.push('building.bedrooms must be >= 0');
     if (input.building.masterBedrooms > input.building.bedrooms) errs.push('masterBedrooms cannot exceed bedrooms');
     if (input.building.parkingSpaces < 0) errs.push('parkingSpaces must be >= 0');
+    // v1.0.1 (AGX-02): multi-floor buildings require vertical circulation.
+    // hasStair defaults to TRUE when the caller omitted the field and
+    // floors > 1. An explicit false is rejected for floors > 1: V1 generates
+    // no elevator cabins, so a stairless multi-floor building would have no
+    // vertical circulation at all and could never validate as a usable plan.
+    if (input.building.hasStair === undefined) {
+      if (Number.isFinite(floors) && floors > 1) input.building.hasStair = true;
+    } else if (input.building.hasStair === false && Number.isFinite(floors) && floors > 1) {
+      errs.push('building.hasStair must be true for floors > 1 — a stairless multi-floor building has no vertical circulation (V1 generates no elevator cabins)');
+    }
+    // v1.0.1 (AGX-08): reject unsupported enum values instead of silently
+    // treating them as the default program.
+    if (input.building.kitchenType !== undefined && !['closed', 'open', 'semi-open'].includes(input.building.kitchenType)) {
+      errs.push(`building.kitchenType must be one of closed/open/semi-open, got '${input.building.kitchenType}'`);
+    }
+    if (input.building.type !== undefined && !['villa', 'apartment', 'apartment-building'].includes(input.building.type)) {
+      errs.push(`building.type must be one of villa/apartment/apartment-building, got '${input.building.type}'`);
+    }
+  }
+  // v1.0.1 (AGX-07): seed must be a finite non-negative integer so it can
+  // never leak NaN or other non-numeric text into candidate ids and exports.
+  if (input.seed !== undefined && input.seed !== null) {
+    if (!Number.isFinite(input.seed) || !Number.isInteger(input.seed) || input.seed < 0) {
+      errs.push(`seed must be a non-negative integer, got ${input.seed}`);
+    }
   }
   if (errs.length) throw new Error('Invalid project input:\\n  - ' + errs.join('\\n  - '));
 }

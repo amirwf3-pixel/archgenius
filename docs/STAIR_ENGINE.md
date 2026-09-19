@@ -106,11 +106,20 @@ Given `floorHeight` (default 3.20 m):
 3. `treadDepth` is chosen from Blondel's rule `2h + b ∈ [0.63, 0.64]`
    clamped to `[0.28, 0.32]` m.
 
-For U-stair Phase 4.1: effective tread is forced to `flightH/(n-1)` so that
-flights terminate exactly at the landing south edge (no 0.15 m gap). The
-effective tread stays within [0.28,0.32] for all valid wells because
-`requiredFootprint` guarantees `flightH = longestRun + 0.30` and
-`longestRun = (n-1)*nominalTread`.
+For U-stair (v1.0.1, AGX-01): each flight runs the EXACT nominal run
+`(n-1) × tread` — the actual going is never stretched and never squeezed
+below the configured minimum — and the landing absorbs the remaining well
+depth (a deeper landing is code-legal; only landing MINIMA are regulated),
+so flights still start at the corridor edge and terminate exactly at the
+landing edge. `requiredFootprint` guarantees the well fits the nominal run
+plus landing. Rotated wells (run axis swapped to X to fit the hall) are
+constructed on the rotated axis: flights run east/west side-by-side with
+the landing at the far X end. A well that cannot host the nominal run is
+rejected (`buildStairGeometry` returns `null`), `solveStair` tries the next
+deterministic configuration, and if none fits the generator falls back to
+the documented `NO_FEASIBLE_STAIR_CONFIGURATION` representation (expect
+MBH4-STAIR-003 HARD). MBH4-STAIR-002 validates the ACTUAL per-flight
+`treadDepth`/`riserHeight`, not the nominal stair-level values.
 
 ## 5. Automatic Flight Splitting (`distributeRisers`)
 

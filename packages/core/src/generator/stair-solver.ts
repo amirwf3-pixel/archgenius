@@ -276,6 +276,13 @@ function buildStairGeometry(
       const run = tcount * tread;
       const { start, end } = alongRun(upDir, cursor, perpCenter, width, run, well);
       const fp = flightBox(start, end, width, upDir);
+      // v1.0.1 (AGX-01): a flight must stay inside the well — a rotated well
+      // (run axis swapped) cannot host along-Y straight runs; reject instead
+      // of emitting geometry that overflows the stairwell.
+      if (fp.x < well.x - EPS || fp.y < well.y - EPS ||
+          fp.x + fp.w > well.x + well.w + EPS || fp.y + fp.h > well.y + well.h + EPS) {
+        return null;
+      }
       flights.push({
         id: fid(i), direction: upDir,
         riserCount: n, treadCount: tcount,
@@ -314,33 +321,65 @@ function buildStairGeometry(
     // flight 2 onto upper-floor corridor.
     if (counts.length !== 2) return null;
     const gap = 0.10; // handrail/stringer gap between flights
-    const halfW = (well.w - gap) / 2;
-    const flightW = Math.min(width, halfW);
     const n1 = counts[0], n2 = counts[1];
-    // Landing at FAR end (opposite corridor). y grows north: south edge = well.y.
-    // Corridor = south, so far = north. Landing sits at north end of well.
-    const landH = landingDepth;
-    const landingSouthY = well.y + well.h - landH; // south edge of landing
-    const landRect: Rect = { x: well.x, y: landingSouthY, w: well.w, h: landH };
-    // Flights run from south (corridor) edge of well up to landing south edge.
-    const flightStartY = well.y;
-    const flightEndY = landingSouthY;
-    const flightH = flightEndY - flightStartY; // available length for flights
-    const f1Rect: Rect = { x: well.x, y: flightStartY, w: flightW, h: flightH };
-    const f2Rect: Rect = { x: well.x + well.w - flightW, y: flightStartY, w: flightW, h: flightH };
-    // For landing connectivity we force run = flightH so endPoint lands
-    // exactly at landing south edge. Effective tread = flightH/(n-1) is
-    // within [0.25,0.35] for all valid wells (validated by requiredFootprint).
-    const effTread1 = flightH / Math.max(1, n1 - 1);
-    const effTread2 = flightH / Math.max(1, n2 - 1);
-    const f1 = makeFlight(fid(0), n1, riser, effTread1, flightW, 'north', f1Rect, true);
-    const f2 = makeFlight(fid(1), n2, riser, effTread2, flightW, 'south', f2Rect, true);
-    flights.push(f1, f2);
-    landings.push({
-      id: lid(0), footprint: landRect, width: well.w, depth: landH,
-      connectedFlightIds: [f1.id, f2.id],
-    });
-    explanation.push(`U-stair: ${n1}+${n2} risers, parallel flights with central gap ${gap.toFixed(2)} m, landing ${landH.toFixed(2)} m deep.`);
+    // v1.0.1 (AGX-01): flights run the EXACT nominal run (treads × tread) so the
+    // actual going never shrinks below the configured minimum merely to fit the
+    // hall. The remaining well depth is given to the landing (a deeper landing
+    // is code-legal — only landing MINIMA are regulated), so flights still
+    // terminate exactly at the landing edge and start exactly at the corridor
+    // edge. If the nominal run cannot fit the well, this configuration is
+    // rejected (return null) and solveStair tries the next one deterministically.
+    const maxTreads = Math.max(n1 - 1, n2 - 1, 1);
+    const nominalRun = maxTreads * tread;
+    if (!rotated) {
+      // Run axis = Y (north), flights side-by-side along X.
+      const halfW = (well.w - gap) / 2;
+      const flightW = Math.min(width, halfW);
+      if (nominalRun + landingDepth > well.h + EPS) return null; // going would have to shrink
+      const flightH = nominalRun;
+      // Landing at FAR end (opposite corridor = north); it absorbs the leftover depth.
+      const landH = well.h - flightH;
+      const landingSouthY = well.y + flightH;
+      const landRect: Rect = { x: well.x, y: landingSouthY, w: well.w, h: landH };
+      const f1Rect: Rect = { x: well.x, y: well.y, w: flightW, h: flightH };
+      const f2Rect: Rect = { x: well.x + well.w - flightW, y: well.y, w: flightW, h: flightH };
+      const f1 = makeFlight(fid(0), n1, riser, tread, flightW, 'north', f1Rect, true);
+      const f2 = makeFlight(fid(1), n2, riser, tread, flightW, 'south', f2Rect, true);
+      flights.push(f1, f2);
+      landings.push({
+        id: lid(0), footprint: landRect, width: well.w, depth: landH,
+        connectedFlightIds: [f1.id, f2.id],
+      });
+      explanation.push(`U-stair: ${n1}+${n2} risers, parallel flights with central gap ${gap.toFixed(2)} m, landing ${landH.toFixed(2)} m deep.`);
+    } else {
+      // v1.0.1 (AGX-01): ROTATED well — the run axis is X (the well was swapped
+      // to fit the hall), so flights must run east/west, side-by-side along Y.
+      // The previous code still built flights along Y, squeezing the actual
+      // going far below the tread minimum. Landing sits at the far X end
+      // (east by default; west when the corridor is on the west side).
+      const halfH = (well.h - gap) / 2;
+      const flightW = Math.min(width, halfH);
+      if (nominalRun + landingDepth > well.w + EPS) return null; // going would have to shrink
+      const flightLen = nominalRun;
+      const landingEast = corridorSide !== 'west';
+      const landW = well.w - flightLen;
+      const landRect: Rect = landingEast
+        ? { x: well.x + flightLen, y: well.y, w: landW, h: well.h }
+        : { x: well.x, y: well.y, w: landW, h: well.h };
+      // f1 (south flight) climbs toward the landing; f2 (north flight) returns.
+      const f1Dir: 'east' | 'west' = landingEast ? 'east' : 'west';
+      const f2Dir: 'east' | 'west' = landingEast ? 'west' : 'east';
+      const f1Rect: Rect = { x: landingEast ? well.x : well.x + landW, y: well.y, w: flightLen, h: flightW };
+      const f2Rect: Rect = { x: landingEast ? well.x : well.x + landW, y: well.y + well.h - flightW, w: flightLen, h: flightW };
+      const f1 = makeFlight(fid(0), n1, riser, tread, flightW, f1Dir, f1Rect, true);
+      const f2 = makeFlight(fid(1), n2, riser, tread, flightW, f2Dir, f2Rect, true);
+      flights.push(f1, f2);
+      landings.push({
+        id: lid(0), footprint: landRect, width: well.h, depth: landW,
+        connectedFlightIds: [f1.id, f2.id],
+      });
+      explanation.push(`U-stair (rotated well): ${n1}+${n2} risers, parallel flights with central gap ${gap.toFixed(2)} m, landing ${landW.toFixed(2)} m deep.`);
+    }
   } else {
     // L-stair: two perpendicular flights. Place flight 1 going upDir from
     // corridor into the well, a quarter-turn landing in the corner, flight
@@ -428,6 +467,14 @@ function buildStairGeometry(
     floorHeight: riser * totalRisers,
   };
   void rArea; // sanity import for tree shaking
+  // v1.0.1 (AGX-01) safety invariant: never return a stair whose ACTUAL flight
+  // going is below the configured minimum (tread ≥ minTreadDepth by
+  // chooseTreadDepth). If any construction path squeezed the going, reject the
+  // whole configuration — solveStair then tries the next one deterministically.
+  for (const fl of flights) {
+    if (!(fl.treadDepth >= tread - 1e-9)) return null;
+    if (!(fl.riserHeight > 0) || !(fl.runLength > 0)) return null;
+  }
   return stair;
 }
 
@@ -500,31 +547,35 @@ function alongRun(
   perpCenter: number,
   width: number, run: number, well: Rect,
 ): { start: Vec2; end: Vec2 } {
-  void width;
+  // v1.0.1 (stair-geometry hardening): honour `offsetAlong` — the absolute
+  // coordinate along the travel axis where this flight starts (the caller
+  // advances it past each flight and landing). The previous implementation
+  // ignored it, so every flight of a multi-flight straight stair was built
+  // at the corridor edge, exactly overlapping the previous flight.
+  void width; void well;
   switch (dir) {
     case 'north':
       return {
-        start: { x: perpCenter, y: well.y },
-        end:   { x: perpCenter, y: well.y + run },
+        start: { x: perpCenter, y: offsetAlong },
+        end:   { x: perpCenter, y: offsetAlong + run },
       };
     case 'south':
       return {
-        start: { x: perpCenter, y: well.y + well.h },
-        end:   { x: perpCenter, y: well.y + well.h - run },
+        start: { x: perpCenter, y: offsetAlong },
+        end:   { x: perpCenter, y: offsetAlong - run },
       };
     case 'east':
       return {
-        start: { x: well.x, y: perpCenter },
-        end:   { x: well.x + run, y: perpCenter },
+        start: { x: offsetAlong, y: perpCenter },
+        end:   { x: offsetAlong + run, y: perpCenter },
       };
     case 'west':
     default:
       return {
-        start: { x: well.x + well.w, y: perpCenter },
-        end:   { x: well.x + well.w - run, y: perpCenter },
+        start: { x: offsetAlong, y: perpCenter },
+        end:   { x: offsetAlong - run, y: perpCenter },
       };
   }
-  void offsetAlong;
 }
 
 function flightBox(start: Vec2, end: Vec2, width: number, dir: 'north'|'south'|'east'|'west'): Rect {

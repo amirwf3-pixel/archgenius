@@ -22,6 +22,7 @@
  */
 
 import type { RegulationPack, RuleContext, RuleResult, SourceRef } from '../types.js';
+import type { StairFlight } from '../../model/stairs.js';
 import { SOURCE_REGISTRY_DEFAULTS } from './source-registry.js';
 
 // ---------- Source refs ------------------------------------------------------
@@ -498,23 +499,42 @@ export const IR_NATIONAL_MBR_PACK: RegulationPack = {
         if (!ctx.candidate) return out;
         for (const f of ctx.candidate.floors) {
           for (const st of f.stairs) {
-            const r = st.riser ?? 0.178;
-            const t = st.tread ?? 0.28;
-            const f2 = 2 * r + t;
-            if (r > 0.18 + 1e-6) {
-              push(out, failVerified('hard', 'MBH4-STAIR-002',
-                `ارتفاع پله ${(r*100).toFixed(1)} cm بیشتر از حد ۱۸ cm (§4-5-1-7-1 PDF p62).`,
-                'Mabhas 4 §4-5-1-7-1', [SRC.m4_62], r));
+            // v1.0.1 (AGX-01): validate the ACTUAL generated flight geometry
+            // (fl.treadDepth / fl.riserHeight = the going/riser the geometry
+            // and the DXF really use), NOT only the nominal stair-level
+            // st.tread. The stair-level fields remain the fallback for stairs
+            // without flight geometry (synthetic/legacy shapes).
+            const flightList: Array<Partial<StairFlight>> = (st.flights ?? []) as Array<Partial<StairFlight>>;
+            const hasFlightGeom = flightList.some(fl => typeof fl.treadDepth === 'number' || typeof fl.riserHeight === 'number');
+            const targets: Array<{ r: number; t: number; ids: string[] }> = [];
+            if (flightList.length > 0 && hasFlightGeom) {
+              for (const fl of flightList) {
+                targets.push({
+                  r: typeof fl.riserHeight === 'number' ? fl.riserHeight : (st.riser ?? 0.178),
+                  t: typeof fl.treadDepth === 'number' ? fl.treadDepth : (st.tread ?? 0.28),
+                  ids: fl.id ? [st.id, fl.id] : [st.id],
+                });
+              }
+            } else {
+              targets.push({ r: st.riser ?? 0.178, t: st.tread ?? 0.28, ids: [st.id] });
             }
-            if (t + 1e-6 < 0.28) {
-              push(out, failVerified('hard', 'MBH4-STAIR-002',
-                `کف پله ${(t*100).toFixed(1)} cm کمتر از حد ۲۸ cm (§4-5-1-7-1 PDF p62).`,
-                'Mabhas 4 §4-5-1-7-1', [SRC.m4_62], t));
-            }
-            if (f2 < 0.63 - 1e-6 || f2 > 0.64 + 1e-6) {
-              push(out, failVerified('soft', 'MBH4-STAIR-002',
-                `فرمول 2h+b = ${f2.toFixed(2)} m خارج از بازه ۰٫۶۳–۰٫۶۴ (§4-5-1-7-1 PDF p62).`,
-                'Mabhas 4 §4-5-1-7-1', [SRC.m4_62], f2));
+            for (const { r, t, ids } of targets) {
+              const f2 = 2 * r + t;
+              if (r > 0.18 + 1e-6) {
+                push(out, failVerified('hard', 'MBH4-STAIR-002',
+                  `ارتفاع پله ${(r*100).toFixed(1)} cm بیشتر از حد ۱۸ cm (§4-5-1-7-1 PDF p62).`,
+                  'Mabhas 4 §4-5-1-7-1', [SRC.m4_62], r, undefined, ids));
+              }
+              if (t + 1e-6 < 0.28) {
+                push(out, failVerified('hard', 'MBH4-STAIR-002',
+                  `کف پله ${(t*100).toFixed(1)} cm کمتر از حد ۲۸ cm (§4-5-1-7-1 PDF p62).`,
+                  'Mabhas 4 §4-5-1-7-1', [SRC.m4_62], t, undefined, ids));
+              }
+              if (f2 < 0.63 - 1e-6 || f2 > 0.64 + 1e-6) {
+                push(out, failVerified('soft', 'MBH4-STAIR-002',
+                  `فرمول 2h+b = ${f2.toFixed(2)} m خارج از بازه ۰٫۶۳–۰٫۶۴ (§4-5-1-7-1 PDF p62).`,
+                  'Mabhas 4 §4-5-1-7-1', [SRC.m4_62], f2, undefined, ids));
+              }
             }
           }
         }

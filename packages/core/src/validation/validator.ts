@@ -4,7 +4,7 @@ import type { Finding, ValidationResult } from './types.js';
 import { validateGeometric } from './geometric.js';
 import { validateCirculation } from './circulation.js';
 import { validateFurniture } from './furniture.js';
-import { validateStairs } from './stair.js';
+import { validateStairs, validateVerticalCirculation } from './stair.js';
 import { validateArchitecturalQA } from './architectural-qa.js';
 import { validateSite } from './site.js';
 import { validateParametricConstraints, createInstanceConstraintsFromTypes } from '../layout/parametric-constraints.js';
@@ -57,6 +57,8 @@ export function validateLayout(candidate: LayoutCandidate): ValidationResult {
     findings.push(...validateFloor(fl));
     findings.push(...validateParametricForFloor(fl));
   }
+  // v1.0.1 (AGX-02/AGX-05): multi-floor vertical-circulation invariants.
+  findings.push(...validateVerticalCirculation(candidate.floors));
 
   findings.push(...validateSite(candidate));
 

@@ -658,7 +658,8 @@ function drawStair(
     // Flight boundary (lighter, same outline color).
     const [a, b, c, d] = rCorners(fr);
     emitPolyline([a, b, c, d], 'A-STAIR', false);
-    const t = Math.max(0.22, fl.treadDepth ?? 0.28);
+    // v1.0.1 (AGX-01): draw the ACTUAL flight going — no minimum-spacing clamp.
+    const t = fl.treadDepth ?? st.tread ?? 0.28;
     if (dir === 'north' || dir === 'south') {
       // Horizontal treads spanning east-west; y varies.
       const x0 = fr.x;
@@ -693,8 +694,11 @@ function drawStair(
   const bottom = flights.reduce((p: any, c: any) =>
     c.startPoint.y < p.startPoint.y ? c : p, flights[0]);
   emitText(bottom.startPoint.x - 0.25, bottom.startPoint.y - 0.05, 'UP', 0.18, 'A-STAIR-DIR');
-  // Flight / riser annotation.
-  const label = `${flights.length}F · ${st.totalRisers}R @ ${((st.riserHeight ?? st.riser ?? 0)*100).toFixed(0)}×${((st.treadDepth ?? st.tread ?? 0)*100).toFixed(0)}`;
+  // v1.0.1 (AGX-01): annotate the ACTUAL generated geometry (per-flight going
+  // and riser), never a nominal value that differs from the drawn stair.
+  const actRiser = flights[0]?.riserHeight ?? st.riserHeight ?? st.riser ?? 0;
+  const actTread = Math.min(...flights.map((f: any) => f.treadDepth ?? st.tread ?? st.treadDepth ?? 0.28));
+  const label = `${flights.length}F · ${st.totalRisers}R @ ${(actRiser*100).toFixed(0)}×${(actTread*100).toFixed(0)}`;
   emitText(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, 'A-STAIR-DIR');
 }
 
@@ -957,7 +961,7 @@ function drawStairWithLayers(
     const dir: string = fl.direction;
     const [a, b, c, d] = rCorners(fr);
     emitPolyline([a, b, c, d], `A-FLOOR-${floorIdx}-A-STAIR`, false);
-    const t = Math.max(0.22, fl.treadDepth ?? 0.28);
+    const t = fl.treadDepth ?? st.tread ?? 0.28; // v1.0.1 (AGX-01): actual going, no clamp
     if (dir === 'north' || dir === 'south') {
       const x0 = fr.x; const x1 = fr.x + fr.w;
       const yStart = fl.startPoint.y; const yEnd = fl.endPoint.y;
@@ -981,7 +985,10 @@ function drawStairWithLayers(
   }
   const bottom = flights.reduce((p: any, c: any) => c.startPoint.y < p.startPoint.y ? c : p, flights[0]);
   emitText(bottom.startPoint.x - 0.25, bottom.startPoint.y - 0.05, 'UP', 0.18, `A-FLOOR-${floorIdx}-A-STAIR-DIR`);
-  const label = `${flights.length}F · ${st.totalRisers}R @ ${((st.riserHeight ?? st.riser ?? 0)*100).toFixed(0)}×${((st.treadDepth ?? st.tread ?? 0)*100).toFixed(0)} F${floorIdx}`;
+  // v1.0.1 (AGX-01): annotate the ACTUAL generated geometry.
+  const actRiser = flights[0]?.riserHeight ?? st.riserHeight ?? st.riser ?? 0;
+  const actTread = Math.min(...flights.map((f: any) => f.treadDepth ?? st.tread ?? st.treadDepth ?? 0.28));
+  const label = `${flights.length}F · ${st.totalRisers}R @ ${(actRiser*100).toFixed(0)}×${(actTread*100).toFixed(0)} F${floorIdx}`;
   emitText(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, `A-FLOOR-${floorIdx}-A-STAIR-DIR`);
 }
 
