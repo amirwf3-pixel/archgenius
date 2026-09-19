@@ -87,7 +87,7 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
         deterministic: true, seed: 2,
       });
       const { bestCandidate } = generate(prj);
-      const hard = find(bestCandidate, 'MBH4-ROOM-002').filter((f: any) => f.severity === 'hard');
+      const hard = find(bestCandidate!, 'MBH4-ROOM-002').filter((f: any) => f.severity === 'hard');
       expect(hard.length).toBe(0);
     });
   });
@@ -102,13 +102,13 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
       });
       const { bestCandidate } = generate(prj);
       // Phase 13.1: feasibility-first — narrow 10x18 may be genuinely infeasible, no valid candidate with kitchen, explicit HARD
-      const spaces = bestCandidate.floors[0].spaces;
+      const spaces = bestCandidate!.floors[0].spaces;
       for (const s of spaces) {
         expect(s.rect.w).toBeGreaterThan(0);
         expect(s.rect.h).toBeGreaterThan(0);
         expect(s.area).toBeGreaterThan(0);
       }
-      const vr = validateCandidate(bestCandidate);
+      const vr = validateCandidate(bestCandidate!);
       expect(vr.hard.length).toBeGreaterThan(0); // explicit HARD infeasibility
       const kitchen = spaces.find((s: any) => s.type === 'kitchen');
       if (kitchen) {
@@ -126,7 +126,7 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
         deterministic: true, seed: 1,
       });
       const { bestCandidate } = generate(prj);
-      const hard = find(bestCandidate, 'MBH4-ROOM-007').filter((f: any) => f.severity === 'hard');
+      const hard = find(bestCandidate!, 'MBH4-ROOM-007').filter((f: any) => f.severity === 'hard');
       expect(hard.length).toBe(0);
     });
   });
@@ -140,9 +140,9 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
         deterministic: true, seed: 42,
       });
       const { bestCandidate } = generate(prj);
-      const st = bestCandidate.floors[0].stairs[0];
+      const st = bestCandidate!.floors[0].stairs[0];
       expect(st.tread).toBeGreaterThanOrEqual(0.28 - 1e-9);
-      const hard = find(bestCandidate, 'MBH4-STAIR-002').filter((f: any) => f.severity === 'hard');
+      const hard = find(bestCandidate!, 'MBH4-STAIR-002').filter((f: any) => f.severity === 'hard');
       expect(hard.length).toBe(0);
     });
 
@@ -154,7 +154,7 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
         deterministic: true, seed: 42,
       });
       const { bestCandidate } = generate(prj);
-      const st = bestCandidate.floors[0].stairs[0];
+      const st = bestCandidate!.floors[0].stairs[0];
       expect(st.riser).toBeLessThanOrEqual(0.18 + 1e-9);
     });
   });
@@ -168,11 +168,11 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
         deterministic: true, seed: 7,
       });
       const { bestCandidate } = generate(prj);
-      const st = bestCandidate.floors[0].stairs[0];
+      const st = bestCandidate!.floors[0].stairs[0];
       for (const fl of st.flights) {
         expect(fl.riserCount).toBeLessThanOrEqual(12);
       }
-      const hard = find(bestCandidate, 'MBH4-STAIR-003').filter((f: any) => f.severity === 'hard');
+      const hard = find(bestCandidate!, 'MBH4-STAIR-003').filter((f: any) => f.severity === 'hard');
       expect(hard.length).toBe(0);
     });
   });
@@ -186,8 +186,8 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
         deterministic: true, seed: 42,
       });
       const c3 = generate(prj3).bestCandidate;
-      expect(find(c3, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'hard').length).toBe(0);
-      expect(find(c3, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'soft').length).toBeGreaterThan(0);
+      expect(find(c3!, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'hard').length).toBe(0);
+      expect(find(c3!, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'soft').length).toBeGreaterThan(0);
 
       const prj4 = createProject({
         name: '4F', country: 'IR',
@@ -196,7 +196,7 @@ describe('Phase 5.2 — Numerical verification (boundary cases)', () => {
         deterministic: true, seed: 42,
       });
       const c4 = generate(prj4).bestCandidate;
-      expect(find(c4, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'hard').length).toBeGreaterThan(0);
+      expect(find(c4!, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'hard').length).toBeGreaterThan(0);
     });
   });
 });
@@ -210,7 +210,7 @@ describe('Phase 5.2 — Source traceability on findings', () => {
       deterministic: true, seed: 42,
     });
     const { bestCandidate } = generate(prj);
-    const regs = bestCandidate.findings.filter((f: any) => /^MBH/.test(f.code));
+    const regs = bestCandidate!.findings.filter((f: any) => /^MBH/.test(f.code));
     expect(regs.length).toBeGreaterThan(0);
     for (const f of regs) {
       expect((f as any).code).toBeTruthy();
@@ -231,7 +231,7 @@ describe('Phase 5.2 — Source traceability on findings', () => {
       deterministic: true, seed: 42,
     });
     const { bestCandidate } = generate(prj);
-    const verified = bestCandidate.findings.filter((f: any) => f.status === 'VERIFIED');
+    const verified = bestCandidate!.findings.filter((f: any) => f.status === 'VERIFIED');
     expect(verified.length).toBeGreaterThan(0);
     for (const f of verified) {
       expect(f.sources).toBeDefined();
@@ -264,7 +264,15 @@ describe('Phase 5.2 — Regression matrix still valid after Phase 5 (no weakenin
         building: { type: 'villa', floors: s.floors, bedrooms: s.beds, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1, hasStair: s.floors > 1, hasStorage: s.floors > 1 },
         deterministic: true, seed: s.seed,
       });
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate, infeasible } = generate(prj);
+      if (!bestCandidate) {
+        // Phase 13.2 CASE A: below-minimum geometry (8x12 for this program) → explicit INFEASIBLE
+        // result — honest, not silent: no usable candidate is exposed.
+        expect(infeasible).not.toBeNull();
+        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        expect(infeasible!.diagnosticCandidates.length).toBeGreaterThan(0);
+        return;
+      }
       const vr = validateCandidate(bestCandidate);
       const outside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
       if (s.w <= 10) {

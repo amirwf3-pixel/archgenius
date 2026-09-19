@@ -46,7 +46,7 @@ describe('Phase 8 - Functional Adjacency', () => {
   it('evaluates MUST/PREFER/AVOID relationships with kinds', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const evalResult = evaluateFunctional(floor);
     expect(evalResult.score).toBeGreaterThanOrEqual(0);
     expect(evalResult.score).toBeLessThanOrEqual(1);
@@ -64,7 +64,7 @@ describe('Phase 8 - Functional Adjacency', () => {
   it('deterministic functional evaluation', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const a = evaluateFunctional(floor);
     const b = evaluateFunctional(floor);
     expect(a.score).toBe(b.score);
@@ -77,7 +77,7 @@ describe('Phase 8 - Circulation', () => {
   it('evaluates entrance-to-living/kitchen/bedroom paths, public/private/service circ, corridorArea, ratio, deadEnds', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const evalResult = evaluateCirculation(floor);
     expect(evalResult.score).toBeGreaterThanOrEqual(0);
     expect(evalResult.score).toBeLessThanOrEqual(1);
@@ -95,7 +95,7 @@ describe('Phase 8 - Circulation', () => {
   it('deterministic circulation', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const a = evaluateCirculation(floor);
     const b = evaluateCirculation(floor);
     expect(a.score).toBe(b.score);
@@ -108,7 +108,7 @@ describe('Phase 8 - Privacy', () => {
   it('evaluates entrance->bedroom/private, living->bedroom/bathroom, guestWC, bedroomCluster, masterSeparation, publicPrivateTransition', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const evalResult = evaluatePrivacy(floor);
     expect(evalResult.score).toBeGreaterThanOrEqual(0);
     expect(evalResult.score).toBeLessThanOrEqual(1);
@@ -120,7 +120,7 @@ describe('Phase 8 - Privacy', () => {
   it('deterministic privacy', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const a = evaluatePrivacy(floor);
     const b = evaluatePrivacy(floor);
     expect(a.score).toBe(b.score);
@@ -132,7 +132,7 @@ describe('Phase 8 - Daylight', () => {
   it('evaluates orientation, exterior wall, window potential, depth, exposure with type priority', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const evalResult = evaluateDaylight(floor);
     expect(evalResult.score).toBeGreaterThanOrEqual(0);
     expect(evalResult.score).toBeLessThanOrEqual(1);
@@ -146,7 +146,7 @@ describe('Phase 8 - Daylight', () => {
   it('deterministic daylight', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const a = evaluateDaylight(floor);
     const b = evaluateDaylight(floor);
     expect(a.score).toBe(b.score);
@@ -158,7 +158,7 @@ describe('Phase 8 - Furniture Usability', () => {
   it('evaluates bedroom bed placement/access/wardrobe/door clearance/circ/window, living sofa, dining clearance, kitchen work zone', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const evalResult = evaluateFurniture(floor);
     expect(evalResult.score).toBeGreaterThanOrEqual(0);
     expect(evalResult.score).toBeLessThanOrEqual(1);
@@ -175,7 +175,7 @@ describe('Phase 8 - Kitchen Dedicated', () => {
   it('evaluates fridge/sink/cooktop/counter sequence/working triangle/zone/circ/entrance/dining/living/service, NOT EVALUABLE when insufficient', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const evalResult = evaluateKitchen(floor);
     if (evalResult.isEvaluable) {
       expect(evalResult.score).toBeGreaterThanOrEqual(0);
@@ -199,7 +199,7 @@ describe('Phase 8 - Bedroom', () => {
   it('evaluates bed/wardrobe usability, access/circ/door/window/privacy/proportions/master hierarchy, ensuite if requested', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const evalResult = evaluateBedroom(floor);
     expect(evalResult.score).toBeGreaterThanOrEqual(0);
     expect(evalResult.score).toBeLessThanOrEqual(1);
@@ -217,7 +217,7 @@ describe('Phase 8 - Entrance/Service', () => {
   it('evaluates entrance transition exterior->entrance->public, direct bedroom/WC exposure, circ efficiency, foyer; service circ, bathroom exposure, crossing public', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const evalResult = evaluateEntranceService(floor);
     expect(evalResult.score).toBeGreaterThanOrEqual(0);
     expect(evalResult.score).toBeLessThanOrEqual(1);
@@ -232,7 +232,7 @@ describe('Phase 8 - Scoring & Weights (Phase 9 upgrade)', () => {
   it('weights documented, range normalized, inspectable contributions, hard/soft separation — whole-building', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const evalResult = evaluateCandidate(bestCandidate);
+    const evalResult = evaluateCandidate(bestCandidate!);
     expect(evalResult.quality).toBeDefined();
     expect(evalResult.contributions.length).toBeGreaterThan(0);
     // Phase 9: contributions are whole-building (per-floor avg metrics weighted by 0.6 + vertical/stacking/interFloor + overall)
@@ -330,7 +330,7 @@ describe('Phase 8 - Candidate Optimization', () => {
   it('explainable evaluation: ID, feasibility, hard violations, overall quality, metric breakdown, strengths/weaknesses/trade-offs real values', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const evalResult = evaluateCandidate(bestCandidate);
+    const evalResult = evaluateCandidate(bestCandidate!);
     expect(evalResult.candidateId).toBeTruthy();
     expect(typeof evalResult.feasible).toBe('boolean');
     expect(typeof evalResult.hardViolations).toBe('number');
@@ -383,9 +383,9 @@ describe('Phase 8 - Documentation Integration', () => {
   it('Phase7 outputs remain functional, include Phase8 data in report/manifest', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     expect(doc.intelligence).toBeDefined();
-    expect(doc.intelligence!.candidateId).toBe(bestCandidate.id);
+    expect(doc.intelligence!.candidateId).toBe(bestCandidate!.id);
     expect(doc.intelligence!.feasible).toBeDefined();
     expect(doc.intelligence!.overallQuality).toBeGreaterThanOrEqual(0);
     expect(doc.intelligence!.quality).toBeDefined();
@@ -403,10 +403,10 @@ describe('Phase 8 - Determinism', () => {
     const input = baseInput();
     const prj1 = createProject(input);
     const { bestCandidate: c1 } = generate(prj1);
-    const e1 = evaluateCandidate(c1);
+    const e1 = evaluateCandidate(c1!);
     const prj2 = createProject(input);
     const { bestCandidate: c2 } = generate(prj2);
-    const e2 = evaluateCandidate(c2);
+    const e2 = evaluateCandidate(c2!);
     expect(e1.overallQuality).toBe(e2.overallQuality);
     expect(e1.quality.functional).toBe(e2.quality.functional);
     expect(e1.quality.circulation).toBe(e2.quality.circulation);
@@ -421,7 +421,7 @@ describe('Phase 8 Hardening — Kitchen N/A scoring', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
     // Force kitchen not evaluable by removing kitchen space? Instead test evaluateKitchen on floor without kitchen
-    const floorWithoutKitchen = { ...bestCandidate.floors[0], spaces: bestCandidate.floors[0].spaces.filter(s => s.type !== 'kitchen'), furniture: bestCandidate.floors[0].furniture.filter(f => !f.type.includes('counter')) };
+    const floorWithoutKitchen = { ...bestCandidate!.floors[0], spaces: bestCandidate!.floors[0].spaces.filter(s => s.type !== 'kitchen'), furniture: bestCandidate!.floors[0].furniture.filter(f => !f.type.includes('counter')) };
     // Use a floor with no kitchen
     const evalNoKitchen = evaluateKitchen(floorWithoutKitchen as any);
     expect(evalNoKitchen.score).toBeNull();
@@ -446,7 +446,7 @@ describe('Phase 8 Hardening — Kitchen N/A scoring', () => {
   it('fully evaluable candidate keeps quality within tolerance and weights sum 1', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const evalCand = evaluateCandidate(bestCandidate);
+    const evalCand = evaluateCandidate(bestCandidate!);
     // If kitchen evaluable, weights sum 1
     if (evalCand.detailed.kitchen.isEvaluable) {
       expect(evalCand.quality.evaluableWeightsSum).toBeCloseTo(1, 2);
@@ -460,7 +460,7 @@ describe('Phase 8 Hardening — Multi-floor transparency (Phase 9 upgrade)', () 
   it('single floor scope is Whole-Building Intelligence — 1 floors (Phase 9)', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const evalCand = evaluateCandidate(bestCandidate);
+    const evalCand = evaluateCandidate(bestCandidate!);
     expect(evalCand.intelligenceScope).toContain('Whole-Building Intelligence');
     expect(evalCand.intelligenceScope).toContain('1 floors');
     expect(evalCand.quality.intelligenceScope).toContain('Whole-Building');
@@ -472,7 +472,7 @@ describe('Phase 8 Hardening — Multi-floor transparency (Phase 9 upgrade)', () 
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const evalCand = evaluateCandidate(bestCandidate);
+    const evalCand = evaluateCandidate(bestCandidate!);
     expect(evalCand.intelligenceScope).toContain('Whole-Building Intelligence');
     expect(evalCand.intelligenceScope).toContain('2 floors');
     expect(evalCand.floorCount).toBe(2);
@@ -487,7 +487,7 @@ describe('Phase 8 Hardening — Multi-floor transparency (Phase 9 upgrade)', () 
   it('documentation model carries intelligenceScope and evaluableWeightsSum and whole-building', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     expect(doc.intelligence!.intelligenceScope).toBeDefined();
     expect((doc.intelligence!.quality as any).evaluableWeightsSum).toBeDefined();
     expect(doc.intelligence!.intelligenceScope).toContain('Whole-Building');
@@ -503,7 +503,7 @@ describe('Phase 8 Hardening — Heuristic metadata', () => {
   it('all contributions marked isHeuristic true, isHard false, with documented reason', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const evalCand = evaluateCandidate(bestCandidate);
+    const evalCand = evaluateCandidate(bestCandidate!);
     for (const c of evalCand.contributions) {
       expect(c.isHeuristic).toBe(true);
       expect(c.isHard).toBe(false);
@@ -516,7 +516,7 @@ describe('Phase 8 Hardening — Heuristic metadata', () => {
   it('PDF/XLSX/report/manifest include scope and heuristic labels', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     expect(doc.intelligence!.contributions.every(c => c.isHeuristic)).toBe(true);
     // XLSX columns would include isEvaluable — checked via doc model
     expect(doc.intelligence!.contributions.some(c => (c as any).isEvaluable !== undefined)).toBe(true);
@@ -529,11 +529,11 @@ describe('Phase 8 Hardening — Seed determinism', () => {
     input.seed = 42;
     const prj1 = createProject(input);
     const { bestCandidate: c1 } = generate(prj1);
-    const e1 = evaluateCandidate(c1);
+    const e1 = evaluateCandidate(c1!);
 
     const prj2 = createProject(input);
     const { bestCandidate: c2 } = generate(prj2);
-    const e2 = evaluateCandidate(c2);
+    const e2 = evaluateCandidate(c2!);
 
     expect(e1.candidateId).toBe(e2.candidateId);
     expect(e1.overallQuality).toBe(e2.overallQuality);
@@ -549,12 +549,12 @@ describe('Phase 8 Hardening — Seed determinism', () => {
     const prj2 = createProject(input2);
     const { bestCandidate: c2 } = generate(prj2);
     // Both deterministic
-    const e1a = evaluateCandidate(c1);
-    const e1b = evaluateCandidate(c1);
+    const e1a = evaluateCandidate(c1!);
+    const e1b = evaluateCandidate(c1!);
     expect(e1a.overallQuality).toBe(e1b.overallQuality);
     // Different seeds may give different strategies but evaluation is still deterministic
-    expect(c1.metadata.seed).toBe(42);
-    expect(c2.metadata.seed).toBe(123);
+    expect(c1!.metadata.seed).toBe(42);
+    expect(c2!.metadata.seed).toBe(123);
   });
 });
 
@@ -562,7 +562,7 @@ describe('Phase 8 Hardening — Adversarial regression 10 scenarios monotonic', 
   function makeCandidateWithMetrics(metrics: Partial<ReturnType<typeof computeQualityMetrics>> & { intelligenceScope?: string }): ReturnType<typeof evaluateCandidate> {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const functional = { score: metrics.functional ?? 0.8, satisfiedCount: 5, totalCount: 6, mustSatisfied: 2, mustTotal: 2, preferSatisfied: 3, preferTotal: 4, avoidSatisfied: 1, avoidTotal: 1, findings: [], evaluations: [], satisfiedMust: 2, satisfiedPrefer: 3, strengths: [], weaknesses: [] };
     const circulation = { score: metrics.circulation ?? 0.8, entranceToLivingPath: 1, entranceToKitchenPath: 2, entranceToBedroomPath: 2, publicCirculationArea: 5, privateCirculationArea: 10, serviceCirculationArea: 2, longestImportantPath: 3, unnecessaryPathLength: 0, turnCount: 1, deadEndCount: 0, corridorArea: 10, circulationRatio: 0.2, accessGraphQuality: 0.9, findings: [], strengths: [], weaknesses: [] };
     const privacy = { score: metrics.privacy ?? 0.8, entranceToBedroomExposure: 0, entranceToPrivateZone: 0, livingToBedroom: 0, livingToBedroomExposure: 0, livingToBathroomExposure: 0, guestWCLocationScore: 1, bedroomClusterScore: 1, masterSeparationScore: 1, publicPrivateTransitionScore: 1, findings: [], strengths: [], weaknesses: [] };
@@ -652,7 +652,7 @@ describe('Phase 8 Hardening — Cross-output consistency (Phase 9)', () => {
   it('documentation model, report, manifest agree on intelligenceScope and overallQuality — whole-building', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     // Phase 9: overallQuality is whole-building overall, quality.overall is avg floor overall
     expect(doc.intelligence!.overallQuality).toBeCloseTo(doc.intelligence!.wholeBuilding.overall, 2);
     expect(doc.intelligence!.intelligenceScope).toBeTruthy();
@@ -667,7 +667,7 @@ describe('Phase 8 Hardening — E2E cases A-F', () => {
     const input: ProjectInput = { ...baseInput(), name: 'E2E-A', building: { ...baseInput().building, bedrooms: 1, masterBedrooms: 0, bathrooms: 1, wc: 0, parkingSpaces: 0 } };
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const evalResult = evaluateCandidate(bestCandidate);
+    const evalResult = evaluateCandidate(bestCandidate!);
     expect(evalResult.feasible).toBeDefined();
     expect(evalResult.overallQuality).toBeGreaterThanOrEqual(0);
   });
@@ -676,7 +676,7 @@ describe('Phase 8 Hardening — E2E cases A-F', () => {
     const input: ProjectInput = { ...baseInput(), name: 'E2E-B', building: { ...baseInput().building, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, parkingSpaces: 2 } };
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const evalResult = evaluateCandidate(bestCandidate);
+    const evalResult = evaluateCandidate(bestCandidate!);
     expect(evalResult.quality.bedroom).toBeGreaterThanOrEqual(0);
   });
 
@@ -684,7 +684,7 @@ describe('Phase 8 Hardening — E2E cases A-F', () => {
     const input: ProjectInput = { ...baseInput(), name: 'E2E-C', building: { ...baseInput().building, floors: 2, hasStair: true } };
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const evalResult = evaluateCandidate(bestCandidate);
+    const evalResult = evaluateCandidate(bestCandidate!);
     expect(evalResult.intelligenceScope).toContain('2 floors');
     expect(evalResult.floorCount).toBe(2);
     expect(evalResult.perFloor.length).toBe(2);
@@ -695,7 +695,7 @@ describe('Phase 8 Hardening — E2E cases A-F', () => {
     const input: ProjectInput = { ...baseInput(), name: 'E2E-D', building: { ...baseInput().building, parkingSpaces: 0 } };
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const evalResult = evaluateCandidate(bestCandidate);
+    const evalResult = evaluateCandidate(bestCandidate!);
     expect(evalResult.feasible).toBeDefined();
   });
 
@@ -703,15 +703,22 @@ describe('Phase 8 Hardening — E2E cases A-F', () => {
     const input: ProjectInput = { ...baseInput(), name: 'E2E-E', building: { ...baseInput().building, kitchenType: 'open' as any } };
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const evalResult = evaluateCandidate(bestCandidate);
+    const evalResult = evaluateCandidate(bestCandidate!);
     expect(evalResult.quality.kitchen === null || typeof evalResult.quality.kitchen === 'number').toBe(true);
   });
 
   it('F: small site 8x12', () => {
     const input: ProjectInput = { ...baseInput(), name: 'E2E-F', site: { shape: 'rectangle', width: 8, length: 12, accessSide: 'south', streetWidth: 6, northRotationDeg: 0 } };
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
-    const evalResult = evaluateCandidate(bestCandidate);
-    expect(evalResult.overallQuality).toBeGreaterThanOrEqual(0);
+    const { bestCandidate, infeasible } = generate(prj);
+    if (!bestCandidate) {
+      // Phase 13.2 CASE A: 8x12 cannot satisfy minimum geometry for this program — explicit
+      // INFEASIBLE result; nothing to evaluate and no usable candidate is exposed.
+      expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      expect(infeasible!.explanation).toBeTruthy();
+    } else {
+      const evalResult = evaluateCandidate(bestCandidate);
+      expect(evalResult.overallQuality).toBeGreaterThanOrEqual(0);
+    }
   });
 });

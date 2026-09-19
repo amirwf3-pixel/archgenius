@@ -268,10 +268,10 @@ describe('Phase 11 C. Locking', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const space = floor.spaces[0];
     // Lock position
-    const lockedRes = lockRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, lockKind: 'position' });
+    const lockedRes = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'position' });
     expect(lockedRes.success).toBe(true);
     const lockedCand = lockedRes.candidate!;
     // Try to move locked room — should fail
@@ -284,8 +284,8 @@ describe('Phase 11 C. Locking', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
-    const lockedRes = lockRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, lockKind: 'size' });
+    const space = bestCandidate!.floors[0].spaces[0];
+    const lockedRes = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'size' });
     expect(lockedRes.success).toBe(true);
     const moveRes = resizeRoom(lockedRes.candidate!, { floorLevel: 0, spaceId: space.id, newWidth: space.rect.w + 2, newHeight: space.rect.h + 2 });
     expect(moveRes.success).toBe(false);
@@ -296,11 +296,11 @@ describe('Phase 11 C. Locking', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const spaceA = floor.spaces[0];
     const spaceB = floor.spaces[1];
     // Lock A
-    const lockedRes = lockRoom(bestCandidate, { floorLevel: 0, spaceId: spaceA.id, lockKind: 'all' });
+    const lockedRes = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: spaceA.id, lockKind: 'all' });
     expect(lockedRes.success).toBe(true);
     // Try to move B to overlap locked A — should fail
     const moveRes = moveRoom(lockedRes.candidate!, { floorLevel: 0, spaceId: spaceB.id, newX: spaceA.rect.x, newY: spaceA.rect.y });
@@ -311,15 +311,15 @@ describe('Phase 11 C. Locking', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
-    const lockedRes = lockRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, lockKind: 'all' });
+    const space = bestCandidate!.floors[0].spaces[0];
+    const lockedRes = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'all' });
     const lockedCand = lockedRes.candidate!;
     // Try to resize locked room
     const resizeRes = resizeRoom(lockedCand, { floorLevel: 0, spaceId: space.id, newWidth: 10, newHeight: 10 });
     expect(resizeRes.success).toBe(false);
     expect(resizeRes.error).toBeDefined();
     // Ensure original candidate unchanged (no silent violation)
-    const origSpace = bestCandidate.floors[0].spaces.find(s => s.id === space.id)!;
+    const origSpace = bestCandidate!.floors[0].spaces.find(s => s.id === space.id)!;
     expect(origSpace.rect.w).toBe(space.rect.w);
   });
 });
@@ -329,10 +329,10 @@ describe('Phase 11 D. Editing', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
+    const space = bestCandidate!.floors[0].spaces[0];
     const oldX = space.rect.x;
     const newX = oldX + 0.5;
-    const res = moveRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, newX, newY: space.rect.y });
+    const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX, newY: space.rect.y });
     // May succeed or fail depending on overlap, but should be deterministic and not crash
     expect(typeof res.success).toBe('boolean');
     if (res.success) {
@@ -347,10 +347,10 @@ describe('Phase 11 D. Editing', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces.find(s => s.type === 'living') ?? bestCandidate.floors[0].spaces[0];
+    const space = bestCandidate!.floors[0].spaces.find(s => s.type === 'living') ?? bestCandidate!.floors[0].spaces[0];
     const newW = Math.max(2, space.rect.w * 0.9);
     const newH = Math.max(2, space.rect.h * 0.9);
-    const res = resizeRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, newWidth: newW, newHeight: newH });
+    const res = resizeRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newWidth: newW, newHeight: newH });
     expect(typeof res.success).toBe('boolean');
     if (res.success) {
       const ns = res.candidate!.floors[0].spaces.find(s => s.id === space.id)!;
@@ -363,11 +363,11 @@ describe('Phase 11 D. Editing', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const spaceA = bestCandidate.floors[0].spaces[0];
-    const spaceB = bestCandidate.floors[0].spaces[1];
+    const spaceA = bestCandidate!.floors[0].spaces[0];
+    const spaceB = bestCandidate!.floors[0].spaces[1];
     // Move A slightly, should trigger bounded repair of B if overlap
-    const res1 = moveRoom(bestCandidate, { floorLevel: 0, spaceId: spaceA.id, newX: spaceA.rect.x + 0.2, newY: spaceA.rect.y });
-    const res2 = moveRoom(bestCandidate, { floorLevel: 0, spaceId: spaceA.id, newX: spaceA.rect.x + 0.2, newY: spaceA.rect.y });
+    const res1 = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: spaceA.id, newX: spaceA.rect.x + 0.2, newY: spaceA.rect.y });
+    const res2 = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: spaceA.id, newX: spaceA.rect.x + 0.2, newY: spaceA.rect.y });
     expect(res1.success).toBe(res2.success);
     if (res1.success && res2.success) {
       expect(JSON.stringify(res1.candidate!.floors[0].spaces.map(s => s.rect))).toBe(JSON.stringify(res2.candidate!.floors[0].spaces.map(s => s.rect)));
@@ -378,9 +378,9 @@ describe('Phase 11 D. Editing', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
+    const space = bestCandidate!.floors[0].spaces[0];
     // Try to move outside buildable
-    const res = moveRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, newX: 100, newY: 100 });
+    const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX: 100, newY: 100 });
     expect(res.success).toBe(false);
   });
 
@@ -388,8 +388,8 @@ describe('Phase 11 D. Editing', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
-    const res = moveRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.3, newY: space.rect.y });
+    const space = bestCandidate!.floors[0].spaces[0];
+    const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.3, newY: space.rect.y });
     if (res.success) {
       expect(res.findings).toBeDefined();
       // Should have no HARD site containment after successful edit
@@ -402,8 +402,8 @@ describe('Phase 11 D. Editing', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces.find(s => s.type === 'living')!;
-    const res = setLShape(bestCandidate, { floorLevel: 0, spaceId: space.id, notchWidth: 1, notchLength: 1, notchCorner: 'ne' });
+    const space = bestCandidate!.floors[0].spaces.find(s => s.type === 'living')!;
+    const res = setLShape(bestCandidate!, { floorLevel: 0, spaceId: space.id, notchWidth: 1, notchLength: 1, notchCorner: 'ne' });
     // May succeed if space large enough
     expect(typeof res.success).toBe('boolean');
     if (res.success) {
@@ -463,9 +463,16 @@ describe('Phase 11 E. Site', () => {
     (input.site as any).shape = 'l-shape';
     (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'ne' };
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate, infeasible } = generate(prj);
     const geom = computeBuildableGeometry(input.site as any);
-    for (const fl of bestCandidate.floors) {
+    // Phase 13.2: tight L-shape may be below-minimum geometry → INFEASIBLE with no usable candidate;
+    // the canonical-polygon containment guarantee is still verified on the ranked-first diagnostic
+    // candidate (the same candidate Phase 13.1 would have exposed, now correctly non-usable).
+    const target = bestCandidate ?? infeasible!.diagnosticCandidates[0];
+    if (!bestCandidate) {
+      expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+    }
+    for (const fl of target.floors) {
       for (const sp of fl.spaces) {
         expect(roomPolygonInsideBuildable(sp.polygon, geom.buildableBoundary)).toBe(true);
       }
@@ -481,13 +488,13 @@ describe('Phase 11 F. Multi-floor', () => {
       input.building.hasStair = floors > 1;
       const prj = createProject(input);
       const { bestCandidate } = generate(prj);
-      expect(bestCandidate.floors.length).toBe(floors);
+      expect(bestCandidate!.floors.length).toBe(floors);
       // Check no floors[0] dependency for whole-building logic — each floor should have spaces
-      for (const fl of bestCandidate.floors) {
+      for (const fl of bestCandidate!.floors) {
         expect(fl.spaces.length).toBeGreaterThan(0);
       }
       // Check buildableBoundary present for all floors
-      for (const fl of bestCandidate.floors) {
+      for (const fl of bestCandidate!.floors) {
         expect((fl as any).buildableBoundary).toBeDefined();
       }
     });
@@ -501,7 +508,7 @@ describe('Phase 11 G. Outputs', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'Test11');
+    const dxf = writeDXF(bestCandidate!, 'Test11');
     const polylines = parseDXFPolylines(dxf);
     // Check room polygons exist on floor-specific layers
     expect(polylines.has('A-FLOOR-0-A-ROOM')).toBe(true);
@@ -518,9 +525,9 @@ describe('Phase 11 G. Outputs', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     for (const room of doc.roomSchedule) {
-      const space = bestCandidate.floors.flatMap(f => f.spaces).find(s => s.id === room.id);
+      const space = bestCandidate!.floors.flatMap(f => f.spaces).find(s => s.id === room.id);
       expect(space).toBeDefined();
       expect(room.area).toBeCloseTo(space!.area, 1);
     }
@@ -530,9 +537,9 @@ describe('Phase 11 G. Outputs', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const { docModel } = await exportAll(prj, bestCandidate);
+    const { docModel } = await exportAll(prj, bestCandidate!);
     // Check room areas in docModel match candidate
-    for (const fl of bestCandidate.floors) {
+    for (const fl of bestCandidate!.floors) {
       for (const sp of fl.spaces) {
         const entry = docModel.roomSchedule.find(r => r.id === sp.id);
         expect(entry).toBeDefined();
@@ -545,9 +552,9 @@ describe('Phase 11 G. Outputs', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const { docModel, report, manifest } = await exportAll(prj, bestCandidate);
-    expect(manifest.geometry.candidateId).toBe(bestCandidate.id);
-    expect(docModel.canonicalCandidateId).toBe(bestCandidate.id);
+    const { docModel, report, manifest } = await exportAll(prj, bestCandidate!);
+    expect(manifest.geometry.candidateId).toBe(bestCandidate!.id);
+    expect(docModel.canonicalCandidateId).toBe(bestCandidate!.id);
     expect(docModel.consistency.checksum).toBe(manifest.consistency.checksum);
     expect(report.consistency.checksum).toBe(docModel.consistency.checksum);
   });
@@ -558,11 +565,11 @@ describe('Phase 11 H. Determinism', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
+    const space = bestCandidate!.floors[0].spaces[0];
 
     const op = { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.2, newY: space.rect.y };
-    const res1 = moveRoom(bestCandidate, op);
-    const res2 = moveRoom(bestCandidate, op);
+    const res1 = moveRoom(bestCandidate!, op);
+    const res2 = moveRoom(bestCandidate!, op);
     expect(res1.success).toBe(res2.success);
     if (res1.success && res2.success) {
       const s1 = res1.candidate!.floors[0].spaces.find(s => s.id === space.id)!;
@@ -600,9 +607,13 @@ describe('Phase 11 I. Adversarial', () => {
     (input.site as any).shape = 'l-shape';
     (input.site as any).lShape = { width: 10, length: 10, notchWidth: 4, notchLength: 4, notchCorner: 'ne' };
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate, infeasible } = generate(prj);
+    // Phase 13.2: tight concave 10x10 L is below-minimum geometry → INFEASIBLE with no usable
+    // candidate; site validation still runs (does not crash) on diagnostic candidates.
+    expect(infeasible).not.toBeNull();
+    expect(bestCandidate).toBeNull();
     // Should have no HARD site findings for valid candidate
-    const findings = validateSite(bestCandidate);
+    const findings = validateSite(infeasible!.diagnosticCandidates[0]);
     const hard = findings.filter(f => f.severity === 'hard');
     // May have hard if tight, but should not crash
     expect(Array.isArray(hard)).toBe(true);
@@ -622,8 +633,8 @@ describe('Phase 11 I. Adversarial', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
-    const res = resizeRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, newWidth: 0.5, newHeight: 0.5 });
+    const space = bestCandidate!.floors[0].spaces[0];
+    const res = resizeRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newWidth: 0.5, newHeight: 0.5 });
     expect(res.success).toBe(false);
   });
 
@@ -631,10 +642,10 @@ describe('Phase 11 I. Adversarial', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const a = floor.spaces[0];
     const b = floor.spaces[1];
-    const locked = lockRoom(bestCandidate, { floorLevel: 0, spaceId: a.id, lockKind: 'all' });
+    const locked = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: a.id, lockKind: 'all' });
     const res = moveRoom(locked.candidate!, { floorLevel: 0, spaceId: b.id, newX: a.rect.x, newY: a.rect.y });
     expect(res.success).toBe(false);
   });
@@ -679,10 +690,10 @@ describe('Phase 11 J. Performance', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
+    const space = bestCandidate!.floors[0].spaces[0];
     const start = Date.now();
     for (let i = 0; i < 10; i++) {
-      const res = moveRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + i * 0.1, newY: space.rect.y });
+      const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + i * 0.1, newY: space.rect.y });
       expect(typeof res.success).toBe('boolean');
     }
     const elapsed = Date.now() - start;
@@ -695,7 +706,7 @@ describe('Phase 11 — Canonical invariants', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    for (const fl of bestCandidate.floors) {
+    for (const fl of bestCandidate!.floors) {
       for (const sp of fl.spaces) {
         // Polygon area should equal stored area
         expect(sp.area).toBeCloseTo(polygonArea(sp.polygon), 3);

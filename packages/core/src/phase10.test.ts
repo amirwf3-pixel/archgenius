@@ -71,7 +71,7 @@ describe('Phase 10 A — rectangle regression identical where expected', () => {
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     const geom = computeBuildableGeometry(input.site as any);
-    for (const fl of bestCandidate.floors) {
+    for (const fl of bestCandidate!.floors) {
       for (const sp of fl.spaces) {
         expect(rectInsidePolygon(sp.rect, geom.buildableBoundary)).toBe(true);
       }
@@ -82,7 +82,7 @@ describe('Phase 10 A — rectangle regression identical where expected', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'TestRect');
+    const dxf = writeDXF(bestCandidate!, 'TestRect');
     expect(dxf).toContain('A-SITE');
     expect(dxf).toContain('A-BLDG-OUT');
     expect(dxf).toContain('A-SETBACK');
@@ -92,10 +92,10 @@ describe('Phase 10 A — rectangle regression identical where expected', () => {
     const input = baseInput();
     const prj1 = createProject(input);
     const { bestCandidate: c1 } = generate(prj1);
-    const doc1 = buildDocumentation(prj1, c1);
+    const doc1 = buildDocumentation(prj1, c1!);
     const prj2 = createProject(input);
     const { bestCandidate: c2 } = generate(prj2);
-    const doc2 = buildDocumentation(prj2, c2);
+    const doc2 = buildDocumentation(prj2, c2!);
     expect(doc1.consistency.checksum).toBe(doc2.consistency.checksum);
     expect(doc1.site.area).toBe(doc2.site.area);
     expect((doc1.site as any).buildableArea).toBe((doc2.site as any).buildableArea);
@@ -140,7 +140,7 @@ describe('Phase 10 B — L-shape valid/invalid area/buildable/containment/DXF', 
     const { bestCandidate } = generate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     expect(geom.buildableRects.length).toBe(2);
-    for (const fl of bestCandidate.floors) {
+    for (const fl of bestCandidate!.floors) {
       for (const sp of fl.spaces) {
         const inside = geom.buildableRects.some(r => {
           return sp.rect.x >= r.x - 1e-6 && sp.rect.y >= r.y - 1e-6 && sp.rect.x + sp.rect.w <= r.x + r.w + 1e-6 && sp.rect.y + sp.rect.h <= r.y + r.h + 1e-6;
@@ -151,12 +151,28 @@ describe('Phase 10 B — L-shape valid/invalid area/buildable/containment/DXF', 
   });
 
   it('L-shape DXF contains site layers and buildable rect decomposition', () => {
+    // Phase 13.2: the original tight L 15x20 notch 5x6 (with setbacks) is below-minimum geometry
+    // for this program — generate() returns an explicit INFEASIBLE result with bestCandidate=null
+    // and DXF output for it is refused. Pin that semantics, then keep the DXF site-layer
+    // verification alive on the feasible L 20x25 notch 8x10 (same 6-vertex L characteristics).
+    const tight = baseInput();
+    (tight.site as any).shape = 'l-shape';
+    (tight.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    const tightRes = generate(createProject(tight));
+    if (tightRes.infeasible) {
+      expect(tightRes.bestCandidate).toBeNull();
+      expect(tightRes.candidates).toEqual([]);
+      expect(tightRes.infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+    }
     const input = baseInput();
     (input.site as any).shape = 'l-shape';
-    (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    (input.site as any).lShape = { width: 20, length: 25, notchWidth: 8, notchLength: 10, notchCorner: 'north-east' };
+    input.site.width = 20;
+    input.site.length = 25;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'TestL');
+    expect(bestCandidate).not.toBeNull();
+    const dxf = writeDXF(bestCandidate!, 'TestL');
     expect(dxf).toContain('A-SITE');
     expect(dxf).toContain('A-BLDG-OUT');
     expect(dxf).toContain('A-SETBACK');
@@ -285,9 +301,9 @@ describe('Phase 10 D — multi-floor 1F2F3F6F10F', () => {
       input.site.length = 30;
       const prj = createProject(input);
       const { bestCandidate } = generate(prj);
-      expect(bestCandidate.floors.length).toBe(floors);
+      expect(bestCandidate!.floors.length).toBe(floors);
       const geom = computeBuildableGeometry(input.site as any);
-      for (const fl of bestCandidate.floors) {
+      for (const fl of bestCandidate!.floors) {
         for (const sp of fl.spaces) {
           expect(rectInsidePolygon(sp.rect, geom.buildableBoundary)).toBe(true);
         }
@@ -305,7 +321,7 @@ describe('Phase 10 D — multi-floor 1F2F3F6F10F', () => {
     input.site.length = 30;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    expect(bestCandidate.floors.length).toBe(6);
+    expect(bestCandidate!.floors.length).toBe(6);
   });
 
   it('10F polygon', () => {
@@ -318,7 +334,7 @@ describe('Phase 10 D — multi-floor 1F2F3F6F10F', () => {
     input.site.length = 30;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    expect(bestCandidate.floors.length).toBe(10);
+    expect(bestCandidate!.floors.length).toBe(10);
   });
 });
 
@@ -354,8 +370,13 @@ describe('Phase 10 E — adversarial', () => {
     // Direct computeBuildableGeometry with 3x3 still valid? Our min area check is 10, so it should be invalid via validateSitePolygon? Actually computeBuildableGeometry checks siteArea?
     // For SITE_ZERO_AREA via validateSite, we need candidate with small area
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
-    const findings = validateSite(bestCandidate);
+    const { bestCandidate, infeasible } = generate(prj);
+    // Phase 13.2: a 3x3 site cannot satisfy minimum geometry — explicit INFEASIBLE result;
+    // site diagnostics remain available on the diagnostic-only candidates.
+    expect(infeasible).not.toBeNull();
+    expect(bestCandidate).toBeNull();
+    expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+    const findings = validateSite(infeasible!.diagnosticCandidates[0]);
     expect(findings.some(f => f.code === 'SITE_ZERO_AREA' || f.code === 'SITE_INSUFFICIENT_BUILDABLE' || f.code === 'SITE_INVALID_POLYGON')).toBe(true);
   });
 
@@ -366,14 +387,19 @@ describe('Phase 10 E — adversarial', () => {
     input.building.parkingSpaces = 4;
     (input.site as any).setbacks = { north: 1, south: 1, east: 1, west: 1 };
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate, infeasible } = generate(prj);
+    // Phase 13.2: below-minimum site → explicit INFEASIBLE result; parking diagnostics remain
+    // available on the diagnostic-only candidates.
+    expect(infeasible).not.toBeNull();
+    expect(bestCandidate).toBeNull();
+    const diagnostic = infeasible!.diagnosticCandidates[0];
     // Parking may be 0 or have SITE findings
-    const findings = validateSite(bestCandidate);
+    const findings = validateSite(diagnostic);
     // At least not crash, and parking outside site check
-    expect(bestCandidate.floors[0].parkingStalls.length).toBeLessThanOrEqual(4);
+    expect(diagnostic.floors[0].parkingStalls.length).toBeLessThanOrEqual(4);
     // If parking placed, should be inside site
-    if (bestCandidate.floors[0].parkingStalls.length > 0) {
-      for (const ps of bestCandidate.floors[0].parkingStalls) {
+    if (diagnostic.floors[0].parkingStalls.length > 0) {
+      for (const ps of diagnostic.floors[0].parkingStalls) {
         expect(rectInsidePolygon(ps.rect, computeBuildableGeometry(input.site as any).siteBoundary)).toBe(true);
       }
     }
@@ -386,12 +412,21 @@ describe('Phase 10 E — adversarial', () => {
     input.site.width = 15;
     input.site.length = 20;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate, infeasible } = generate(prj);
     const geom = computeBuildableGeometry(input.site as any);
+    // Phase 13.2: if the tight concave site is below-minimum geometry the result is INFEASIBLE
+    // with no usable candidate; the no-room-in-the-notch generator guarantee still holds for
+    // diagnostic candidates.
+    const targets = bestCandidate ? [bestCandidate!] : infeasible!.diagnosticCandidates;
+    if (!bestCandidate) {
+      expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+    }
     // No room should be in the notch (outside site)
-    for (const fl of bestCandidate.floors) {
-      for (const sp of fl.spaces) {
-        expect(rectInsidePolygon(sp.rect, geom.siteBoundary)).toBe(true);
+    for (const cand of targets) {
+      for (const fl of cand.floors) {
+        for (const sp of fl.spaces) {
+          expect(rectInsidePolygon(sp.rect, geom.siteBoundary)).toBe(true);
+        }
       }
     }
   });
@@ -421,7 +456,7 @@ describe('Phase 10 E — adversarial', () => {
     const { bestCandidate } = generate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     // Buildable bounding rect should contain footprint exactly or inside
-    for (const fl of bestCandidate.floors) {
+    for (const fl of bestCandidate!.floors) {
       expect(fl.footprint.x).toBeGreaterThanOrEqual(geom.buildableBoundingRect.x - 1e-6);
       expect(fl.footprint.y).toBeGreaterThanOrEqual(geom.buildableBoundingRect.y - 1e-6);
       expect(fl.footprint.x + fl.footprint.w).toBeLessThanOrEqual(geom.buildableBoundingRect.x + geom.buildableBoundingRect.w + 1e-6);
@@ -448,25 +483,43 @@ describe('Phase 10 E — adversarial', () => {
     const { bestCandidate: c1 } = generate(prj1);
     const prj2 = createProject(input);
     const { bestCandidate: c2 } = generate(prj2);
-    expect(c1.floors[0].parkingStalls.length).toBe(c2.floors[0].parkingStalls.length);
-    if (c1.floors[0].parkingStalls.length > 0) {
-      expect(c1.floors[0].parkingStalls[0].rect.w).toBe(c2.floors[0].parkingStalls[0].rect.w);
+    expect(c1!.floors[0].parkingStalls.length).toBe(c2!.floors[0].parkingStalls.length);
+    if (c1!.floors[0].parkingStalls.length > 0) {
+      expect(c1!.floors[0].parkingStalls[0].rect.w).toBe(c2!.floors[0].parkingStalls[0].rect.w);
     }
   });
 });
 
 describe('Phase 10 G — cross-output agree site metadata', () => {
   it('doc=report=manifest=DXF/PDF/XLSX agree on site shape/area/buildable/setbacks', async () => {
+    // Phase 13.2: the original tight L 15x20 notch 5x6 (with setbacks, 2 floors) is below-minimum
+    // geometry — generate() returns an explicit INFEASIBLE result and exportAll refuses it. Pin that
+    // semantics, then keep the cross-output agreement verification on the feasible L 20x25 notch 8x10.
+    const tight = baseInput();
+    (tight.site as any).shape = 'l-shape';
+    (tight.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    (tight.site as any).setbacks = { north: 2, south: 3, east: 2, west: 2 };
+    tight.building.floors = 2;
+    tight.building.hasStair = true;
+    const tightRes = generate(createProject(tight));
+    if (tightRes.infeasible) {
+      expect(tightRes.bestCandidate).toBeNull();
+      expect(tightRes.project.candidates).toEqual([]);
+      await expect(exportAll(tightRes.project, tightRes.bestCandidate!)).rejects.toThrow(/INFEASIBLE/);
+    }
     const input = baseInput();
     (input.site as any).shape = 'l-shape';
-    (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    (input.site as any).lShape = { width: 20, length: 25, notchWidth: 8, notchLength: 10, notchCorner: 'north-east' };
     (input.site as any).setbacks = { north: 2, south: 3, east: 2, west: 2 };
+    input.site.width = 20;
+    input.site.length = 25;
     (input.site as any).jurisdiction = 'Tehran-Test';
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate);
+    expect(bestCandidate).not.toBeNull();
+    const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate!);
 
     // Site shape
     expect(docModel.site.shape).toBe('l-shape');
@@ -502,7 +555,7 @@ describe('Phase 10 G — cross-output agree site metadata', () => {
     expect(res.sheets).toContain('11_Site');
 
     // Drawing number AG-{id}-WB
-    expect(docModel.drawing.drawingNumber).toBe(`AG-${bestCandidate.id}-WB`);
+    expect(docModel.drawing.drawingNumber).toBe(`AG-${bestCandidate!.id}-WB`);
   });
 
   it('PDF site/context AG-{id}-WB drawing numbers', async () => {
@@ -511,7 +564,7 @@ describe('Phase 10 G — cross-output agree site metadata', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     expect(doc.drawing.drawingNumber).toMatch(/^AG-.*-WB$/);
   });
 
@@ -520,7 +573,7 @@ describe('Phase 10 G — cross-output agree site metadata', () => {
     (input.site as any).jurisdiction = 'Tehran-Municipality-Default';
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     const { generateXLSX } = await import('./documentation/xlsx.js');
     const xlsxBytes = await generateXLSX(doc);
     // Can't parse XLSX easily, but docModel has data
@@ -567,7 +620,7 @@ describe('Phase 10 H — performance bounded', () => {
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     const start = Date.now();
-    const dxf = writeDXF(bestCandidate, 'PerfTest');
+    const dxf = writeDXF(bestCandidate!, 'PerfTest');
     const elapsed = Date.now() - start;
     expect(dxf.length).toBeGreaterThan(1000);
     expect(elapsed).toBeLessThan(2000);
@@ -587,8 +640,12 @@ describe('Phase 10 — site validation findings', () => {
     input.site.length = 3;
     (input.site as any).setbacks = { north: 0, south: 0, east: 0, west: 0 };
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
-    const findings = validateSite(bestCandidate);
+    const { bestCandidate, infeasible } = generate(prj);
+    // Phase 13.2: below-minimum site → explicit INFEASIBLE result; SITE_* diagnostics remain
+    // available on the diagnostic-only candidates.
+    expect(infeasible).not.toBeNull();
+    expect(bestCandidate).toBeNull();
+    const findings = validateSite(infeasible!.diagnosticCandidates[0]);
     expect(findings.some(f => f.code.startsWith('SITE_'))).toBe(true);
   });
 
@@ -596,7 +653,7 @@ describe('Phase 10 — site validation findings', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const findings = validateSite(bestCandidate);
+    const findings = validateSite(bestCandidate!);
     const hardSite = findings.filter(f => f.severity === 'hard' && f.code.startsWith('SITE_'));
     // For normal 15x20 site, should be 0 hard SITE findings
     expect(hardSite.length).toBe(0);

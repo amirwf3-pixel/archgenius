@@ -80,8 +80,11 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
         deterministic: true, seed: 1,
       });
-      const { candidates } = generate(prj);
-      const hits = findCode(candidates[0], 'MBH4-ROOM-001').filter((f: any) => f.severity === 'hard');
+      const { bestCandidate, infeasible } = generate(prj);
+      // Phase 13.2: on a below-minimum site the rule still fires — on the diagnostic candidates
+      // when no usable candidate exists.
+      const target = bestCandidate ?? infeasible!.diagnosticCandidates[0];
+      const hits = findCode(target, 'MBH4-ROOM-001').filter((f: any) => f.severity === 'hard');
       expect(hits.length).toBeGreaterThanOrEqual(1);
       expect(hits[0].status).toBe('VERIFIED');
     });

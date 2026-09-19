@@ -101,14 +101,20 @@ function parseDXFPolylines(dxf: string): Map<string, Array<Array<{ x: number; y:
 
 describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
   it('every floor has A-FLOOR-n-A-SITE representing actual siteBoundary', () => {
+    // Phase 13.2: the original tight L 15x20 notch 5x6 (with setbacks) is below-minimum geometry →
+    // explicit INFEASIBLE result; DXF verification kept alive on the feasible L 20x25 notch 8x10
+    // (same 6-vertex L siteBoundary).
     const input = baseInput();
     (input.site as any).shape = 'l-shape';
-    (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    (input.site as any).lShape = { width: 20, length: 25, notchWidth: 8, notchLength: 10, notchCorner: 'north-east' };
+    input.site.width = 20;
+    input.site.length = 25;
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'Test101');
+    expect(bestCandidate).not.toBeNull();
+    const dxf = writeDXF(bestCandidate!, 'Test101');
     const polylines = parseDXFPolylines(dxf);
     // Check per-floor A-SITE exists for floor 0 and 1
     expect(polylines.has('A-FLOOR-0-A-SITE')).toBe(true);
@@ -120,14 +126,19 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
   });
 
   it('every floor has A-FLOOR-n-A-SETBACK representing actual buildable boundary', () => {
+    // Phase 13.2: original tight L 15x20 notch 5x6 is below-minimum geometry → INFEASIBLE;
+    // verification kept alive on the feasible L 20x25 notch 8x10.
     const input = baseInput();
     (input.site as any).shape = 'l-shape';
-    (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    (input.site as any).lShape = { width: 20, length: 25, notchWidth: 8, notchLength: 10, notchCorner: 'north-east' };
+    input.site.width = 20;
+    input.site.length = 25;
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'Test101');
+    expect(bestCandidate).not.toBeNull();
+    const dxf = writeDXF(bestCandidate!, 'Test101');
     const polylines = parseDXFPolylines(dxf);
     for (let fi = 0; fi < 3; fi++) {
       expect(polylines.has(`A-FLOOR-${fi}-A-SETBACK`)).toBe(true);
@@ -138,14 +149,19 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
   });
 
   it('every floor has A-FLOOR-n-A-BLDG-OUT using actual buildableBoundary, not bounding rect', () => {
+    // Phase 13.2: original tight L 15x20 notch 5x6 is below-minimum geometry → INFEASIBLE;
+    // verification kept alive on the feasible L 20x25 notch 8x10 (6-vertex buildable boundary).
     const input = baseInput();
     (input.site as any).shape = 'l-shape';
-    (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    (input.site as any).lShape = { width: 20, length: 25, notchWidth: 8, notchLength: 10, notchCorner: 'north-east' };
+    input.site.width = 20;
+    input.site.length = 25;
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'Test101');
+    expect(bestCandidate).not.toBeNull();
+    const dxf = writeDXF(bestCandidate!, 'Test101');
     const polylines = parseDXFPolylines(dxf);
     // For L-shape, buildableBoundary should be 6 verts (non-rectangular)
     const buildableVerts = (bestCandidate as any).buildableBoundary.length;
@@ -183,7 +199,7 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'Test101');
+    const dxf = writeDXF(bestCandidate!, 'Test101');
     const polylines = parseDXFPolylines(dxf);
     // Upper floor (floor 2) BLDG-OUT should have 6 vertices (L-shape), not 4
     const upper = polylines.get('A-FLOOR-2-A-BLDG-OUT')![0];
@@ -192,14 +208,17 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
   });
 
   it('multi-floor polygon upper floor DXF genuinely non-rectangular', () => {
+    // Phase 13.2: the original 20x20 6-vertex polygon (with setbacks) is below-minimum geometry →
+    // INFEASIBLE result; verification kept alive on the feasible 24x24 6-vertex L polygon.
     const input = baseInput();
     (input.site as any).shape = 'polygon';
-    (input.site as any).polygon = { vertices: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 12, y: 10 }, { x: 12, y: 20 }, { x: 0, y: 20 }] }; // 6-vert L via polygon
+    (input.site as any).polygon = { vertices: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 12 }, { x: 14, y: 12 }, { x: 14, y: 24 }, { x: 0, y: 24 }] }; // 6-vert L via polygon
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'Test101Poly');
+    expect(bestCandidate).not.toBeNull();
+    const dxf = writeDXF(bestCandidate!, 'Test101Poly');
     const polylines = parseDXFPolylines(dxf);
     const upper = polylines.get('A-FLOOR-1-A-BLDG-OUT')![0];
     expect(upper.length).toBe(6);
@@ -246,12 +265,12 @@ describe('Phase 10.1 — 2. 8-vertex orthogonal polygon', () => {
       const prj = createProject(input);
       const { bestCandidate } = generate(prj);
       const { validateCandidate: vc } = await import('./pipeline.js');
-      const vr = vc(bestCandidate);
+      const vr = vc(bestCandidate!);
       const outside = vr.hard.filter((f: any) => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT' || f.code === 'SITE_ROOM_OUTSIDE_BUILDABLE');
       if (outside.length > 0) {
         expect(vr.hard.length).toBeGreaterThan(0);
       } else {
-        for (const fl of bestCandidate.floors) {
+        for (const fl of bestCandidate!.floors) {
           for (const sp of fl.spaces) {
             expect(rectInsidePolygon(sp.rect, geom.buildableBoundary)).toBe(true);
           }
@@ -325,8 +344,8 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
     // Manually move a room outside buildable
     const geom = computeBuildableGeometry(input.site as any);
     const outsideRect = { x: geom.siteBoundingRect.x + geom.siteBoundingRect.w + 5, y: geom.siteBoundingRect.y, w: 3, h: 3 };
-    (bestCandidate.floors[0].spaces[0] as any).rect = outsideRect;
-    const findings = validateSite(bestCandidate);
+    (bestCandidate!.floors[0].spaces[0] as any).rect = outsideRect;
+    const findings = validateSite(bestCandidate!);
     expect(findings.some(f => f.code === 'SITE_ROOM_OUTSIDE_BUILDABLE' && f.severity === 'hard')).toBe(true);
   });
 
@@ -336,14 +355,14 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
     const { bestCandidate } = generate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     // Find corridor or create one
-    let corridor = bestCandidate.floors[0].spaces.find(s => s.type === 'corridor');
+    let corridor = bestCandidate!.floors[0].spaces.find(s => s.type === 'corridor');
     if (!corridor) {
       corridor = { id: 'corridor-test', type: 'corridor', label: 'Corridor', rect: { x: 0, y: 0, w: 2, h: 2 }, polygon: [], area: 4, targetArea: 4, minArea: 0, wallIds: [], openingIds: [], adjacentSpaceIds: [], hasExteriorWall: false, floor: 0, privacy: 'service', zone: 'circulation', orientation: 'any', daylightRequired: false } as any;
-      bestCandidate.floors[0].spaces.push(corridor as any);
+      bestCandidate!.floors[0].spaces.push(corridor as any);
     }
     const outsideRect = { x: geom.siteBoundingRect.x + geom.siteBoundingRect.w + 5, y: geom.siteBoundingRect.y, w: 3, h: 3 };
     (corridor as any).rect = outsideRect;
-    const findings = validateSite(bestCandidate);
+    const findings = validateSite(bestCandidate!);
     expect(findings.some(f => f.code === 'SITE_CORRIDOR_OUTSIDE_BUILDABLE' && f.severity === 'hard')).toBe(true);
   });
 
@@ -361,8 +380,8 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
       spaceIds: [],
       openingIds: [],
     } as any;
-    bestCandidate.floors[0].walls.push(outsideWall);
-    const findings = validateSite(bestCandidate);
+    bestCandidate!.floors[0].walls.push(outsideWall);
+    const findings = validateSite(bestCandidate!);
     expect(findings.some(f => f.code === 'SITE_WALL_OUTSIDE_BUILDABLE' && f.severity === 'hard')).toBe(true);
   });
 
@@ -375,15 +394,15 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
       id: 'opening-outside',
       type: 'window',
       center: { x: geom.siteBoundingRect.x + geom.siteBoundingRect.w + 5, y: 5 },
-      wallId: bestCandidate.floors[0].walls[0]?.id ?? 'wall-0',
+      wallId: bestCandidate!.floors[0].walls[0]?.id ?? 'wall-0',
       width: 1,
       height: 1,
       sill: 0.9,
       wallDir: { x: 1, y: 0 },
       normal: { x: 0, y: 1 },
     } as any;
-    bestCandidate.floors[0].openings.push(outsideOpening);
-    const findings = validateSite(bestCandidate);
+    bestCandidate!.floors[0].openings.push(outsideOpening);
+    const findings = validateSite(bestCandidate!);
     expect(findings.some(f => f.code === 'SITE_OPENING_OUTSIDE_BUILDABLE' && f.severity === 'hard')).toBe(true);
   });
 
@@ -397,10 +416,10 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
       type: 'bed-double',
       rect: { x: geom.siteBoundingRect.x + geom.siteBoundingRect.w + 5, y: 0, w: 1.6, h: 2 },
       rotation: 0,
-      spaceId: bestCandidate.floors[0].spaces[0].id,
+      spaceId: bestCandidate!.floors[0].spaces[0].id,
     } as any;
-    (bestCandidate.floors[0] as any).furniture = [...((bestCandidate.floors[0] as any).furniture ?? []), outsideFurn];
-    const findings = validateSite(bestCandidate);
+    (bestCandidate!.floors[0] as any).furniture = [...((bestCandidate!.floors[0] as any).furniture ?? []), outsideFurn];
+    const findings = validateSite(bestCandidate!);
     expect(findings.some(f => f.code === 'SITE_FURNITURE_OUTSIDE_BUILDABLE' && f.severity === 'hard')).toBe(true);
   });
 
@@ -408,7 +427,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const room = bestCandidate.floors[0].spaces[0];
+    const room = bestCandidate!.floors[0].spaces[0];
     const outsideFurn = {
       id: 'f-outside-room',
       type: 'bed-double',
@@ -416,8 +435,8 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
       rotation: 0,
       spaceId: room.id,
     } as any;
-    (bestCandidate.floors[0] as any).furniture = [...((bestCandidate.floors[0] as any).furniture ?? []), outsideFurn];
-    const findings = validateSite(bestCandidate);
+    (bestCandidate!.floors[0] as any).furniture = [...((bestCandidate!.floors[0] as any).furniture ?? []), outsideFurn];
+    const findings = validateSite(bestCandidate!);
     // Could be either outside buildable or outside room, both HARD
     expect(findings.some(f => f.code.startsWith('SITE_FURNITURE') && f.severity === 'hard')).toBe(true);
   });
@@ -429,10 +448,10 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     const geom = computeBuildableGeometry(input.site as any);
-    if (bestCandidate.floors[0].stairs.length > 0) {
+    if (bestCandidate!.floors[0].stairs.length > 0) {
       const outsideRect = { x: geom.siteBoundingRect.x + geom.siteBoundingRect.w + 5, y: 0, w: 3, h: 5 };
-      (bestCandidate.floors[0].stairs[0] as any).footprint = outsideRect;
-      const findings = validateSite(bestCandidate);
+      (bestCandidate!.floors[0].stairs[0] as any).footprint = outsideRect;
+      const findings = validateSite(bestCandidate!);
       expect(findings.some(f => f.code === 'SITE_STAIR_OUTSIDE_BUILDABLE' && f.severity === 'hard')).toBe(true);
     }
   });
@@ -448,8 +467,8 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
       index: 99,
       rect: { x: geom.siteBoundingRect.x + geom.siteBoundingRect.w + 5, y: 0, w: 2.5, h: 5 },
     } as any;
-    bestCandidate.floors[0].parkingStalls.push(outsideStall);
-    const findings = validateSite(bestCandidate);
+    bestCandidate!.floors[0].parkingStalls.push(outsideStall);
+    const findings = validateSite(bestCandidate!);
     expect(findings.some(f => f.code === 'SITE_PARKING_OUTSIDE_SITE' && f.severity === 'hard')).toBe(true);
   });
 
@@ -458,7 +477,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
     input.building.floors = 1;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const findings = validateSite(bestCandidate);
+    const findings = validateSite(bestCandidate!);
     const hard = findings.filter(f => f.severity === 'hard' && f.code.startsWith('SITE_'));
     expect(hard.length).toBe(0);
   });
@@ -498,15 +517,20 @@ describe('Phase 10.1 — 4. Area semantics', () => {
   });
 
   it('cross-output consistency actual areas', async () => {
+    // Phase 13.2: original tight L 15x20 notch 5x6 (with setbacks, 2F) is below-minimum geometry →
+    // INFEASIBLE result and exportAll refuses it; verification kept alive on the feasible L 20x25 notch 8x10.
     const input = baseInput();
     (input.site as any).shape = 'l-shape';
-    (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    (input.site as any).lShape = { width: 20, length: 25, notchWidth: 8, notchLength: 10, notchCorner: 'north-east' };
+    input.site.width = 20;
+    input.site.length = 25;
     (input.site as any).setbacks = { north: 2, south: 3, east: 2, west: 2 };
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const { docModel, report, manifest } = await exportAll(prj, bestCandidate);
+    expect(bestCandidate).not.toBeNull();
+    const { docModel, report, manifest } = await exportAll(prj, bestCandidate!);
     const geom = computeBuildableGeometry(input.site as any);
     // docModel site area should be actual site area
     expect(docModel.site.area).toBeCloseTo(geom.siteArea, 1);
@@ -528,7 +552,7 @@ describe('Phase 10.1 — 4. Area semantics', () => {
     (input.site as any).setbacks = { north: 1, south: 1, east: 1, west: 1 };
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const { docModel } = await exportAll(prj, bestCandidate);
+    const { docModel } = await exportAll(prj, bestCandidate!);
     const geom = computeBuildableGeometry(input.site as any);
     expect(docModel.areaSummary.buildingFootprint).toBeCloseTo(geom.buildableArea, 1);
     // For rectangle, actual == bounding
@@ -538,21 +562,27 @@ describe('Phase 10.1 — 4. Area semantics', () => {
 
 describe('Phase 10.1 — determinism and performance', () => {
   it('same input+seed produces identical site geometry, buildable geometry, candidate IDs, quality, DXF geometry', () => {
+    // Phase 13.2: original tight L 15x20 notch 5x6 is below-minimum geometry → INFEASIBLE;
+    // determinism verification kept alive on the feasible L 20x25 notch 8x10.
     const input = baseInput();
     (input.site as any).shape = 'l-shape';
-    (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'north-east' };
+    (input.site as any).lShape = { width: 20, length: 25, notchWidth: 8, notchLength: 10, notchCorner: 'north-east' };
+    input.site.width = 20;
+    input.site.length = 25;
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj1 = createProject(input);
     const { bestCandidate: c1 } = generate(prj1);
-    const dxf1 = writeDXF(c1, 'Test');
+    expect(c1).not.toBeNull();
+    const dxf1 = writeDXF(c1!, 'Test');
     const prj2 = createProject(input);
     const { bestCandidate: c2 } = generate(prj2);
-    const dxf2 = writeDXF(c2, 'Test');
-    expect(c1.id).toBe(c2.id);
+    expect(c2).not.toBeNull();
+    const dxf2 = writeDXF(c2!, 'Test');
+    expect(c1!.id).toBe(c2!.id);
     expect((c1 as any).siteAreaValue).toBe((c2 as any).siteAreaValue);
     expect((c1 as any).buildableAreaValue).toBe((c2 as any).buildableAreaValue);
-    expect(c1.floors.length).toBe(c2.floors.length);
+    expect(c1!.floors.length).toBe(c2!.floors.length);
     expect(dxf1).toBe(dxf2);
   });
 

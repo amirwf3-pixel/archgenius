@@ -58,19 +58,19 @@ describe('Room boundary integrity (regression: 5 mm drift)', () => {
           deterministic: true, seed,
         });
         const { bestCandidate } = generate(prj);
-        const vr = validateCandidate(bestCandidate);
+        const vr = validateCandidate(bestCandidate!);
         const geo = vr.hard.filter(h => h.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
         if (s.w <= 10) {
           if (geo.length > 0) {
             expect(vr.hard.length).toBeGreaterThan(0);
           } else {
-            for (const fl of bestCandidate.floors) {
+            for (const fl of bestCandidate!.floors) {
               expect(roomsInsideFootprint(fl.footprint, fl.spaces)).toBe(true);
             }
             expect(geo).toEqual([]);
           }
         } else {
-          for (const fl of bestCandidate.floors) {
+          for (const fl of bestCandidate!.floors) {
             expect(roomsInsideFootprint(fl.footprint, fl.spaces)).toBe(true);
           }
           expect(geo).toEqual([]);

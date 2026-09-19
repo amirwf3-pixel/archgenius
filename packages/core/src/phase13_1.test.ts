@@ -98,11 +98,11 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
         seed: 42,
       }));
       const { bestCandidate } = generate(prj);
-      const vr = validateCandidate(bestCandidate);
+      const vr = validateCandidate(bestCandidate!);
       // If feasible, no HARD_CONSTRAINT_INFEASIBLE_DIMENSION
       const dimHard = vr.hard.filter((x: any) => x.code === 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
       if (dimHard.length === 0) {
-        for (const fl of bestCandidate.floors) for (const sp of fl.spaces) {
+        for (const fl of bestCandidate!.floors) for (const sp of fl.spaces) {
           const minW = sp.minWidth ?? 0.9;
           expect(sp.rect.w + 1e-6, `${f.w}x${f.l} ${sp.type} w>=min`).toBeGreaterThanOrEqual(minW - 0.05);
         }
@@ -118,10 +118,10 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
       seed: 42,
     }));
     const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     const dimHard = vr.hard.filter((f: any) => f.code === 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
     expect(dimHard.length).toBe(0);
-    for (const fl of bestCandidate.floors) for (const sp of fl.spaces) {
+    for (const fl of bestCandidate!.floors) for (const sp of fl.spaces) {
       const minA = sp.minArea ?? 0;
       if (minA > 0) expect(sp.area + 1e-6).toBeGreaterThanOrEqual(minA - 0.1);
     }
@@ -137,7 +137,7 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
     const { bestCandidate, candidates } = generate(prj, { allStrategies: true });
     // All candidates must have positive dims
     for (const cand of candidates) checkNoInvalidGeom(cand);
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     expect(vr.hard.length).toBeGreaterThan(0);
   });
 
@@ -149,9 +149,17 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
       building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 0 },
       deterministic: true, seed: 42,
     } as any);
-    const { candidates, bestCandidate } = generate(prj, { allStrategies: true });
+    const { candidates, bestCandidate, infeasible } = generate(prj, { allStrategies: true });
     for (const cand of candidates) checkNoInvalidGeom(cand);
-    checkNoInvalidGeom(bestCandidate);
+    if (bestCandidate) {
+      checkNoInvalidGeom(bestCandidate);
+    } else {
+      // Phase 13.2: below-minimum L-shape → explicit INFEASIBLE with no usable candidate;
+      // the Phase 13.1 positivity guarantee still holds for diagnostic candidates.
+      expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      expect(infeasible!.diagnosticCandidates.length).toBeGreaterThan(0);
+      for (const d of infeasible!.diagnosticCandidates) checkNoInvalidGeom(d);
+    }
   });
 
   // H: 8-vertex polygon no negative
@@ -179,7 +187,7 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
         seed: 42,
       }));
       const { bestCandidate } = generate(prj);
-      const vr = validateCandidate(bestCandidate);
+      const vr = validateCandidate(bestCandidate!);
       const geoOut = vr.hard.filter((f: any) => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT' || f.code === 'SITE_ROOM_OUTSIDE_BUILDABLE');
       // If feasible (no infeasible dim hard), geoOut must be 0
       const dimHard = vr.hard.filter((f: any) => f.code === 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
@@ -195,7 +203,7 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
       seed: 42,
     }));
     const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     checkNoInvalidGeom(bestCandidate);
     const overlap = vr.hard.filter((f: any) => f.code === 'GEO_ROOM_OVERLAPPING');
     expect(overlap.length).toBe(0);
@@ -250,7 +258,7 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
         seed,
       }));
       const { bestCandidate } = generate(prj);
-      return validateCandidate(bestCandidate).hard.length;
+      return validateCandidate(bestCandidate!).hard.length;
     };
     const h1 = make(1);
     const h2 = make(1);
@@ -267,7 +275,7 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
     const { bestCandidate } = generate(prj, { allStrategies: true });
     checkNoInvalidGeom(bestCandidate);
     // Even if infeasible, must have explicit HARD
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     expect(vr.hard.length).toBeGreaterThan(0);
   });
 
@@ -279,7 +287,7 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
       seed: 42,
     }));
     const { bestCandidate } = generate(prj);
-    for (const fl of bestCandidate.floors) {
+    for (const fl of bestCandidate!.floors) {
       for (const sp of fl.spaces) {
         expect(sp.rect.w).toBeGreaterThan(0);
         expect(sp.rect.h).toBeGreaterThan(0);

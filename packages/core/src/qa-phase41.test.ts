@@ -14,7 +14,7 @@ describe('12x18 / 2-bed / 1-story / seed 1 regression', () => {
       deterministic: true, seed: 1,
     });
     const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     const geo = vr.hard.filter(f => f.code.startsWith('GEO_'));
     const circ = vr.hard.filter(f => f.code.startsWith('CIRC_'));
     const stair = vr.hard.filter(f => f.code.startsWith('STAIR_'));
@@ -140,7 +140,7 @@ describe('Stair door access', () => {
       deterministic: true, seed: 42,
     });
     const { bestCandidate } = generate(prj);
-    const fl = bestCandidate.floors[0];
+    const fl = bestCandidate!.floors[0];
     const stairSpace = fl.spaces.find(s=>s.type==='stair-hall');
     expect(stairSpace).toBeTruthy();
     // Find walls that belong to stair-hall and also to another space (shared wall).
@@ -171,9 +171,12 @@ describe('Impossible stair fallback', () => {
       building: { type: 'villa', floors: 2, bedrooms: 1, masterBedrooms: 0, bathrooms: 1, wc: 0, kitchenType: 'closed', parkingSpaces: 0, hasStair: true },
       deterministic: true, seed: 1,
     });
-    const { candidates } = generate(prj, { allStrategies: true });
+    const { candidates, infeasible } = generate(prj, { allStrategies: true });
+    // Phase 13.2: when the site is below-minimum geometry the usable candidates list is empty —
+    // the generated (diagnostic) candidates still expose the stair fallback semantics.
+    const generated = [...candidates, ...(infeasible ? infeasible.diagnosticCandidates : [])];
     // At least one candidate will have fallback stair (valid=false) and HARD findings.
-    const withFallback = candidates.filter(c=>c.floors[0].stairs[0] && c.floors[0].stairs[0].valid===false);
+    const withFallback = generated.filter(c=>c.floors[0].stairs[0] && c.floors[0].stairs[0].valid===false);
     if (withFallback.length>0) {
       const st = withFallback[0].floors[0].stairs[0];
       expect(st.explanation.join(' ')).toContain('NO_FEASIBLE');
@@ -198,7 +201,7 @@ describe('DXF QA per layer', () => {
       deterministic: true, seed: 42,
     });
     const { bestCandidate } = generate(prj);
-    const { dxf, validation } = exportDXF(bestCandidate, 'qa');
+    const { dxf, validation } = exportDXF(bestCandidate!, 'qa');
     expect(validation.ok).toBe(true);
     // Parse DXF lines for layer counts.
     const lines = dxf.split(/\r?\n/);
@@ -248,7 +251,15 @@ describe('Regression matrix', () => {
         building: { type: 'villa', floors: s.floors, bedrooms: s.beds, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1, hasStair: s.floors>1, hasStorage: s.floors>1 },
         deterministic: true, seed: s.seed,
       });
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate, infeasible } = generate(prj);
+      if (!bestCandidate) {
+        // Phase 13.2 CASE A: below-minimum geometry (8x12 for this program) → explicit INFEASIBLE
+        // result — honest, not silent: no usable candidate is exposed.
+        expect(infeasible).not.toBeNull();
+        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        expect(infeasible!.diagnosticCandidates.length).toBeGreaterThan(0);
+        return;
+      }
       const vr = validateCandidate(bestCandidate);
       const geoHard = vr.hard.filter(f=>f.code.startsWith('GEO_')).length;
       const circHard = vr.hard.filter(f=>f.code.startsWith('CIRC_')).length;

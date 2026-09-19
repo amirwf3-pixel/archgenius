@@ -137,7 +137,7 @@ describe('Phase12 D: Constraint-aware placement for feasible sites', () => {
     });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     // For feasible 15x20, we expect 0 CONSTRAINT_DIRECT_ACCESS hard (or at least fewer than before)
     const directHard = vr.hard.filter(f => f.code === 'CONSTRAINT_DIRECT_ACCESS');
     // Should be 0 for feasible large site
@@ -211,8 +211,8 @@ describe('Phase12 H: Locks absolute', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
-    const locked = lockRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, lockKind: 'all' });
+    const space = bestCandidate!.floors[0].spaces[0];
+    const locked = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'all' });
     expect(locked.success).toBe(true);
     const moved = moveRoom(locked.candidate!, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 10, newY: space.rect.y });
     expect(moved.success).toBe(false);
@@ -286,7 +286,7 @@ describe('Phase12 L: Multi-floor preserved', () => {
       });
       const prj = createProject(input);
       const { bestCandidate } = generate(prj);
-      expect(bestCandidate.floors.length).toBe(floors);
+      expect(bestCandidate!.floors.length).toBe(floors);
     });
   }
 });
@@ -297,7 +297,7 @@ describe('Phase12 M: Site compatibility', () => {
     const input = baseInput({ site: { shape: 'rectangle', width: 15, length: 20, accessSide: 'south', streetWidth: 8 } as any });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    expect(bestCandidate.floors[0].spaces.length).toBeGreaterThan(0);
+    expect(bestCandidate!.floors[0].spaces.length).toBeGreaterThan(0);
   });
 
   it('L-shape site', () => {
@@ -312,8 +312,15 @@ describe('Phase12 M: Site compatibility', () => {
       } as any,
     });
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
-    expect(bestCandidate.floors[0].spaces.length).toBeGreaterThan(0);
+    const { bestCandidate, infeasible } = generate(prj);
+    // Phase 13.2: tight L 15x20 notch 5x5 is below-minimum geometry → explicit INFEASIBLE;
+    // generation still produced geometry on diagnostic candidates.
+    if (!bestCandidate) {
+      expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      expect(infeasible!.diagnosticCandidates[0].floors[0].spaces.length).toBeGreaterThan(0);
+    } else {
+      expect(bestCandidate.floors[0].spaces.length).toBeGreaterThan(0);
+    }
   });
 
   it('tight setbacks', () => {
@@ -322,7 +329,7 @@ describe('Phase12 M: Site compatibility', () => {
     });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     // Should not have GEO outside hard for tight setbacks
     const geo = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
     expect(geo.length).toBe(0);
@@ -345,7 +352,7 @@ describe('Phase12 O: Outputs DXF actual polygons', () => {
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     const { exportDXF } = await import('./pipeline.js');
-    const { dxf } = exportDXF(bestCandidate, 'test');
+    const { dxf } = exportDXF(bestCandidate!, 'test');
     expect(dxf).toContain('A-ROOM');
     expect(dxf.length).toBeGreaterThan(1000);
   });
@@ -382,7 +389,27 @@ describe('Phase12 Adversarial matrix', () => {
         seed: 42,
       };
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate, infeasible } = generate(prj);
+      if (!bestCandidate) {
+        // Phase 13.2 CASE A: no candidate satisfies minimum geometry → explicit INFEASIBLE result.
+        // No silent fallback: bestCandidate is null, usable candidates are empty, and the
+        // diagnostic candidates carry explicit HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings.
+        expect(infeasible).not.toBeNull();
+        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        expect(infeasible!.explanation).toBeTruthy();
+        expect(infeasible!.attempts.length).toBeGreaterThan(0);
+        expect(prj.candidates).toEqual([]);
+        for (const d of infeasible!.diagnosticCandidates) {
+          expect(d.floors[0].spaces.length).toBeGreaterThan(0);
+          expect(d.findings.some((f: any) => f.code === 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION' && f.severity === 'hard')).toBe(true);
+          for (const fl of d.floors) for (const s of fl.spaces) {
+            // Phase 13.1 guarantee intact even on diagnostics: no zero/negative geometry.
+            expect(s.rect.w).toBeGreaterThan(0);
+            expect(s.rect.h).toBeGreaterThan(0);
+          }
+        }
+        return;
+      }
       const vr = validateCandidate(bestCandidate);
       // Should not crash, should have at least some spaces
       expect(bestCandidate.floors[0].spaces.length).toBeGreaterThan(0);

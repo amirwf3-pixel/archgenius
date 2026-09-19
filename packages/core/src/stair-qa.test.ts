@@ -107,7 +107,7 @@ describe('Multi-floor alignment (18×25 2-story, 15×22 3-story)', () => {
       });
       const { bestCandidate } = generate(prj);
       let prev: any = null;
-      for (const fl of bestCandidate.floors) {
+      for (const fl of bestCandidate!.floors) {
         expect(fl.stairs.length).toBeGreaterThanOrEqual(1);
         const st = fl.stairs[0];
         expect(st.type).toBe('u-stair');
@@ -133,7 +133,7 @@ describe('Multi-floor alignment (18×25 2-story, 15×22 3-story)', () => {
         }
         prev = st;
       }
-      const vr = validateCandidate(bestCandidate);
+      const vr = validateCandidate(bestCandidate!);
       const stairHards = vr.hard.filter(h => h.code.startsWith('STAIR_'));
       expect(stairHards).toEqual([]);
     });
@@ -164,13 +164,13 @@ describe('Determinism', () => {
       return generate(prj).bestCandidate;
     };
     const a = mk(), b = mk();
-    expect(a.floors[0].stairs.length).toBeGreaterThan(0);
-    const sa = JSON.stringify(a.floors[0].stairs[0]);
-    const sb = JSON.stringify(b.floors[0].stairs[0]);
+    expect(a!.floors[0].stairs.length).toBeGreaterThan(0);
+    const sa = JSON.stringify(a!.floors[0].stairs[0]);
+    const sb = JSON.stringify(b!.floors[0].stairs[0]);
     expect(sa).toEqual(sb);
-    expect(a.findings.map(f=>f.code).sort()).toEqual(b.findings.map(f=>f.code).sort());
-    const dxfA = exportDXF(a, 'det').dxf;
-    const dxfB = exportDXF(b, 'det').dxf;
+    expect(a!.findings.map(f=>f.code).sort()).toEqual(b!.findings.map(f=>f.code).sort());
+    const dxfA = exportDXF(a!, 'det').dxf;
+    const dxfB = exportDXF(b!, 'det').dxf;
     expect(dxfA.length).toEqual(dxfB.length);
   });
 });
@@ -184,7 +184,7 @@ describe('Furniture-on-stair detection', () => {
       deterministic:true, seed:42,
     });
     const { bestCandidate } = generate(prj);
-    const fl = bestCandidate.floors[0];
+    const fl = bestCandidate!.floors[0];
     const st = fl.stairs[0];
     // True positive: furniture on flight 0.
     const onFlight = { id:'crate', type:'chair', spaceId:'stair-block', rect:{...st.flights[0].footprint}, facing:0, clearanceRequired:false } as any;
@@ -211,7 +211,7 @@ describe('DXF stair geometry', () => {
       deterministic:true, seed:42,
     });
     const { bestCandidate } = generate(prj);
-    const { dxf, validation } = exportDXF(bestCandidate, 'u-stair dxf');
+    const { dxf, validation } = exportDXF(bestCandidate!, 'u-stair dxf');
     expect(validation.ok).toBe(true);
     expect(dxf).toContain('A-STAIR');
     expect(dxf).toContain('A-STAIR-TREAD');

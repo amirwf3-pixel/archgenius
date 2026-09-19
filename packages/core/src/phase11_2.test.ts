@@ -88,11 +88,11 @@ describe('Phase 11.2 Production MUST_BE_ADJACENT HARD', () => {
       deterministic: true, seed: 1,
     });
     const { bestCandidate } = generate(prj);
-    const vr = validateLayout(bestCandidate);
+    const vr = validateLayout(bestCandidate!);
     const geoHard = vr.hard.filter(f => f.code.startsWith('GEO_'));
     // Phase 13.1: after fixing negative width, 12x18 is feasible with 0 GEO hard, CONSTRAINT_ may be 0 as well
     expect(geoHard.length).toBe(0);
-    for (const s of bestCandidate.floors[0].spaces) {
+    for (const s of bestCandidate!.floors[0].spaces) {
       expect(s.rect.w).toBeGreaterThan(0);
       expect(s.rect.h).toBeGreaterThan(0);
     }
@@ -172,7 +172,7 @@ describe('Phase 11.2 Editing breaks HARD → rejected', () => {
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     // Find a candidate that currently satisfies at least one hard adjacency, then break it via move that causes site hard? For simplicity test size hard via constraints
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const space = floor.spaces[0];
     const cloned = JSON.parse(JSON.stringify(bestCandidate));
     const s = cloned.floors[0].spaces.find((sp: any) => sp.id === space.id);
@@ -186,9 +186,9 @@ describe('Phase 11.2 Editing breaks HARD → rejected', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const a = bestCandidate.floors[0].spaces[0];
-    const b = bestCandidate.floors[0].spaces[1];
-    const locked = lockRoom(bestCandidate, { floorLevel: 0, spaceId: a.id, lockKind: 'all' });
+    const a = bestCandidate!.floors[0].spaces[0];
+    const b = bestCandidate!.floors[0].spaces[1];
+    const locked = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: a.id, lockKind: 'all' });
     expect(locked.success).toBe(true);
     const res = moveRoom(locked.candidate!, { floorLevel: 0, spaceId: b.id, newX: a.rect.x, newY: a.rect.y });
     expect(res.success).toBe(false);
@@ -294,8 +294,8 @@ describe('Phase 11.2 Canonical invariants after repair', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const space = bestCandidate.floors[0].spaces[0];
-    const res = moveRoom(bestCandidate, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.1, newY: space.rect.y });
+    const space = bestCandidate!.floors[0].spaces[0];
+    const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.1, newY: space.rect.y });
     if (res.success) {
       const ns = res.candidate!.floors[0].spaces.find((s: any) => s.id === space.id);
       expect(ns.area).toBeCloseTo(polygonArea(ns.polygon), 3);

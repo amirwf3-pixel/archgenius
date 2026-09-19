@@ -63,7 +63,7 @@ describe('Phase13 A: Graph-driven placement ordering', () => {
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     // Explanation should contain Phase13 generic graph and clusters
-    const expl = bestCandidate.explanations.join(' ');
+    const expl = bestCandidate!.explanations.join(' ');
     expect(expl).toContain('Phase13 generic graph');
     expect(expl).toContain('Phase13 clusters');
     expect(expl).toContain('Phase13 private types ordered');
@@ -80,14 +80,14 @@ describe('Phase13 B: Generic MUST_BE_ADJACENT', () => {
     });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const entrance = floor.spaces.find(s => s.type === 'entrance');
     const foyer = floor.spaces.find(s => s.type === 'foyer');
     if (entrance && foyer) {
       const shared = sharedWallEdges(entrance.polygon, foyer.polygon);
       expect(shared.length).toBeGreaterThan(0);
     }
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     const hardAdj = vr.hard.filter(f => f.code === 'CONSTRAINT_MUST_ADJACENT' && f.message.includes('Entrance'));
     // Entrance-foyer should be satisfied (0 hard for that specific pair) when entrancePatch exists
     // We check that not all MUST_BE_ADJACENT are failing
@@ -105,11 +105,11 @@ describe('Phase13 C: Generic DIRECT_ACCESS_REQUIRED', () => {
     });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     const directHard = vr.hard.filter(f => f.code === 'CONSTRAINT_DIRECT_ACCESS');
     expect(directHard.length).toBe(0);
     // Verify actual geometry
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const corridor = floor.spaces.find(s => s.type === 'corridor');
     const bedrooms = floor.spaces.filter(s => s.type.includes('bedroom'));
     expect(corridor).toBeDefined();
@@ -128,13 +128,13 @@ describe('Phase13 C: Generic DIRECT_ACCESS_REQUIRED', () => {
     });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     // Phase 13.1: after fixing negative width, 12x18 tight is feasible with min preserved
     const nonConstraintHard = vr.hard.filter(f => !f.code.startsWith('CONSTRAINT_') && !f.code.startsWith('HARD_CONSTRAINT'));
     // Allow only CONSTRAINT_ hards, but no GEO/min hard
     const geoHard = vr.hard.filter(f => f.code.startsWith('GEO_'));
     expect(geoHard.length).toBe(0);
-    for (const s of bestCandidate.floors[0].spaces) {
+    for (const s of bestCandidate!.floors[0].spaces) {
       expect(s.rect.w).toBeGreaterThan(0);
       expect(s.rect.h).toBeGreaterThan(0);
       if (s.type.includes('bedroom')) {
@@ -153,7 +153,7 @@ describe('Phase13 D: Generic MUST_BE_SEPARATED actively evaluated', () => {
     });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const floor = bestCandidate.floors[0];
+    const floor = bestCandidate!.floors[0];
     const bedrooms = floor.spaces.filter(s => s.type.includes('bedroom'));
     const entrances = floor.spaces.filter(s => s.type === 'entrance');
     for (const bed of bedrooms) {
@@ -162,7 +162,7 @@ describe('Phase13 D: Generic MUST_BE_SEPARATED actively evaluated', () => {
         expect(shared.length).toBe(0); // must be separated
       }
     }
-    const vr = validateCandidate(bestCandidate);
+    const vr = validateCandidate(bestCandidate!);
     const sepHard = vr.hard.filter(f => f.code === 'CONSTRAINT_MUST_SEPARATED');
     expect(sepHard.length).toBe(0);
   });
@@ -171,7 +171,7 @@ describe('Phase13 D: Generic MUST_BE_SEPARATED actively evaluated', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const expl = bestCandidate.explanations.join(' ');
+    const expl = bestCandidate!.explanations.join(' ');
     expect(expl).toContain('separation evaluated via sharedWallEdges');
   });
 });
@@ -182,7 +182,7 @@ describe('Phase13 E: Bounds actually enforced', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const expl = bestCandidate.explanations.join(' ');
+    const expl = bestCandidate!.explanations.join(' ');
     // Should contain bounded search attempt count
     expect(expl).toMatch(/bounded search: \d+ attempt\(s\) \(max 8\)/);
     // Extract attempt count
@@ -200,7 +200,7 @@ describe('Phase13 E: Bounds actually enforced', () => {
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const expl = bestCandidate.explanations.join(' ');
+    const expl = bestCandidate!.explanations.join(' ');
     expect(expl).toContain('repair≤4');
   });
 
@@ -218,7 +218,7 @@ describe('Phase13 E: Bounds actually enforced', () => {
     const prjMany = createProject(manyInput);
     const { bestCandidate: bestMany } = generate(prjMany);
     // Should still be ≤12 candidates
-    expect(bestMany.floors[0].spaces.length).toBeLessThanOrEqual(20); // reasonable
+    expect(bestMany!.floors[0].spaces.length).toBeLessThanOrEqual(20); // reasonable
   });
 });
 
@@ -258,7 +258,7 @@ describe('Phase13 F: Critical genericity test — graph drives placement', () =>
     const input = baseInput();
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const expl = bestCandidate.explanations.join(' ');
+    const expl = bestCandidate!.explanations.join(' ');
     // Should contain generic private clusters with types, not just bedroom-specific
     expect(expl).toContain('generic private clusters');
     // Should contain mustTouchCorridor derived from graph
@@ -325,26 +325,37 @@ describe('Phase13 H: Min dimensions remain hard', () => {
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 0, hasStair: false },
       });
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
-      const vr = validateCandidate(bestCandidate);
+      const { bestCandidate, infeasible } = generate(prj);
+      const vr = bestCandidate ? validateCandidate(bestCandidate) : null;
       if (site.feasible) {
         // For feasible sites, preserve min
-        for (const s of bestCandidate.floors[0].spaces) {
+        for (const s of bestCandidate!.floors[0].spaces) {
           if (s.minWidth) {
             expect(s.rect.w).toBeGreaterThanOrEqual(s.minWidth - 0.05);
             expect(s.rect.h).toBeGreaterThanOrEqual(Math.min(s.minLength ?? s.minWidth, s.minWidth) - 0.05);
           }
         }
-        const minHard = vr.hard.filter(f => f.code === 'ROOM_CONSTRAINT_MIN_WIDTH' || f.code === 'ROOM_CONSTRAINT_MIN_AREA');
+        const minHard = vr!.hard.filter(f => f.code === 'ROOM_CONSTRAINT_MIN_WIDTH' || f.code === 'ROOM_CONSTRAINT_MIN_AREA');
         expect(minHard.length).toBe(0);
-      } else {
+      } else if (bestCandidate) {
         // For tight/tiny sites, allow min violations but must not shrink below 0.9m unusable threshold, and must report explicit HARD
         for (const s of bestCandidate.floors[0].spaces) {
           expect(s.rect.w).toBeGreaterThanOrEqual(0.85);
           expect(s.rect.h).toBeGreaterThanOrEqual(0.85);
         }
         // Must have explicit HARD for infeasibility (either min area or direct access or GEO)
-        expect(vr.hard.length).toBeGreaterThan(0);
+        expect(vr!.hard.length).toBeGreaterThan(0);
+      } else {
+        // Phase 13.2 CASE A: no candidate satisfies minimum geometry → explicit INFEASIBLE result.
+        expect(infeasible).not.toBeNull();
+        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        // Unusable threshold (0.9m) still respected even on diagnostic-only candidates
+        for (const d of infeasible!.diagnosticCandidates) {
+          for (const s of d.floors[0].spaces) {
+            expect(s.rect.w).toBeGreaterThanOrEqual(0.85);
+            expect(s.rect.h).toBeGreaterThanOrEqual(0.85);
+          }
+        }
       }
     });
   }
@@ -361,10 +372,21 @@ describe('Phase13 I: Site containment', () => {
     for (const site of cases) {
       const input = baseInput({ site: { ...site, accessSide: 'south', streetWidth: 8 } as any });
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
-      const vr = validateCandidate(bestCandidate);
-      const geoOutside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
-      expect(geoOutside.length).toBe(0);
+      const { bestCandidate, infeasible } = generate(prj);
+      if (bestCandidate) {
+        const vr = validateCandidate(bestCandidate);
+        const geoOutside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
+        expect(geoOutside.length).toBe(0);
+      } else {
+        // Phase 13.2 CASE A: below-minimum geometry → explicit INFEASIBLE; the containment
+        // guarantee is still verified on the ranked-first diagnostic candidate (the same
+        // candidate Phase 13.1 would have exposed, now correctly marked non-usable).
+        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        const d = infeasible!.diagnosticCandidates[0];
+        const vr = validateCandidate(d);
+        const geoOutside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
+        expect(geoOutside.length).toBe(0);
+      }
     }
   });
 });
@@ -395,8 +417,8 @@ describe('Phase13 K: Stair regression', () => {
     });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    expect(bestCandidate.floors[0].stairs.length).toBeGreaterThanOrEqual(1);
-    const st = bestCandidate.floors[0].stairs[0];
+    expect(bestCandidate!.floors[0].stairs.length).toBeGreaterThanOrEqual(1);
+    const st = bestCandidate!.floors[0].stairs[0];
     expect(st.type).toBe('u-stair');
     expect(st.flights.length).toBe(2);
   });
@@ -411,8 +433,8 @@ describe('Phase13 L: Multi-floor 1F/2F/3F/6F/10F', () => {
       });
       const prj = createProject(input);
       const { bestCandidate } = generate(prj);
-      expect(bestCandidate.floors.length).toBe(floors);
-      const vr = validateCandidate(bestCandidate);
+      expect(bestCandidate!.floors.length).toBe(floors);
+      const vr = validateCandidate(bestCandidate!);
       const geoOutside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
       expect(geoOutside.length).toBe(0);
     });
@@ -427,14 +449,14 @@ describe('Phase13 M: Determinism', () => {
     const prj2 = createProject(input);
     const { bestCandidate: c1 } = generate(prj1);
     const { bestCandidate: c2 } = generate(prj2);
-    expect(c1.floors[0].spaces.length).toBe(c2.floors[0].spaces.length);
-    for (let i = 0; i < c1.floors[0].spaces.length; i++) {
-      const s1 = c1.floors[0].spaces[i];
-      const s2 = c2.floors[0].spaces[i];
+    expect(c1!.floors[0].spaces.length).toBe(c2!.floors[0].spaces.length);
+    for (let i = 0; i < c1!.floors[0].spaces.length; i++) {
+      const s1 = c1!.floors[0].spaces[i];
+      const s2 = c2!.floors[0].spaces[i];
       expect(s1.polygon).toEqual(s2.polygon);
       expect(s1.rect).toEqual(s2.rect);
     }
-    expect(c1.findings.map(f=>f.code).sort()).toEqual(c2.findings.map(f=>f.code).sort());
+    expect(c1!.findings.map(f=>f.code).sort()).toEqual(c2!.findings.map(f=>f.code).sort());
   });
 });
 
@@ -445,7 +467,7 @@ describe('Phase13 N: Output consistency', () => {
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     const { exportDXF } = await import('./pipeline.js');
-    const { dxf } = exportDXF(bestCandidate, 'test');
+    const { dxf } = exportDXF(bestCandidate!, 'test');
     expect(dxf).toContain('A-ROOM');
     expect(dxf).toContain('A-WALL-EXT');
   });
@@ -468,20 +490,35 @@ describe('Phase13 O: Adversarial matrix', () => {
       const site: any = c.shape === 'l-shape' ? { shape: 'l-shape', width: c.w, length: c.l, lShape: { width: c.w, length: c.l, notchWidth: 5, notchLength: 5, notchCorner: 'ne' }, accessSide: 'south', streetWidth: 8 } : c.shape === 'polygon' ? { shape: 'polygon', width: c.w, length: c.l, polygon: { vertices: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 5 }, { x: 15, y: 5 }, { x: 15, y: 15 }, { x: 10, y: 15 }, { x: 10, y: 20 }, { x: 0, y: 20 }] }, accessSide: 'south', streetWidth: 8 } : { shape: 'rectangle', width: c.w, length: c.l, accessSide: 'south', streetWidth: 8 };
       const input = baseInput({ site, seed: c.seed });
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
-      const vr = validateCandidate(bestCandidate);
-      if (c.feasible) {
-        const geoOutside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
-        expect(geoOutside.length).toBe(0);
-      } else {
-        // For infeasible, allow GEO outside but must have explicit HARD and no unusable <0.9
-        expect(vr.hard.length).toBeGreaterThan(0);
-        for (const s of bestCandidate.floors[0].spaces) {
-          expect(s.rect.w).toBeGreaterThanOrEqual(0.85);
-          expect(s.rect.h).toBeGreaterThanOrEqual(0.85);
+      const { bestCandidate, infeasible } = generate(prj);
+      if (!bestCandidate) {
+        // Phase 13.2 CASE A: below-minimum geometry → explicit INFEASIBLE, no usable candidate.
+        expect(infeasible).not.toBeNull();
+        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        expect(infeasible!.explanation).toContain('INFEASIBLE');
+        // Geometry was still generated and the unusable <0.9 threshold is still respected on diagnostics
+        for (const d of infeasible!.diagnosticCandidates) {
+          expect(d.floors[0].spaces.length).toBeGreaterThan(0);
+          for (const s of d.floors[0].spaces) {
+            expect(s.rect.w).toBeGreaterThanOrEqual(0.85);
+            expect(s.rect.h).toBeGreaterThanOrEqual(0.85);
+          }
         }
+      } else {
+        const vr = validateCandidate(bestCandidate);
+        if (c.feasible) {
+          const geoOutside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
+          expect(geoOutside.length).toBe(0);
+        } else {
+          // For infeasible, allow GEO outside but must have explicit HARD and no unusable <0.9
+          expect(vr.hard.length).toBeGreaterThan(0);
+          for (const s of bestCandidate.floors[0].spaces) {
+            expect(s.rect.w).toBeGreaterThanOrEqual(0.85);
+            expect(s.rect.h).toBeGreaterThanOrEqual(0.85);
+          }
+        }
+        expect(bestCandidate.floors[0].spaces.length).toBeGreaterThan(0);
       }
-      expect(bestCandidate.floors[0].spaces.length).toBeGreaterThan(0);
     });
   }
 });

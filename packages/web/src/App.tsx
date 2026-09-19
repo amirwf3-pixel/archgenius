@@ -184,12 +184,17 @@ export function App() {
         seed: Number(form.seed) || 42,
       };
       const prj = createProject(input);
-      const { candidates: cands } = generate(prj);
+      // Phase 13.2: infeasible results expose NO usable candidate — surface the explicit
+      // infeasible state instead of silently presenting a below-minimum plan.
+      const result = generate(prj);
       setProject(prj);
-      setCandidates(cands);
+      setCandidates(result.candidates);
       setSelectedIdx(0);
       setSelectedFloor(0);
-      setEditedCandidate(cands[0]);
+      setEditedCandidate(result.candidates[0] ?? null);
+      if (result.infeasible) {
+        setError(`INFEASIBLE — no geometrically valid candidate for this site/program.\n${result.infeasible.explanation}`);
+      }
     } catch (e: any) {
       setError(e?.message ?? String(e));
     } finally {

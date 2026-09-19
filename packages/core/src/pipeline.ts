@@ -26,10 +26,48 @@ export interface GenerateOptions {
   allStrategies?: boolean;
 }
 
+/** Phase 13.2: per-strategy diagnostic record for an infeasible generation result. */
+export interface InfeasibleStrategyAttempt {
+  strategy: CandidateStrategy;
+  candidateId: string;
+  /** Deterministic first-failing minimum-geometry reason (e.g. "minA master-bedroom a=9.10<12"). */
+  reason: string;
+}
+
+/**
+ * Phase 13.2: explicit INFEASIBLE result state.
+ *
+ * Returned when NO generated candidate satisfies the minimum-geometry contract
+ * (every room w>0, h>0, area>0, polygon>=3 vertices, minWidth, minLength, minArea).
+ * In this state the project has NO usable candidate:
+ *   - GenerateResult.bestCandidate is null
+ *   - GenerateResult.candidates is empty
+ *   - Project.candidates is empty and Project.selectedCandidateId is undefined
+ * diagnosticCandidates are retained for findings/explanation only — they carry
+ * HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings and must NEVER be treated as a
+ * normal architectural plan (DXF/XLSX/PDF/report/manifest generation refuses them).
+ */
+export interface InfeasibleResult {
+  code: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION';
+  severity: 'hard';
+  /** Deterministic human-readable explanation (same input+seed → same string). */
+  explanation: string;
+  /** Strategy attempts in the order strategies were requested (deterministic). */
+  attempts: InfeasibleStrategyAttempt[];
+  /** Number of candidates generated (all invalid/below-minimum). */
+  attemptedCandidates: number;
+  /** Invalid/below-minimum candidates retained for diagnostics ONLY — never usable plans. */
+  diagnosticCandidates: LayoutCandidate[];
+}
+
 export interface GenerateResult {
   project: Project;
+  /** Usable candidates: geometrically valid ONLY. Empty when infeasible. */
   candidates: LayoutCandidate[];
-  bestCandidate: LayoutCandidate;
+  /** Best usable candidate. null when no geometrically valid candidate exists (infeasible). */
+  bestCandidate: LayoutCandidate | null;
+  /** Explicit infeasible state; non-null only when no usable candidate exists. */
+  infeasible: InfeasibleResult | null;
 }
 
 export function createProject(input: ProjectInput): Project {
@@ -65,41 +103,17 @@ function isValidRoomGeometry(c: any): { valid: boolean; reason?: string } {
   return { valid: true };
 }
 
-export function generate(project: Project, opts: GenerateOptions = {}): GenerateResult {
-  const strategies = opts.strategies ?? [
-    'area-efficiency',
-    'functional-circulation',
-    'daylight-orientation',
-    'alternative-zoning',
-  ];
-  const all = generateLayouts(project.input, strategies);
-  // Phase 13.1: final feasibility gate — filter out geometrically invalid candidates (w<=0,h<=0,area<=0,below min)
-  const validCandidates: typeof all = [];
-  const invalidCandidates: typeof all = [];
-  for (const cand of all) {
-    const check = isValidRoomGeometry(cand);
-    if (check.valid) {
-      validCandidates.push(cand);
-    } else {
-      // Add explicit HARD finding for invalid geometry
-      cand.findings.push({
-        code: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
-        severity: 'hard',
-        message: `Phase13.1 invalid geometry filtered: ${check.reason} — explicit HARD infeasibility, no valid candidate with invalid geometry`,
-        ruleId: 'GEOM_VALIDATION',
-        reference: 'Phase13.1 feasibility gate',
-        status: 'VERIFIED',
-      } as any);
-      invalidCandidates.push(cand);
-    }
-  }
-  // If we have at least one geometrically valid candidate, rank among valid only
-  const toRank = validCandidates.length > 0 ? validCandidates : all;
-  const scored = toRank.map(c => {
+/**
+ * Phase 13.2: deterministic best-first ranking used both for usable candidates (feasible path)
+ * and for diagnostic candidates (infeasible path), so that diagnostics[0] is the least-bad
+ * attempt — the same candidate the Phase 13.1 fallback would have exposed, now correctly
+ * kept out of the usable result.
+ */
+function rankCandidatesBestFirst(cands: LayoutCandidate[], strategies: CandidateStrategy[]): LayoutCandidate[] {
+  const scored = cands.map(c => {
     const m = computeMetrics(c);
     const hardCount = c.findings.filter(f => f.severity === 'hard').length;
     const softCount = c.findings.filter(f => f.severity === 'soft').length;
-    // For validCandidates path, hardCount already excludes invalid geometry; for fallback all path, invalid geometry already has extra hard
     return { c, m, hardCount, softCount };
   });
   scored.sort((a, b) => {
@@ -110,37 +124,137 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     if (Math.abs(as - bs) > 1e-6) return bs - as;
     return strategies.indexOf(a.c.metadata.strategy) - strategies.indexOf(b.c.metadata.strategy);
   });
-  const candidates = scored.map(x => x.c);
-  const bestCandidate = candidates[0];
-  // If validCandidates empty, bestCandidate is from invalid set but now has explicit HARD and no negative dimensions (primary fix ensures positive)
-  // For strict Phase13.1 semantics, if all invalid, we still return best with HARD, but geometry must be valid (positive dims) — primary fix guarantees that
-  project.candidates = validCandidates.length > 0 ? validCandidates : candidates;
-  if (validCandidates.length === 0 && candidates.length > 0) {
-    // No valid candidate — mark project with explicit infeasibility explanation
-    bestCandidate.explanations.push(`Phase13.1: no geometrically valid candidate — all ${all.length} attempts produced invalid geometry, explicit HARD_CONSTRAINT_INFEASIBLE_DIMENSION, no valid candidate exposed`);
+  return scored.map(x => x.c);
+}
+
+export function generate(project: Project, opts: GenerateOptions = {}): GenerateResult {
+  const strategies = opts.strategies ?? [
+    'area-efficiency',
+    'functional-circulation',
+    'daylight-orientation',
+    'alternative-zoning',
+  ];
+  const all = generateLayouts(project.input, strategies);
+  // Phase 13.1: final feasibility gate — filter out geometrically invalid candidates (w<=0,h<=0,area<=0,below min)
+  // Phase 13.2: when NO valid candidate exists, return an explicit INFEASIBLE result —
+  // an invalid/below-min candidate is never selected as bestCandidate and never exposed as usable.
+  const validCandidates: typeof all = [];
+  const invalidCandidates: Array<{ cand: LayoutCandidate; reason: string }> = [];
+  for (const cand of all) {
+    const check = isValidRoomGeometry(cand);
+    if (check.valid) {
+      validCandidates.push(cand);
+    } else {
+      // Add explicit HARD finding for invalid geometry (preserved from Phase 13.1, reworded for 13.2 semantics)
+      cand.findings.push({
+        code: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
+        severity: 'hard',
+        message: `Phase13.2 infeasible dimension: ${check.reason} — candidate excluded from usable candidates (diagnostic only); when no valid candidate exists the result is INFEASIBLE with bestCandidate=null`,
+        ruleId: 'GEOM_VALIDATION',
+        reference: 'Phase13.2 infeasible result semantics',
+        status: 'VERIFIED',
+      } as any);
+      invalidCandidates.push({ cand, reason: check.reason ?? 'unknown geometry violation' });
+    }
   }
+
+  // Phase 13.2 CASE A: no geometrically valid candidate → explicit infeasible result, no usable candidate.
+  if (validCandidates.length === 0) {
+    const attempts: InfeasibleStrategyAttempt[] = [];
+    for (const strategy of strategies) {
+      const inv = invalidCandidates.find(x => x.cand.metadata.strategy === strategy);
+      if (inv) {
+        attempts.push({ strategy, candidateId: inv.cand.id, reason: inv.reason });
+      }
+    }
+    const attemptSummary = attempts.length > 0
+      ? attempts.map(a => `${a.strategy}: ${a.reason}`).join(' ; ')
+      : 'no candidates were generated';
+    const explanation =
+      `Phase13.2 INFEASIBLE: no geometrically valid candidate — ${attempts.length}/${strategies.length} strategy attempts, ` +
+      `0 satisfy the minimum-geometry contract (every room w>0, h>0, area>0, polygon>=3 vertices, minWidth, minLength, minArea). ` +
+      `First failure per strategy: ${attemptSummary}. ` +
+      `bestCandidate is null and no usable candidate is exposed; diagnostic candidates carry HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings. ` +
+      `This result must NOT be treated as a normal architectural plan.`;
+    const infeasible: InfeasibleResult = {
+      code: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
+      severity: 'hard',
+      explanation,
+      attempts,
+      attemptedCandidates: all.length,
+      // Best-first (same comparator as the feasible path): diagnostics[0] is the least-bad attempt.
+      diagnosticCandidates: rankCandidatesBestFirst(invalidCandidates.map(x => x.cand), strategies),
+    };
+    project.candidates = [];
+    project.selectedCandidateId = undefined;
+    project.updatedAt = Date.now();
+    return { project, candidates: [], bestCandidate: null, infeasible };
+  }
+
+  // Phase 13.2 feasible path: rank among valid candidates only (invalid ones are never ranked or exposed)
+  const candidates = rankCandidatesBestFirst(validCandidates, strategies);
+  const bestCandidate = candidates[0];
+  project.candidates = validCandidates;
   project.selectedCandidateId = bestCandidate.id;
   project.updatedAt = Date.now();
   if (opts.allStrategies) {
-    return { project, candidates: validCandidates.length > 0 ? validCandidates : candidates, bestCandidate };
+    return { project, candidates: validCandidates, bestCandidate, infeasible: null };
   }
-  return { project, candidates: [bestCandidate], bestCandidate };
+  return { project, candidates: [bestCandidate], bestCandidate, infeasible: null };
+}
+
+const INFEASIBLE_DIMENSION_CODE = 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION';
+
+/** Phase 13.2: true for candidates marked infeasible by the minimum-geometry gate (diagnostic-only). */
+function isDimensionInfeasibleCandidate(c: LayoutCandidate): boolean {
+  return c.findings.some(f => f.code === INFEASIBLE_DIMENSION_CODE);
+}
+
+/**
+ * Phase 13.2 downstream safety: output generation (DXF/XLSX/PDF/report/manifest)
+ * must never silently present an infeasible project as a normal architectural plan.
+ * Fails explicitly on a null candidate (infeasible result) or on a diagnostic-only
+ * candidate marked HARD_CONSTRAINT_INFEASIBLE_DIMENSION. Valid-geometry candidates
+ * with ordinary HARD site/constraint findings are NOT rejected here (CASE B semantics).
+ */
+function requireUsableCandidate(candidate: LayoutCandidate | null | undefined, operation: string): LayoutCandidate {
+  if (!candidate) {
+    throw new Error(
+      `${operation}: no usable candidate — the project is INFEASIBLE (${INFEASIBLE_DIMENSION_CODE}: no candidate satisfies minimum geometry). ` +
+      `Refusing to generate output for an infeasible project; adjust site dimensions or the building program.`,
+    );
+  }
+  if (isDimensionInfeasibleCandidate(candidate)) {
+    throw new Error(
+      `${operation}: candidate ${candidate.id} is marked ${INFEASIBLE_DIMENSION_CODE} (invalid/below-minimum geometry) and is diagnostic-only. ` +
+      `Refusing to generate output that would present it as a normal architectural plan.`,
+    );
+  }
+  return candidate;
 }
 
 export function validateCandidate(candidate: LayoutCandidate): ValidationResult {
+  if (!candidate) {
+    throw new Error('validateCandidate: candidate is null/undefined — the project is INFEASIBLE and has no candidate to validate.');
+  }
   return validateLayout(candidate);
 }
 
 export function exportDXF(candidate: LayoutCandidate, projectName = 'ArchGenius Plan', dxfOptions: { includeGenericLayers?: boolean } = {}): { dxf: string; validation: ReturnType<typeof validateDXFStructure> } {
+  requireUsableCandidate(candidate, 'exportDXF');
   const dxf = writeDXF(candidate, projectName, dxfOptions);
   return { dxf, validation: validateDXFStructure(dxf) };
 }
 
 export function summarizeValidation(candidate: LayoutCandidate): string {
+  if (!candidate) {
+    throw new Error('summarizeValidation: candidate is null/undefined — the project is INFEASIBLE and has no candidate to summarize.');
+  }
   return summarize(validateLayout(candidate));
 }
 
 export function buildDocumentation(project: Project, candidate: LayoutCandidate): DocumentationModel {
+  requireUsableCandidate(candidate, 'buildDocumentation');
   return buildDocumentationModel(project, candidate);
 }
 
@@ -152,6 +266,8 @@ export async function exportAll(project: Project, candidate: LayoutCandidate): P
   report: QAReport;
   manifest: ProjectManifest;
 }> {
+  // Phase 13.2 downstream safety: refuse to generate a full output set for an infeasible project.
+  requireUsableCandidate(candidate, 'exportAll');
   const docModel = buildDocumentationModel(project, candidate);
   const dxf = writeDXF(candidate, project.input.name, { includeGenericLayers: true });
   const pdf = await generatePDF(docModel, candidate);

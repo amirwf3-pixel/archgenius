@@ -24,6 +24,10 @@ async function main() {
   };
   const prj = createProject(input);
   const { bestCandidate } = (await import('../pipeline.js')).generate(prj);
+  // Phase 13.2: infeasible results expose no usable candidate — refuse to generate samples.
+  if (!bestCandidate) {
+    throw new Error('Sample project produced no geometrically valid candidate (INFEASIBLE) — refusing to generate sample outputs.');
+  }
   const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate);
 
   const outDir = '/home/user/archgenius/outputs';

@@ -45,7 +45,7 @@ describe('Phase 9.1 — Obsolete scoring scope cannot reappear', () => {
       }
       const prj = createProject(input);
       const { bestCandidate } = generate(prj);
-      const evalC = evaluateCandidate(bestCandidate);
+      const evalC = evaluateCandidate(bestCandidate!);
       // Whole-building scope must be Whole-Building, not legacy
       expect(evalC.intelligenceScope).not.toContain('not evaluated');
       expect(evalC.intelligenceScope).not.toContain('Ground Floor Intelligence —');
@@ -78,7 +78,7 @@ describe('Phase 9.1 — Obsolete scoring scope cannot reappear', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const evalC = evaluateCandidate(bestCandidate);
+    const evalC = evaluateCandidate(bestCandidate!);
     const allScopes = [
       evalC.intelligenceScope,
       evalC.quality.intelligenceScope,
@@ -101,7 +101,7 @@ describe('Phase 9.1 — Multi-floor scope correctness', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const evalC = evaluateCandidate(bestCandidate);
+    const evalC = evaluateCandidate(bestCandidate!);
     expect(evalC.perFloor[0].intelligenceScope).toBe('Floor 0 Intelligence — Ground Floor');
     expect(evalC.perFloor[1].intelligenceScope).toBe('Floor 1 Intelligence');
     expect(evalC.perFloor[2].intelligenceScope).toBe('Floor 2 Intelligence');
@@ -118,8 +118,8 @@ describe('Phase 9.1 — DXF generic layer backward compatibility + no duplicate 
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxfWithGeneric = writeDXF(bestCandidate, 'Test', { includeGenericLayers: true });
-    const dxfWithoutGeneric = writeDXF(bestCandidate, 'Test', { includeGenericLayers: false });
+    const dxfWithGeneric = writeDXF(bestCandidate!, 'Test', { includeGenericLayers: true });
+    const dxfWithoutGeneric = writeDXF(bestCandidate!, 'Test', { includeGenericLayers: false });
 
     // Authoritative layers present in both
     expect(dxfWithGeneric).toContain('A-FLOOR-0-A-WALL-EXT');
@@ -145,16 +145,16 @@ describe('Phase 9.1 — DXF generic layer backward compatibility + no duplicate 
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'Test');
+    const dxf = writeDXF(bestCandidate!, 'Test');
     // All floors represented
     expect(dxf).toContain('A-FLOOR-0-A-WALL-EXT');
     expect(dxf).toContain('A-FLOOR-1-A-WALL-EXT');
     expect(dxf).toContain('A-FLOOR-2-A-WALL-EXT');
     // No second geometry: candidate.floors is single source, DXF shifts by FLOOR_GAP_M for presentation
-    expect(bestCandidate.floors.length).toBe(3);
+    expect(bestCandidate!.floors.length).toBe(3);
     // Checksum consistency across doc/manifest
-    const doc = buildDocumentation(prj, bestCandidate);
-    const manifest = buildManifest(doc, prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
+    const manifest = buildManifest(doc, prj, bestCandidate!);
     expect(doc.consistency.checksum).toBe(manifest.consistency.checksum);
     expect(doc.consistency.checksum).toBe(manifest.generation.checksum);
   });
@@ -165,13 +165,13 @@ describe('Phase 9.1 — DXF generic layer backward compatibility + no duplicate 
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const dxf = writeDXF(bestCandidate, 'Test');
+    const dxf = writeDXF(bestCandidate!, 'Test');
     // Should contain STAIR STACK marker indicating whole-building presentation
     expect(dxf).toContain('STAIR STACK');
     expect(dxf).toContain('Whole-Building');
     // Elevation is stored in Floor.elevation, not DXF Y offset
-    expect(bestCandidate.floors[0].elevation).toBe(0);
-    expect(bestCandidate.floors[1].elevation).toBe(3.2);
+    expect(bestCandidate!.floors[0].elevation).toBe(0);
+    expect(bestCandidate!.floors[1].elevation).toBe(3.2);
   });
 });
 
@@ -182,7 +182,7 @@ describe('Phase 9.1 — Explicit footprint reconciliation scope', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     const recon = doc.areaSummary.reconciliation;
     // Explanations must explicitly label scopes
     const explanations = recon.explanation.join(' ');
@@ -201,9 +201,9 @@ describe('Phase 9.1 — Explicit footprint reconciliation scope', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     // Ground rooms sum != total room area for multi-floor
-    const groundRoomsSum = bestCandidate.floors[0].spaces.reduce((s, sp) => s + sp.area, 0);
+    const groundRoomsSum = bestCandidate!.floors[0].spaces.reduce((s, sp) => s + sp.area, 0);
     const totalRooms = doc.areaSummary.totalRoomArea;
     expect(totalRooms).toBeGreaterThan(groundRoomsSum);
     // footprintVsRooms roomsSum is ground only
@@ -220,14 +220,14 @@ describe('Phase 9.1 — PDF drawing number semantics', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     // Drawing number must be WB, not F0
     expect(doc.drawing.drawingNumber).toContain('-WB');
     expect(doc.drawing.drawingNumber).not.toBe('AG-');
-    expect(doc.drawing.drawingNumber).toBe(`AG-${bestCandidate.id}-WB`);
+    expect(doc.drawing.drawingNumber).toBe(`AG-${bestCandidate!.id}-WB`);
     expect(doc.drawing.drawingNumber).not.toContain('-F0'); // whole-building identifier must not contain F0
     // PDF generation uses WB-F{level}
-    const { pdf } = await exportAll(prj, bestCandidate);
+    const { pdf } = await exportAll(prj, bestCandidate!);
     expect(pdf.length).toBeGreaterThan(1000);
     // The PDF text is binary, but we can check docModel drawingNumber logic
     // Per-floor pages will use drawingNumber + "-F{level}" => AG-...-WB-F0 etc, which is allowed
@@ -243,10 +243,10 @@ describe('Phase 9.1 — PDF drawing number semantics', () => {
     input.seed = 42;
     const prj1 = createProject(input);
     const { bestCandidate: bc1 } = generate(prj1);
-    const doc1 = buildDocumentation(prj1, bc1);
+    const doc1 = buildDocumentation(prj1, bc1!);
     const prj2 = createProject(input);
     const { bestCandidate: bc2 } = generate(prj2);
-    const doc2 = buildDocumentation(prj2, bc2);
+    const doc2 = buildDocumentation(prj2, bc2!);
     expect(doc1.drawing.drawingNumber).toBe(doc2.drawing.drawingNumber);
   });
 });
@@ -258,7 +258,7 @@ describe('Phase 9.1 — XLSX stacking details', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const { docModel, xlsx } = await exportAll(prj, bestCandidate);
+    const { docModel, xlsx } = await exportAll(prj, bestCandidate!);
     expect(docModel.intelligence!.stacking.details).toBeDefined();
     expect(Array.isArray(docModel.intelligence!.stacking.details)).toBe(true);
     // Details should have structured fields
@@ -286,7 +286,7 @@ describe('Phase 9.1 — XLSX stacking details', () => {
     input.site.length = 30;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate);
+    const doc = buildDocumentation(prj, bestCandidate!);
     const details = doc.intelligence!.stacking.details!;
     // Should be <=100 (bounded) but could be >20 for 10F if many wet areas
     expect(details.length).toBeLessThanOrEqual(100);
@@ -313,10 +313,10 @@ describe('Phase 9.1 — Determinism and performance 1F/2F/3F/6F/10F', () => {
     const { candidates, bestCandidate } = generate(prj);
     const genTime = Date.now() - startGen;
     const startEval = Date.now();
-    const evalC = evaluateCandidate(bestCandidate);
+    const evalC = evaluateCandidate(bestCandidate!);
     const evalTime = Date.now() - startEval;
 
-    expect(bestCandidate.floors.length).toBe(floors);
+    expect(bestCandidate!.floors.length).toBe(floors);
     expect(evalC.floorCount).toBe(floors);
     expect(evalC.perFloor.length).toBe(floors);
     expect(genTime).toBeLessThan(5000);
@@ -326,7 +326,7 @@ describe('Phase 9.1 — Determinism and performance 1F/2F/3F/6F/10F', () => {
     // Deterministic repeat
     const prj2 = createProject(input);
     const { bestCandidate: bc2 } = generate(prj2);
-    const evalC2 = evaluateCandidate(bc2);
+    const evalC2 = evaluateCandidate(bc2!);
     expect(evalC.overallQuality).toBe(evalC2.overallQuality);
     expect(evalC.candidateId).toBe(evalC2.candidateId);
   });
@@ -339,7 +339,7 @@ describe('Phase 9.1 — Cross-output consistency remains', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
-    const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate);
+    const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate!);
 
     expect(docModel.intelligence!.floorCount).toBe(2);
     expect(manifest.intelligence.floorCount).toBe(2);
