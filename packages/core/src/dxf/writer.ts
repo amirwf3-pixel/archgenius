@@ -180,12 +180,20 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     push(11, mm(x2)); push(21, mm(y2)); push(31, '0');
   };
   const emitArc = (cx: number, cy: number, r: number, startDeg: number, endDeg: number, layer: string) => {
+    // Normalize ARC angles to 0..360 for R12 — AutoCAD rejects negative and ezdxf audit still passes, masking black-screen.
+    const norm = (a: number) => {
+      let n = a % 360;
+      if (n < 0) n += 360;
+      return Math.round(n * 1e6) / 1e6;
+    };
+    const s = norm(startDeg);
+    const e = norm(endDeg);
     b.push('0', 'ARC');
     push(8, layer);
     push(10, mm(cx)); push(20, mm(cy)); push(30, '0');
     push(40, mm(r));
-    push(50, startDeg);
-    push(51, endDeg);
+    push(50, s);
+    push(51, e);
   };
   const emitText = (x: number, y: number, text: string, heightM: number, layer: string, horiz = 0) => {
     b.push('0', 'TEXT');
@@ -1066,10 +1074,14 @@ function writeLtype(b: string[], name: string, desc: string, pattern: number[]) 
   b.push('73', String(elements));
   let totalLen = 0;
   for (const p of pattern) totalLen += Math.abs(p);
+  // Round to avoid JS floating artifacts like 50.800000000000004 / 19.049999999999997 which ezdxf tolerates but AutoCAD may reject
+  totalLen = Math.round(totalLen * 10000) / 10000;
   b.push('40', String(totalLen || 0));
   for (const p of pattern) {
     if (Math.abs(p) < 1e-9) continue;
-    b.push('49', String(p));
+    // Round pattern values to 4 decimals as well (31.75 etc. are exact but guard against artifacts)
+    const v = Math.round(p * 10000) / 10000;
+    b.push('49', String(v));
     b.push('74', '0');
   }
 }
