@@ -19,6 +19,7 @@
     "node_modules",
     "../core/src/**/*.test.ts",
     "../core/src/verify/**",
+    "../core/src/stress/**",
     "../core/dist",
     "../core/src/documentation/generate-samples.ts"
   ]

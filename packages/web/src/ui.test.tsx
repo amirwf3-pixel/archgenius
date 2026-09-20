@@ -295,7 +295,7 @@ describe('FindingsPanel — rendering with real validation data', () => {
     expect(panelHtml).toContain(t('findingsGroupSoft'));
     // grouped items keep Persian titles + full messages + machine codes (LTR)
     expect(panelHtml).toMatch(/SITE_ROOM_OUTSIDE_BUILDABLE|SITE_CORRIDOR_OUTSIDE_BUILDABLE|dir="ltr"/);
-    const withPersianBody = vr.hard.some(f => PERSIAN.test(f.message) || f.message);
+    const withPersianBody = vr.hard.some((f: { message: string }) => PERSIAN.test(f.message) || f.message);
     expect(withPersianBody).toBe(true);
 
     // result card (verdict state) — success path with counts
