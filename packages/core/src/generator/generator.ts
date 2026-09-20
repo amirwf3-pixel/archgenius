@@ -14,7 +14,8 @@ import type { Space, SpaceSpec } from '../model/space.js';
 import type { Wall } from '../model/wall.js';
 import type { LayoutCandidate, CandidateStrategy, LayoutMetadata } from '../model/layout.js';
 import type { Finding } from '../validation/types.js';
-import { programForFloor, labelFor } from '../programming/program.js';
+import { programForFloor, allocateBuildingProgram, labelFor } from '../programming/program.js';
+import type { FloorProgramAllocation } from '../programming/program.js';
 import { composePacks, computeBuildableArea, runPackRules, runPackRulesOnCandidate } from '../regulations/engine.js';
 import { placeParking, placeParkingSiteAware } from './parking.js';
 import { DEFAULT_FLOOR_HEIGHT } from './stairs.js';
@@ -96,6 +97,10 @@ export function generateLayouts(
 
   const seed = input.seed ?? 1;
   const numFloors = Math.max(1, input.building.floors);
+  // Phase 15 M3: the required program is distributed at BUILDING level once, and every
+  // strategy receives the SAME per-floor allocation — no strategy may silently expand or
+  // shrink the program on any floor.
+  const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
   for (const strategy of strategies) {
@@ -103,7 +108,7 @@ export function generateLayouts(
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level]));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -113,6 +118,10 @@ export function generateLayouts(
       findings: [...packFindings], valid: false, metrics: zeroMetrics(),
       explanations: dedup(explanations), metadata: meta,
     };
+    (cand as any).programRequirements = floors.map(fl => ({
+      level: fl.level,
+      byType: { ...(((fl as any).assignedProgram ?? {}) as Record<string, number>) },
+    }));
     (cand as any).siteBoundary = buildableGeom.siteBoundary;
     (cand as any).buildableBoundary = buildableGeom.buildableBoundary;
     (cand as any).buildableRects = buildableGeom.buildableRects;
@@ -153,6 +162,7 @@ function buildFloorSiteAware(
   isOnlyFloor: boolean,
   strategy: CandidateStrategy,
   explanations: string[],
+  alloc: FloorProgramAllocation,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -185,7 +195,7 @@ function buildFloorSiteAware(
     if (p.attempts && p.attempts.length > 0) explanations.push(`Parking attempts: ${p.attempts.slice(0,5).join(' | ')}`);
   }
 
-  const specs = programForFloor(input.building, level, isOnlyFloor);
+  const specs = programForFloor(input.building, level, isOnlyFloor, alloc);
   const placedSpecs: PlacedSpec[] = [];
   let bedIdx = 0, bathIdx = 0, mbCount = 0, mbaCount = 0;
   for (const s of specs) {
@@ -199,6 +209,12 @@ function buildFloorSiteAware(
     }
     placedSpecs.push({ ...s, placedId: nextId(s.type), placedLabel: label });
   }
+
+  // Phase 15 M3: the exact per-floor program assigned by the building-level
+  // distribution — carried on the candidate for honest program-completeness validation
+  // (requested rooms must never be silently dropped by placement).
+  const assignedProgram: Record<string, number> = {};
+  for (const s of placedSpecs) assignedProgram[s.type] = (assignedProgram[s.type] ?? 0) + 1;
 
   const mkSpace = (type: Space['type'], r: Rect, label: string, id: string, zone: string): Space => {
     // Phase 11 canonical: polygon is authoritative, rect is derived bounding compatibility
@@ -279,7 +295,12 @@ function buildFloorSiteAware(
 
   snapCorridorsToRoomsSiteAware(repaired.spaces, buildableBoundary, buildableRect, buildableRects);
 
-  if (!entrancePlaced) {
+  // Phase 15 M3: entrance recovery is a GROUND-floor program repair. A floor whose
+  // allocation contains no entrance spec must never synthesize one — upper floors get
+  // their arrival from the stair/core, not a fabricated front door (pre-M3 this produced
+  // "phantom upper-floor entrances" on multi-floor plans).
+  const floorHasEntranceSpec = placedSpecs.some(s => s.type === 'entrance');
+  if (!entrancePlaced && floorHasEntranceSpec) {
     const foyer = repaired.spaces.find(s => (s.type === 'foyer' || s.type === 'corridor') && s.rect.y <= buildableRect.y + EPS);
     if (foyer) {
       const spurH = Math.min(1.5, foyer.rect.h * 0.4);
@@ -299,7 +320,7 @@ function buildFloorSiteAware(
       }
     }
   }
-  if (!entrancePlaced) {
+  if (!entrancePlaced && floorHasEntranceSpec) {
     const pub = repaired.spaces.find(s => s.zone === 'public' || s.type === 'living');
     if (pub) {
       const eW = Math.min(1.6, pub.rect.w * 0.3);
@@ -420,6 +441,7 @@ function buildFloorSiteAware(
   (floor as any).buildableBoundary = buildableBoundary;
   (floor as any).buildableRects = buildableRects;
   (floor as any).siteShape = input.site.shape;
+  (floor as any).assignedProgram = assignedProgram;
 
   const { openings } = placeOpenings(floor, input.site.accessSide);
   floor.openings = openings;

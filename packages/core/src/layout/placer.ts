@@ -214,8 +214,32 @@ export function placeSpaces(
     const entH = Math.min(1.8, patch.h * 0.4);
     const ent = take('entrance'); if (ent)
       placed.push(mkSpace('entrance', { x: patch.x, y: patch.y, w: patch.w, h: entH }, ent.placedLabel, ent.placedId, 'public'));
-    const foy = take('foyer'); if (foy)
-      placed.push(mkSpace('foyer', { x: patch.x, y: patch.y + entH, w: patch.w, h: patch.h - entH }, foy.placedLabel, foy.placedId, 'public'));
+    const foy = take('foyer');
+    let foyerRect: Rect | null = foy ? { x: patch.x, y: patch.y + entH, w: patch.w, h: patch.h - entH } : null;
+    // Phase 15 M3: guest-wc stacks under the foyer inside the front column when the column
+    // is tall enough (classic entrance→foyer→WC sequence; satisfies the foyer-guest-wc
+    // adjacency). Otherwise the public band's own conditions may place it — or the program
+    // completeness check surfaces it honestly. Never a silent drop on this path.
+    const wcSpec = take('guest-wc');
+    if (wcSpec && foyerRect && foyerRect.h >= 3.9) {
+      const wcH = Math.min(2.1, Math.max(1.5, foyerRect.h * 0.33));
+      const foyerH = foyerRect.h - wcH;
+      if (foyerH >= 2.4) {
+        placed.push(mkSpace('foyer', { ...foyerRect, h: foyerH }, foy!.placedLabel, foy!.placedId, 'public'));
+        placed.push(mkSpace('guest-wc', { x: foyerRect.x, y: foyerRect.y + foyerH, w: foyerRect.w, h: wcH }, wcSpec.placedLabel, wcSpec.placedId, 'public'));
+        explanation.push('Phase15 M3 entry column: guest-wc stacked below foyer — front-sequence adjacency');
+      } else {
+        placed.push(mkSpace('foyer', foyerRect, foy!.placedLabel, foy!.placedId, 'public'));
+        byType.get('guest-wc') ?? byType.set('guest-wc', []);
+        byType.get('guest-wc')!.unshift(wcSpec); // return to the pool — public band conditions decide
+      }
+    } else {
+      if (foy) placed.push(mkSpace('foyer', foyerRect!, foy.placedLabel, foy.placedId, 'public'));
+      if (wcSpec) {
+        byType.get('guest-wc') ?? byType.set('guest-wc', []);
+        byType.get('guest-wc')!.unshift(wcSpec); // return to the pool
+      }
+    }
     explanation.push(`Phase13 public: entrance-foyer MUST_BE_ADJACENT from graph cluster satisfied via entrancePatch shared edge`);
   }
 
@@ -818,7 +842,7 @@ export function placeSpaces(
   }
 
   // --- Public band — generic ordering from graph ---
-  const publicRect = layout.zones.public[0];
+  let publicRect = layout.zones.public[0];
   if (publicRect) {
     const publicTypes = [...byType.keys()].filter(t => {
       const z = zoneOf({ type: t } as any);
@@ -829,12 +853,166 @@ export function placeSpaces(
 
     const living = take('living');
     const dining = take('dining');
-    const guestWc = take('guest-wc');
+    let guestWc = take('guest-wc');
     const publicUnplaced: PlacedSpec[] = [];
     let g; while ((g = take('guest-room'))) publicUnplaced.push(g);
     let f; while ((f = take('family-room'))) publicUnplaced.push(f);
     let e; while ((e = take('entrance'))) publicUnplaced.push(e);
     let fy; while ((fy = take('foyer'))) publicUnplaced.push(fy);
+    let bo; while ((bo = take('balcony'))) publicUnplaced.push(bo); // M3: balconies must not silently vanish either
+
+    // Phase 15 M3: front entry gallery — the small public program rooms collected here
+    // (entrance, foyer, guest-room, family, balcony) plus the guest-wc form ONE continuous
+    // gallery row across the public band front; living/dining take the remaining field below.
+    // Purely geometric and program-minimum-driven (no dimension special cases), spine-agnostic,
+    // and only built where the living field keeps its minimum height afterwards. This removes
+    // the pre-M3 silent drops (foyer existed only via the l-spur patch; guest-wc only via one
+    // east-corner condition) — every assigned public room gets an architectural home whenever
+    // the band can host it, and is otherwise surfaced honestly by program-completeness checks.
+    if (living !== undefined && dining !== undefined) {
+      const galleryCells: PlacedSpec[] = [...publicUnplaced];
+      if (guestWc !== undefined && galleryCells.length >= 1) galleryCells.push(guestWc); // a gallery is a SEQUENCE of entry rooms, not one isolated cell
+      // A lone cell is only acceptable when it is NOT the wet entry room (an isolated guest-wc
+      // filling a whole strip is junk) — a balcony/family/guest room along the front is sound.
+      const galleryAcceptable = galleryCells.length >= 2 ||
+        (galleryCells.length === 1 && galleryCells[0].type !== 'guest-wc');
+      if (galleryAcceptable) {
+        // Entrance first along the row (exterior edge), then the rest in program order — stable.
+        galleryCells.sort((a, b) => (a.type === 'entrance' ? 0 : 1) - (b.type === 'entrance' ? 0 : 1));
+      const minW = (s: PlacedSpec) => Math.max(s.minWidth ?? 1.1, 1.1);
+      const minH = (s: PlacedSpec) => Math.max(s.minLength ?? 1.4, 1.4);
+      const totalMinW = galleryCells.reduce((a, s) => a + minW(s), 0);
+        const livingMinHBelow = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);
+        const diningMinHBelow = Math.max(dining.minLength ?? dining.minWidth ?? 2.2, 2.0);
+        const sideBySideBelow = publicRect.w >= Math.max(living.minWidth ?? 3.0, 3.0) + Math.max(dining.minWidth ?? 2.2, 2.2);
+        const neededBelow = sideBySideBelow ? Math.max(livingMinHBelow, diningMinHBelow) : livingMinHBelow + diningMinHBelow;
+        let galleryPlaced = false;
+        let galleryBottom = 0;
+        let galleryH = Math.min(2.3, Math.max(1.7, publicRect.h * 0.22));
+        if (publicRect.h - galleryH < neededBelow) galleryH = publicRect.h - neededBelow;
+        if (galleryH >= 1.5 && publicRect.h - galleryH >= neededBelow - 1e-6 && publicRect.w >= totalMinW - 1e-6) {
+          let strip: Rect = { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: galleryH };
+          // Proportional row layout: each cell ≥ its minWidth, surplus shared by target area.
+          const targets = galleryCells.map(s => Math.max(s.minArea, s.targetArea));
+          const sumT = Math.max(targets.reduce((a, b) => a + b, 0), 1e-6);
+          const surplus = Math.max(0, publicRect.w - totalMinW);
+          const ws = galleryCells.map((s, i) => {
+            const proportional = minW(s) + surplus * (targets[i] / sumT);
+            // A single-cell gallery is sized to its program target, never stretched to fill.
+            return galleryCells.length === 1
+              ? Math.min(proportional, Math.max(minW(s), targets[i] / Math.max(galleryH, 0.5)))
+              : proportional;
+          });
+          // Each cell must reach its program minArea at its solved width — grow the strip
+          // height for that (the layout contract rejects cells below minArea), else fall back.
+          const stripMinH = Math.max(...galleryCells.map((s, i) =>
+            Math.max(s.minArea > 0 ? s.minArea / Math.max(ws[i], 0.5) : 0, minH(s))));
+          let stripH = Math.max(strip.h, stripMinH);
+          if (publicRect.h - stripH < neededBelow - 1e-6) {
+            stripH = -1; // cannot host the row without crushing living/dining — let the column try
+          }
+          if (stripH > 0) {
+          strip = { ...strip, h: stripH };
+          let cx = strip.x;
+          galleryCells.forEach((s, i) => {
+            const w = Math.min(ws[i], strip.x + strip.w - cx);
+            placed.push(mkSpace(s.type, { x: cx, y: strip.y, w, h: strip.h }, s.placedLabel, s.placedId, 'public'));
+            cx += w;
+          });
+          galleryBottom = strip.y + strip.h;
+          explanation.push(`Phase15 M3 entry gallery: ${galleryCells.map(c => c.type).join('+')} @ front strip h=${stripH.toFixed(2)} m`);
+          galleryPlaced = true;
+          }
+        } else {
+          // Tall-narrow band (urban frontage, vertical spine): stack the entry sequence
+          // VERTICALLY along the front — entrance at the street, then foyer, then WC —
+          // each cell full band width, heights from target area with minimum preserved.
+          const maxCellMinW = Math.max(...galleryCells.map(minW));
+          const colHs = galleryCells.map(s => Math.max(minH(s), Math.max(s.minArea, s.targetArea) / publicRect.w));
+          const colH = colHs.reduce((a, b) => a + b, 0);
+          const entCol = galleryCells.findIndex(s => s.type === 'entrance');
+          const foyCol = galleryCells.findIndex(s => s.type === 'foyer');
+          const leftIdx = galleryCells.map((_, i) => i).filter(i => i !== entCol && i !== foyCol);
+          const halfW = publicRect.w / 2;
+          const corrSplitW = () => halfW;
+          const tLayout = entCol >= 0 && foyCol >= 0 && leftIdx.length >= 1 &&
+            halfW >= Math.max(
+              minW(galleryCells[foyCol]),
+              ...leftIdx.map(i => minW(galleryCells[i])),
+              1.0) - 1e-6;
+          const tLeftHs = tLayout ? leftIdx.map(i => {
+            const s = galleryCells[i];
+            return Math.max(minH(s), Math.max(s.minArea, s.targetArea) / halfW);
+          }) : [];
+          const entH = tLayout ? colHs[entCol] : 0;
+          // The foyer column must reach its OWN program minimum at the split width —
+          // the stack grows to cover it; the last side cell absorbs the slack.
+          const foyMinH = tLayout
+            ? Math.max(minH(galleryCells[foyCol]),
+                Math.max(galleryCells[foyCol].minArea, 0) / Math.max(corrSplitW(), 0.5))
+            : 0;
+          const tColH = tLayout
+            ? entH + Math.max(tLeftHs.reduce((a, b) => a + b, 0), foyMinH)
+            : colH;
+          if (publicRect.w >= maxCellMinW - 1e-6 && publicRect.h - (tLayout ? tColH : colH) >= neededBelow - 1e-6) {
+            if (tLayout) {
+              // T-entry stack for narrow bands: entrance spans the front at full width; the
+              // foyer runs floor-to-living-edge on the street-far half and the remaining
+              // entry cells stack on the corridor-side half — so the foyer satisfies the
+              // entrance→foyer AND foyer→living graph adjacencies (perpendicular to each
+              // other — a plain row cannot), while WC/guest rooms keep direct corridor
+              // contact (never a through-route through another room). All splits round to
+              // cm so halves tile the band exactly (no 0.01 floating seams).
+              const bandX = publicRect.x;
+              const bandR = publicRect.x + publicRect.w;
+              const corr0 = layout.corridors[0];
+              const corrOnRight = corr0 ? corr0.x + corr0.w / 2 >= bandX + publicRect.w / 2 : true;
+              const splitX = Math.round((bandX + (bandR - bandX) / 2) * 100) / 100;
+              const foyerX = corrOnRight ? bandX : splitX;
+              const foyerW = corrOnRight ? splitX - bandX : bandR - splitX;
+              const sideX = corrOnRight ? splitX : bandX;
+              const sideW = corrOnRight ? bandR - splitX : splitX - bandX;
+              const entY = Math.round(publicRect.y * 100) / 100;
+              const entHr = Math.round(entH * 100) / 100;
+              placed.push(mkSpace('entrance',
+                { x: bandX, y: publicRect.y, w: publicRect.w, h: entHr },
+                galleryCells[entCol].placedLabel, galleryCells[entCol].placedId, 'public'));
+              const tColHr = Math.round(tColH * 100) / 100;
+              let ly = entY + entHr;
+              leftIdx.forEach((idx, j) => {
+                const s = galleryCells[idx];
+                const hh = j === leftIdx.length - 1
+                  ? Math.round((entY + tColHr - ly) * 100) / 100
+                  : Math.round(tLeftHs[j] * 100) / 100;
+                placed.push(mkSpace(s.type, { x: sideX, y: ly, w: sideW, h: hh }, s.placedLabel, s.placedId, 'public'));
+                ly = Math.round((ly + hh) * 100) / 100;
+              });
+              const foy = galleryCells[foyCol];
+              placed.push(mkSpace('foyer',
+                { x: foyerX, y: entY, w: foyerW, h: tColHr - entHr },
+                foy.placedLabel, foy.placedId, 'public'));
+              galleryBottom = entY + tColHr;
+              explanation.push(`Phase15 M3 entry column (T-stack): entrance front, foyer hall along living @ ${tColH.toFixed(2)} m`);
+            } else {
+              let cy2 = publicRect.y;
+              galleryCells.forEach((s, i) => {
+                placed.push(mkSpace(s.type, { x: publicRect.x, y: cy2, w: publicRect.w, h: colHs[i] }, s.placedLabel, s.placedId, 'public'));
+                cy2 += colHs[i];
+              });
+              galleryBottom = publicRect.y + colH;
+              explanation.push(`Phase15 M3 entry column (vertical sequence): ${galleryCells.map(c => c.type).join('+')} @ front stack h=${colH.toFixed(2)} m`);
+            }
+            galleryPlaced = true;
+          }
+        }
+        if (galleryPlaced) {
+          publicUnplaced.length = 0;
+          guestWc = undefined;
+          const backY = galleryBottom;
+          publicRect = { x: publicRect.x, y: backY, w: publicRect.w, h: Math.max(0.05, publicRect.y + publicRect.h - backY) };
+        }
+      }
+    }
 
     if (living) {
       if (dining) {

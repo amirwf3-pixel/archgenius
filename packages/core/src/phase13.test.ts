@@ -128,14 +128,21 @@ describe('Phase13 C: Generic DIRECT_ACCESS_REQUIRED', () => {
       seed: 1,
     });
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate!);
-    // Phase 13.1: after fixing negative width, 12x18 tight is feasible with min preserved
-    const nonConstraintHard = vr.hard.filter(f => !f.code.startsWith('CONSTRAINT_') && !f.code.startsWith('HARD_CONSTRAINT'));
-    // Allow only CONSTRAINT_ hards, but no GEO/min hard
-    const geoHard = vr.hard.filter(f => f.code.startsWith('GEO_'));
-    expect(geoHard.length).toBe(0);
-    for (const s of bestCandidate!.floors[0].spaces) {
+    const res = generate(prj);
+    // Phase 15 M3: 12x18 must not expose a plan that silently drops requested entry rooms
+    // (foyer/guest-wc). Either a complete, min-preserving candidate exists — or the result is
+    // an explicit INFEASIBLE whose diagnostics still satisfy every geometry invariant.
+    const plans = res.bestCandidate ? [res.bestCandidate] : (res.infeasible?.diagnosticCandidates ?? []);
+    expect(plans.length).toBeGreaterThan(0);
+    if (res.bestCandidate) {
+      const vr = validateCandidate(res.bestCandidate);
+      // Allow only CONSTRAINT_ hards, but no GEO/min hard
+      const geoHard = vr.hard.filter(f => f.code.startsWith('GEO_'));
+      expect(geoHard.length).toBe(0);
+    } else {
+      expect(['HARD_RULE_VIOLATION', 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION']).toContain(res.infeasible!.code);
+    }
+    for (const plan of plans) for (const s of plan.floors[0].spaces) {
       expect(s.rect.w).toBeGreaterThan(0);
       expect(s.rect.h).toBeGreaterThan(0);
       if (s.type.includes('bedroom')) {
@@ -320,7 +327,9 @@ describe('Phase13 G: Infeasibility explicit codes', () => {
 // H: Minimum dimensions remain hard — for feasible sites preserve min, for tiny sites preserve 0.9m unusable threshold and report explicit HARD
 describe('Phase13 H: Min dimensions remain hard', () => {
   for (const site of [
-    { w: 12, l: 18, feasible: true },
+    // Phase 15 M3: 12x18 is no longer artificially feasible — the narrow band cannot host
+    // the full requested entry sequence, so the honest gate returns explicit INFEASIBLE.
+    { w: 12, l: 18, feasible: false },
     { w: 15, l: 20, feasible: true },
     { w: 8, l: 12, feasible: false },
     { w: 10, l: 30, feasible: false },

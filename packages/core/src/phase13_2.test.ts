@@ -227,28 +227,41 @@ describe('Phase 13.2 B: zero/negative geometry → no invalid candidate exposed'
 });
 
 // C: 12x18 feasible → normal bestCandidate
-describe('Phase 13.2 C: 12x18 feasible → normal bestCandidate exists', () => {
-  it('bestCandidate non-null, no infeasible state, all rooms satisfy minimums', () => {
+describe('Phase 13.2 C (updated Phase 15 M3): 12x18 must not pass artificially — explicit INFEASIBLE when the entry program cannot fit', () => {
+  it('12x18: no usable candidate exposing a plan with dropped rooms; diagnostics remain min-geometry-clean', () => {
+    // Pre-M3, 12x18 was 'feasible' only because placement silently dropped the requested
+    // foyer and guest-wc (the narrow dayl band cannot host the full entry sequence).
+    // Under the M2 gate + M3 program-completeness rules that artificial pass is gone:
+    // the honest outcome is an explicit INFEASIBLE with traceable reasons.
     const prj = createProject(feasible12x18());
     const res = generate(prj);
-    expect(res.infeasible).toBeNull();
-    expect(res.bestCandidate).not.toBeNull();
-    expect(res.candidates.length).toBe(1);
-    expect(res.candidates[0].id).toBe(res.bestCandidate!.id);
-    expect(prj.selectedCandidateId).toBe(res.bestCandidate!.id);
-    expect(hasDimInfeasibleFinding(res.bestCandidate!)).toBe(false);
-    expect(satisfiesMinGeometry(res.bestCandidate!)).toBe(true);
-    // All-strategies mode exposes every valid candidate (12x18: 3 of 4 strategies valid).
+    if (res.bestCandidate) {
+      // If placement ever genuinely hosts the full program again (M4), the old contract holds.
+      expect(res.infeasible).toBeNull();
+      expect(satisfiesMinGeometry(res.bestCandidate)).toBe(true);
+      expect(res.bestCandidate!.floors[0].spaces.some(s => s.type === 'foyer')).toBe(true);
+      expect(res.bestCandidate!.floors[0].spaces.some(s => s.type === 'guest-wc')).toBe(true);
+      return;
+    }
+    expect(res.infeasible).not.toBeNull();
+    expect(res.infeasible!.code).toBe('HARD_RULE_VIOLATION');
+    expect(res.candidates).toEqual([]);
+    expect(prj.selectedCandidateId).toBeUndefined();
+    expect(res.infeasible!.diagnosticCandidates.length).toBeGreaterThan(0);
+    for (const d of res.infeasible!.diagnosticCandidates) {
+      // Geometry stays honest (min-preserving) even where the program cannot fit…
+      expect(satisfiesMinGeometry(d) || d.findings.some((f: any) => f.code === 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION')).toBe(true);
+      // …and the incompleteness is REPORTED, never hidden.
+      const missing = d.findings.filter((f: any) => f.code === 'ARCH_PROGRAM_UNPLACED' || f.code === 'ROOM_CONSTRAINT_MIN_AREA' || f.code === 'MBH4-ROOM-001' || f.code === 'MBH4-DYL-001' || f.code.startsWith('CONSTRAINT_'));
+      expect(missing.length).toBeGreaterThan(0);
+    }
     const prj2 = createProject(feasible12x18());
     const res2 = generate(prj2, { allStrategies: true });
-    expect(res2.infeasible).toBeNull();
-    expect(res2.candidates.length).toBeGreaterThanOrEqual(1);
-    for (const c of res2.candidates) {
-      expect(satisfiesMinGeometry(c)).toBe(true);
-      expect(hasDimInfeasibleFinding(c)).toBe(false);
-    }
+    expect(res2.infeasible).not.toBeNull();
+    expect(res2.candidates).toEqual([]); // no artificial usable exposure on this site
   });
 });
+
 
 // D: 15x20 feasible → normal bestCandidate
 describe('Phase 13.2 D: 15x20 feasible → normal bestCandidate exists', () => {

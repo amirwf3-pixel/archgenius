@@ -192,12 +192,25 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 0 },
         seed: 42,
       }));
-      const { bestCandidate } = generate(prj);
-      const vr = validateCandidate(bestCandidate!);
-      const geoOut = vr.hard.filter((f: any) => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT' || f.code === 'SITE_ROOM_OUTSIDE_BUILDABLE');
-      // If feasible (no infeasible dim hard), geoOut must be 0
-      const dimHard = vr.hard.filter((f: any) => f.code === 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
-      if (dimHard.length === 0) expect(geoOut.length).toBe(0);
+      const res = generate(prj);
+      // Phase 15 M3: honest contract — a winner exists only with a complete program;
+      // otherwise explicit INFEASIBLE. In BOTH states exposed/diagnostic plans stay GEO-clean
+      // (no room outside footprint/buildable) — that is the invariant this row guards.
+      const plans = res.bestCandidate ? [res.bestCandidate] : (res.infeasible?.diagnosticCandidates ?? []);
+      expect(plans.length).toBeGreaterThan(0);
+      if (res.bestCandidate) {
+        const vr = validateCandidate(res.bestCandidate);
+        const geoOut = vr.hard.filter((f: any) => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT' || f.code === 'SITE_ROOM_OUTSIDE_BUILDABLE');
+        expect(geoOut.length).toBe(0);
+      } else {
+        expect(['HARD_RULE_VIOLATION', 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION']).toContain(res.infeasible!.code);
+        for (const d of res.infeasible!.diagnosticCandidates) {
+          for (const fl of d.floors) for (const s of fl.spaces) {
+            expect(s.rect.w).toBeGreaterThan(0);
+            expect(s.rect.h).toBeGreaterThan(0);
+          }
+        }
+      }
     }
   });
 

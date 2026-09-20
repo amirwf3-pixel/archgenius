@@ -387,8 +387,17 @@ describe('Phase 9 F — whole-building scoring propagation/N/A/no double count',
     const prj = createProject(input);
     const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
-    const avg = evalC.perFloor.reduce((s, pf) => s + pf.overallQuality, 0) / evalC.perFloor.length;
-    expect(evalC.wholeBuilding.avgFloorQuality.overall).toBeCloseTo(avg, 2);
+    // Phase 15 M3 semantics: whole-building quality RE-SCORES the average of per-floor
+    // metric components (N/A-aware weights), so with distinct public/private floors it is
+    // no longer the naive arithmetic mean of per-floor overalls. The honest invariant:
+    // the building score lies inside the per-floor range and tracks its mean.
+    const ovs = evalC.perFloor.map(pf => pf.overallQuality);
+    const lo = Math.min(...ovs), hi = Math.max(...ovs);
+    const avg = ovs.reduce((s, v) => s + v, 0) / ovs.length;
+    const wb = evalC.wholeBuilding.avgFloorQuality.overall;
+    expect(wb).toBeGreaterThanOrEqual(lo - 1e-9);
+    expect(wb).toBeLessThanOrEqual(hi + 1e-9);
+    expect(Math.abs(wb - avg)).toBeLessThan(0.05);
   });
 });
 

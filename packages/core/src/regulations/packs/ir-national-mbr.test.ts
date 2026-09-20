@@ -74,18 +74,23 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
     });
 
     it('fires when rooms below 12 m² on large unit (>=75)', () => {
+      // Multi-floor reference: with the program correctly distributed (Phase 15 M3) the unit
+      // gross is genuinely >=75 m², and strategies that squeeze the private band below the
+      // 12 m² habitable-room minimum must fire the rule — the check targets the rule, not a
+      // benchmark: we take the FIRST candidate that actually contains a sub-12 m² habitable room.
       const prj = createProject({
-        name: 'small-villa',
+        name: 'tight-12x18-4bd',
         country: 'IR',
-        site: { shape: 'rectangle', width: 10, length: 14, accessSide: 'south', streetWidth: 6 },
-        building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
-        deterministic: true, seed: 1,
+        site: { shape: 'rectangle', width: 12, length: 18, accessSide: 'south', streetWidth: 8 },
+        building: { type: 'villa', floors: 1, bedrooms: 4, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 0 },
+        deterministic: true, seed: 42,
       });
-      const { bestCandidate, infeasible } = legacyGenerate(prj);
-      // Phase 13.2: on a below-minimum site the rule still fires — on the diagnostic candidates
-      // when no usable candidate exists.
-      const target = bestCandidate ?? infeasible!.diagnosticCandidates[0];
-      const hits = findCode(target, 'MBH4-ROOM-001').filter((f: any) => f.severity === 'hard');
+      const { candidates, infeasible } = legacyGenerate(prj, { allStrategies: true });
+      const plans = [...candidates, ...(infeasible?.diagnosticCandidates ?? [])];
+      const target = plans.find(c => c.floors.some(fl => fl.spaces.some(s =>
+        (s.type === 'bedroom' || s.type === 'living' || s.type === 'dining') && s.area > 0 && s.area < 12)));
+      expect(target).toBeTruthy();
+      const hits = findCode(target!, 'MBH4-ROOM-001').filter((f: any) => f.severity === 'hard');
       expect(hits.length).toBeGreaterThanOrEqual(1);
       expect(hits[0].status).toBe('VERIFIED');
     });
@@ -429,11 +434,12 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
     it('compliant: normal banded layouts have exterior wall', () => {
       const prj = createProject({
         name: '2bed', country: 'IR',
-        site: { shape: 'rectangle', width: 12, length: 18, accessSide: 'south', streetWidth: 6 },
-        building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
-        deterministic: true, seed: 1,
+        site: { shape: 'rectangle', width: 15, length: 20, accessSide: 'south', streetWidth: 8 },
+        building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 0 },
+        deterministic: true, seed: 42,
       });
       const { candidates } = legacyGenerate(prj);
+      expect(candidates.length).toBeGreaterThan(0);
       expect(findCode(candidates[0], 'MBH4-DYL-001').filter((h: any) => h.severity === 'hard').length).toBe(0);
     });
   });

@@ -90,10 +90,126 @@ function isGroundPublicFloor(building: BuildingInput, floorLevel: number, isOnly
   return floorLevel === 0;
 }
 
-export function programForFloor(building: BuildingInput, floorLevel: number, isOnlyFloor: boolean): SpaceSpec[] {
+/**
+ * Phase 15 M3: building-level program distribution.
+ *
+ * The REQUIRED program of the whole building is determined once, then assigned
+ * floor by floor — upper floors never blindly duplicate the full program.
+ * The totals across floors always equal the requested counts (no requested room
+ * is dropped or invented; the generator gets exactly the assigned program).
+ *
+ * Policy (villa):
+ *   - Ground floor: public + service program (entrance/foyer/living/dining/kitchen/
+ *     guest-wc/storage/guest-room) + vertical circulation. No bedrooms (V1 policy).
+ *   - Upper floors: the private program (bedrooms, master suites with their bath,
+ *     shared bathrooms, family room) distributed round-robin, lower floors first —
+ *     deterministic, parametric, size-agnostic.
+ *   - Master suites stay architecturally paired with their master bath (same floor).
+ *   - A floor without assigned bedrooms keeps only the circulation/core program
+ *     (stair hall, elevator hall, corridor) — it never receives orphan rooms.
+ *
+ * Policy (apartment / apartment-building, unchanged V1 vertical slice):
+ *   - Every floor contains the full unit program (bedrooms with living).
+ *
+ * Policy (single floor): everything on the ground floor.
+ */
+export interface FloorProgramAllocation {
+  level: number;
+  /** Floor carries the public/service program (entrance/foyer/living/dining/kitchen/guest-wc/storage). */
+  publicFloor: boolean;
+  /** Floor carries the assigned private program (bedroom suites). */
+  privateFloor: boolean;
+  /** Regular (non-master) bedrooms assigned to this floor. */
+  regularBedrooms: number;
+  /** Master suites (master bedroom + master bath) assigned to this floor. */
+  masterSuites: number;
+  /** Additional shared bathrooms assigned to this floor (master baths excluded). */
+  extraBathrooms: number;
+  /** The (single) family room is assigned to exactly one floor. */
+  familyRoomHere: boolean;
+}
+
+export function allocateBuildingProgram(building: BuildingInput, floors: number): FloorProgramAllocation[] {
+  const n = Math.max(1, floors);
+  const totalBeds = Math.max(1, building.bedrooms);
+  const masters = Math.min(Math.max(0, building.masterBedrooms), totalBeds);
+  const regular = totalBeds - masters;
+  // Existing semantics: building.bathrooms includes the master baths (one per suite).
+  const extraBaths = Math.max(0, Math.max(0, building.bathrooms) - masters);
+  const hasFamily = !!building.hasFamilyRoom;
+
+  if (n === 1) {
+    return [{
+      level: 0, publicFloor: true, privateFloor: true,
+      regularBedrooms: regular, masterSuites: masters, extraBathrooms: extraBaths,
+      familyRoomHere: hasFamily,
+    }];
+  }
+
+  if (building.type === 'apartment' || building.type === 'apartment-building') {
+    // V1 vertical slice: every floor is a full unit (documented policy, not duplication).
+    const out: FloorProgramAllocation[] = [];
+    for (let i = 0; i < n; i++) {
+      out.push({
+        level: i, publicFloor: i === 0, privateFloor: true,
+        regularBedrooms: regular, masterSuites: masters, extraBathrooms: extraBaths,
+        familyRoomHere: hasFamily,
+      });
+    }
+    return out;
+  }
+
+  // Multi-floor villa: distribute the private program over the upper floors.
+  // Step 1: balance the TOTAL bedrooms (master + regular) across the upper floors —
+  // round-robin keeps every occupied floor within one bedroom of every other and packs
+  // trailing floors empty (never a hole between occupied storeys).
+  const upper = n - 1;
+  const bedsPer = new Array<number>(upper).fill(0);
+  for (let k = 0; k < totalBeds; k++) bedsPer[k % upper] += 1;
+  const occupied: number[] = [];
+  for (let i = 0; i < upper; i++) if (bedsPer[i] > 0) occupied.push(i);
+  // Step 2: place master suites one per occupied floor (lower floors first) — each stays
+  // architecturally paired with its master bath on the same floor.
+  const mastersPer = new Array<number>(upper).fill(0);
+  for (let k = 0; k < masters; k++) mastersPer[occupied[k % occupied.length]] += 1;
+  // Step 3: shared baths round-robin over the occupied floors.
+  const bathsPer = new Array<number>(upper).fill(0);
+  for (let k = 0; k < extraBaths; k++) bathsPer[occupied[k % occupied.length]] += 1;
+  const familyFloor = occupied.length > 0 ? occupied[0] : -1;
+
+  const alloc: FloorProgramAllocation[] = [{
+    level: 0, publicFloor: true, privateFloor: false,
+    regularBedrooms: 0, masterSuites: 0, extraBathrooms: 0, familyRoomHere: false,
+  }];
+  for (let i = 0; i < upper; i++) {
+    alloc.push({
+      level: i + 1,
+      publicFloor: false,
+      privateFloor: bedsPer[i] > 0,
+      regularBedrooms: bedsPer[i] - mastersPer[i],
+      masterSuites: mastersPer[i],
+      extraBathrooms: bathsPer[i],
+      familyRoomHere: hasFamily && i === familyFloor,
+    });
+  }
+  return alloc;
+}
+
+/**
+ * Build the space program for ONE floor from its building-level allocation.
+ * `alloc` is mandatory: the distribution of the required program across floors is a
+ * BUILDING-level decision (Phase 15 M3) — a floor must never independently expand the
+ * program to its own full request (that duplication was the pre-M3 defect).
+ */
+export function programForFloor(
+  building: BuildingInput,
+  floorLevel: number,
+  isOnlyFloor: boolean,
+  alloc: FloorProgramAllocation,
+): SpaceSpec[] {
   const specs: SpaceSpec[] = [];
-  const hasBedrooms = bedroomsOnThisFloor(building, floorLevel, isOnlyFloor);
-  const isPublic = isGroundPublicFloor(building, floorLevel, isOnlyFloor);
+  const hasBedrooms = alloc.privateFloor;
+  const isPublic = alloc.publicFloor;
 
   if (isPublic) {
     specs.push(makeSpec('entrance', { privacy: 'public', priority: 10, adjacencies: [ADJ_ENTRANCE_FOYER] }));
@@ -115,7 +231,8 @@ export function programForFloor(building: BuildingInput, floorLevel: number, isO
 
     if (building.hasGuestRoom) specs.push(makeSpec('guest-room', { privacy: 'public', priority: 5, orientation: 'south', daylightRequired: true }));
     if (building.hasStorage) specs.push(makeSpec('storage', { privacy: 'service', priority: 3, minArea: 1.4, targetArea: 2.0 }));
-    if (building.hasFamilyRoom && !isOnlyFloor) specs.push(makeSpec('family-room', { privacy: 'semi-private', priority: 5 }));
+    // Phase 15 M3: the single requested family room lands on the allocated floor (see alloc).
+    if (alloc.familyRoomHere) specs.push(makeSpec('family-room', { privacy: 'semi-private', priority: 5 }));
 
     // Circulation
     if (!isOnlyFloor || building.bedrooms >= 2) {
@@ -137,13 +254,14 @@ export function programForFloor(building: BuildingInput, floorLevel: number, isO
     if (building.hasStair) specs.push(makeSpec('stair-hall', { privacy: 'service', priority: 10, targetArea: 6.0, minArea: 4.5 }));
     if (building.hasElevator) specs.push(makeSpec('elevator-hall', { privacy: 'service', priority: 10 }));
     specs.push(makeSpec('corridor', { privacy: 'service', priority: 9 }));
-    if (building.hasFamilyRoom) specs.push(makeSpec('family-room', { privacy: 'semi-private', priority: 6, orientation: 'south', daylightRequired: true }));
+    if (alloc.familyRoomHere) specs.push(makeSpec('family-room', { privacy: 'semi-private', priority: 6, orientation: 'south', daylightRequired: true }));
   }
 
   if (hasBedrooms) {
-    const totalBeds = Math.max(1, building.bedrooms);
-    const masters = Math.min(building.masterBedrooms, totalBeds);
-    const regular = totalBeds - masters;
+    // Phase 15 M3: per-floor counts come from the BUILDING-level allocation —
+    // never the raw whole-building request (that duplicated the program on every floor).
+    const masters = alloc.masterSuites;
+    const regular = alloc.regularBedrooms;
     for (let i = 0; i < masters; i++) {
       const adj: AdjacencyRequirement[] = [];
       if (building.bathrooms > 0) adj.push(ADJ_MASTER_BATH);
@@ -157,7 +275,7 @@ export function programForFloor(building: BuildingInput, floorLevel: number, isO
       const adj: AdjacencyRequirement[] = [ADJ_CORRIDOR_BED];
       specs.push(makeSpec('bedroom', { privacy: 'private', priority: 7, orientation: i % 2 === 0 ? 'east' : 'west', daylightRequired: true, adjacencies: adj }));
     }
-    const totalBaths = Math.max(0, building.bathrooms - masters);
+    const totalBaths = alloc.extraBathrooms;
     for (let i = 0; i < totalBaths; i++) {
       specs.push(makeSpec('bathroom', { privacy: 'private', priority: 6, ventilationRequired: true, minArea: 2.4, minWidth: 1.3 }));
     }

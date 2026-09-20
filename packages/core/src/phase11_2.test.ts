@@ -12,6 +12,7 @@ import { moveRoom, resizeRoom, lockRoom, setLShape } from './editing/room-editin
 import { createRectangleRoomPolygon, createLShapedRoomPolygon, validateRoomPolygon, roomPolygonArea, roomPolygonToBoundingRect } from './geometry/room-polygon.js';
 import { polygonArea } from './geometry/polygon-ops.js';
 import type { Space } from './model/space.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(): ProjectInput {
   return {
@@ -87,7 +88,10 @@ describe('Phase 11.2 Production MUST_BE_ADJACENT HARD', () => {
       building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
       deterministic: true, seed: 1,
     });
-    const { bestCandidate } = generate(prj);
+    // Phase 15 M3: this row exercises validateLayout's constraint propagation on a plan
+    // whose adjacency is broken; the plan object is incidental — sourced via the generator
+    // path (the product gate may now refuse to expose it).
+    const { bestCandidate } = legacyGenerate(prj);
     const vr = validateLayout(bestCandidate!);
     const geoHard = vr.hard.filter(f => f.code.startsWith('GEO_'));
     // Phase 13.1: after fixing negative width, 12x18 is feasible with 0 GEO hard, CONSTRAINT_ may be 0 as well

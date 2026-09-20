@@ -14,8 +14,24 @@ describe('12x18 / 2-bed / 1-story / seed 1 regression', () => {
       building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
       deterministic: true, seed: 1,
     });
-    const { bestCandidate } = generate(prj);
-    const vr = validateCandidate(bestCandidate!);
+    const res = generate(prj);
+    if (!res.bestCandidate) {
+      // Phase 15 M3: 12×18 no longer passes ARTIFICIALLY by silently dropping requested
+      // entry rooms (foyer / guest-wc had no home in the narrow band). The honest gate now
+      // returns an explicit INFEASIBLE — the regression this test guards (broken geometry)
+      // must stay fixed on every exposed plan instead.
+      expect(res.infeasible).not.toBeNull();
+      expect(['HARD_RULE_VIOLATION', 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION']).toContain(res.infeasible!.code);
+      expect(res.candidates).toEqual([]);
+      for (const d of res.infeasible!.diagnosticCandidates) {
+        for (const s of d.floors[0].spaces) {
+          expect(s.rect.w).toBeGreaterThan(0);
+          expect(s.rect.h).toBeGreaterThan(0);
+        }
+      }
+      return;
+    }
+    const vr = validateCandidate(res.bestCandidate);
     const geo = vr.hard.filter(f => f.code.startsWith('GEO_'));
     const circ = vr.hard.filter(f => f.code.startsWith('CIRC_'));
     const stair = vr.hard.filter(f => f.code.startsWith('STAIR_'));

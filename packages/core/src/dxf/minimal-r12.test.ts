@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeDXF, validateDXFStructure, dxfSafeText } from './writer.js';
 import { createProject, generate, exportDXF } from '../pipeline.js';
+import { legacyGenerate } from '../testutil/legacy-generate.js';
 
 /**
  * Minimal R12 AC1009 regression — strict conservative R12.
@@ -222,7 +223,9 @@ describe('Minimal R12 AC1009 — strict conservative reference', () => {
       deterministic:true, seed:42
     };
     const proj = createProject(input);
-    const res = generate(proj, { allStrategies:true });
+    // Phase 15 M3: writer strictness is proven on ANY generated plan — sourced via the
+    // generator path (product selection semantics are covered by the pipeline gate tests).
+    const res = legacyGenerate(proj, { allStrategies:true });
     expect(res.candidates.length).toBeGreaterThan(0);
     const { dxf } = exportDXF(res.candidates[0], 'minimal');
     const a = analyze(dxf);
@@ -283,7 +286,9 @@ describe('Minimal R12 AC1009 — strict conservative reference', () => {
       deterministic:true, seed:42
     };
     const proj = createProject(input);
-    const res = generate(proj, { allStrategies:true });
+    // Phase 15 M3: writer strictness is proven on ANY generated plan — sourced via the
+    // generator path (product selection semantics are covered by the pipeline gate tests).
+    const res = legacyGenerate(proj, { allStrategies:true });
     const { dxf } = exportDXF(res.candidates[0], 'incr');
     const arch = analyze(dxf);
     // Both must have same allowed vocabulary, no R13+

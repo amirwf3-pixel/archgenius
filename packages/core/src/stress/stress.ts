@@ -24,7 +24,7 @@ import type { ProjectInput } from '../model/project.js';
 import type { LayoutCandidate } from '../model/layout.js';
 import { createProject, generate } from '../pipeline.js';
 import { validateLayout } from '../validation/validator.js';
-import { programForFloor } from '../programming/program.js';
+import { programForFloor, allocateBuildingProgram } from '../programming/program.js';
 import { computeBuildableGeometry } from '../site/buildable.js';
 import { writeDXF, validateDXFStructure } from '../dxf/writer.js';
 import { parseDxf } from '../dxf/verify.js';
@@ -105,8 +105,11 @@ function capacityFor(input: ProjectInput, cache: Map<string, number>): CapacityI
   const floors = Math.max(1, input.building.floors);
   const isOnlyFloor = floors === 1;
   const floorMinDemand: number[] = [];
+  // Phase 15 M3: demand = the building-level ALLOCATION (what the generator must fit),
+  // not the raw per-floor duplication a pre-M3 program would imply.
+  const allocations = allocateBuildingProgram(input.building, floors);
   for (let level = 0; level < floors; level++) {
-    const specs = programForFloor(input.building, level, isOnlyFloor);
+    const specs = programForFloor(input.building, level, isOnlyFloor, allocations[level]);
     floorMinDemand.push(specs.reduce((s, sp) => s + (sp.minArea ?? 0), 0));
   }
   return { buildableArea, floorMinDemand };
