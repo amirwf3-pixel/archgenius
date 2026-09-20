@@ -27,37 +27,52 @@ export interface GenerateOptions {
   allStrategies?: boolean;
 }
 
-/** Phase 13.2: per-strategy diagnostic record for an infeasible generation result. */
-export interface InfeasibleStrategyAttempt {
-  strategy: CandidateStrategy;
-  candidateId: string;
-  /** Deterministic first-failing minimum-geometry reason (e.g. "minA master-bedroom a=9.10<12"). */
-  reason: string;
-}
-
 /**
- * Phase 13.2: explicit INFEASIBLE result state.
+ * Phase 15 M2: explicit INFEASIBLE result state (honest HARD-feasibility gate).
  *
- * Returned when NO generated candidate satisfies the minimum-geometry contract
- * (every room w>0, h>0, area>0, polygon>=3 vertices, minWidth, minLength, minArea).
- * In this state the project has NO usable candidate:
+ * A candidate is usable ONLY if it is geometrically valid (the Phase 13.2
+ * minimum-geometry contract: every room w>0, h>0, area>0, polygon>=3 vertices,
+ * minWidth, minLength, minArea) AND its fresh validateLayout() finds ZERO
+ * HARD-severity findings. The gate never weakens, suppresses or reclassifies a
+ * validator: it only refuses to SELECT hard-dirty candidates as winners.
+ *
+ *   - code HARD_CONSTRAINT_INFEASIBLE_DIMENSION (Phase 13.2 CASE A):
+ *     NO generated candidate satisfies the minimum-geometry contract.
+ *   - code HARD_RULE_VIOLATION (Phase 15 M2):
+ *     geometrically valid candidates exist but EVERY one carries >= 1 residual
+ *     HARD finding (site envelope, overlap, circulation, stair, regulation…).
+ *     Per-strategy residual HARD findings are reported in attempts[].
+ *
+ * In either state the project has NO usable candidate:
  *   - GenerateResult.bestCandidate is null
  *   - GenerateResult.candidates is empty
  *   - Project.candidates is empty and Project.selectedCandidateId is undefined
  * diagnosticCandidates are retained for findings/explanation only — they carry
- * HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings and must NEVER be treated as a
- * normal architectural plan (DXF/XLSX/PDF/report/manifest generation refuses them).
+ * HARD_CONSTRAINT_INFEASIBLE_DIMENSION or HARD_RULE_VIOLATION findings and must
+ * NEVER be treated as a normal architectural plan (DXF/XLSX/PDF/report/manifest
+ * generation refuses them).
  */
+export interface InfeasibleStrategyAttempt {
+  strategy: CandidateStrategy;
+  candidateId: string;
+  /** Deterministic first-failing reason: below-minimum geometry (e.g. "minA master-bedroom a=9.10<12") for the DIMENSION variant, or the residual HARD histogram (e.g. "hardCount=3: CIRC_INACCESSIBLE_SPACE x1, SITE_WALL_OUTSIDE_BUILDABLE x2") for the RULE variant. */
+  reason: string;
+  /** Phase 15 M2: residual HARD codes (code, count) — present only for HARD_RULE_VIOLATION attempts. Sorted count-desc, code-asc. */
+  hardCodes?: Array<[string, number]>;
+}
+
+export type InfeasibleCode = 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION' | 'HARD_RULE_VIOLATION';
+
 export interface InfeasibleResult {
-  code: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION';
+  code: InfeasibleCode;
   severity: 'hard';
   /** Deterministic human-readable explanation (same input+seed → same string). */
   explanation: string;
   /** Strategy attempts in the order strategies were requested (deterministic). */
   attempts: InfeasibleStrategyAttempt[];
-  /** Number of candidates generated (all invalid/below-minimum). */
+  /** Number of candidates generated (all rejected by the gate). */
   attemptedCandidates: number;
-  /** Invalid/below-minimum candidates retained for diagnostics ONLY — never usable plans. */
+  /** Gate-rejected candidates retained for diagnostics ONLY — never usable plans. */
   diagnosticCandidates: LayoutCandidate[];
 }
 
@@ -131,13 +146,17 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
   // Phase 13.1: final feasibility gate — filter out geometrically invalid candidates (w<=0,h<=0,area<=0,below min)
   // Phase 13.2: when NO valid candidate exists, return an explicit INFEASIBLE result —
   // an invalid/below-min candidate is never selected as bestCandidate and never exposed as usable.
-  const validCandidates: typeof all = [];
-  const invalidCandidates: Array<{ cand: LayoutCandidate; reason: string }> = [];
+  // Phase 15 M2 (honest HARD-feasibility gate): a candidate is usable ONLY if it is
+  // geometrically valid AND a fresh validateLayout() reports ZERO hard findings. Valid but
+  // hard-dirty candidates are demoted to diagnostic-only; if no usable candidate remains the
+  // result is INFEASIBLE with code HARD_RULE_VIOLATION (per-strategy residual HARD findings).
+  // No validator is weakened, suppressed, or reclassified by this gate.
+  const usableCandidates: LayoutCandidate[] = [];
+  const dimInvalid: Array<{ cand: LayoutCandidate; reason: string }> = [];
+  const ruleInvalid: Array<{ cand: LayoutCandidate; reason: string; hardCodes: Array<[string, number]> }> = [];
   for (const cand of all) {
     const check = isValidRoomGeometry(cand);
-    if (check.valid) {
-      validCandidates.push(cand);
-    } else {
+    if (!check.valid) {
       // Add explicit HARD finding for invalid geometry (preserved from Phase 13.1, reworded for 13.2 semantics)
       cand.findings.push({
         code: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
@@ -147,36 +166,75 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
         reference: 'Phase13.2 infeasible result semantics',
         status: 'VERIFIED',
       } as any);
-      invalidCandidates.push({ cand, reason: check.reason ?? 'unknown geometry violation' });
+      dimInvalid.push({ cand, reason: check.reason ?? 'unknown geometry violation' });
+      continue;
     }
+    // Geometrically valid: fresh honest validation pass — the gate must not trust stale findings.
+    const vr = validateLayout(cand);
+    if (vr.hard.length > 0) {
+      const hist = new Map<string, number>();
+      for (const f of vr.hard) {
+        const code = String(f.code);
+        hist.set(code, (hist.get(code) ?? 0) + 1);
+      }
+      const hardCodes = [...hist.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const reason = `hardCount=${vr.hard.length}: ${hardCodes.map(([c, n]) => `${c} x${n}`).join(', ')}`;
+      cand.findings = [
+        ...vr.findings,
+        {
+          code: 'HARD_RULE_VIOLATION',
+          severity: 'hard',
+          message: `Phase15 M2 rule violation: ${reason} — candidate excluded from usable candidates (diagnostic only); when no hard-clean candidate exists the result is INFEASIBLE with bestCandidate=null`,
+          ruleId: 'HARD_FEASIBILITY_GATE',
+          reference: 'Phase15 M2 honest HARD-feasibility gate',
+          status: 'VERIFIED',
+        } as any,
+      ];
+      ruleInvalid.push({ cand, reason, hardCodes });
+      continue;
+    }
+    usableCandidates.push(cand);
   }
 
-  // Phase 13.2 CASE A: no geometrically valid candidate → explicit infeasible result, no usable candidate.
-  if (validCandidates.length === 0) {
+  const rejected = [...dimInvalid.map(x => x.cand), ...ruleInvalid.map(x => x.cand)];
+  const rejectedByReason = new Map<string, { reason: string; hardCodes?: Array<[string, number]> }>();
+  for (const x of dimInvalid) rejectedByReason.set(x.cand.id, { reason: x.reason });
+  for (const x of ruleInvalid) rejectedByReason.set(x.cand.id, { reason: x.reason, hardCodes: x.hardCodes });
+
+  // Phase 15 M2 CASE A: no usable candidate → explicit INFEASIBLE result.
+  if (usableCandidates.length === 0) {
+    const ruleVariant = ruleInvalid.length > 0; // valid candidates exist, but every one carries residual HARD
     const attempts: InfeasibleStrategyAttempt[] = [];
     for (const strategy of strategies) {
-      const inv = invalidCandidates.find(x => x.cand.metadata.strategy === strategy);
-      if (inv) {
-        attempts.push({ strategy, candidateId: inv.cand.id, reason: inv.reason });
+      const rejectedCand = rejected.find(c => c.metadata.strategy === strategy);
+      if (rejectedCand) {
+        const info = rejectedByReason.get(rejectedCand.id);
+        attempts.push({ strategy, candidateId: rejectedCand.id, reason: info?.reason ?? 'unknown', ...(info?.hardCodes ? { hardCodes: info.hardCodes } : {}) });
       }
     }
     const attemptSummary = attempts.length > 0
       ? attempts.map(a => `${a.strategy}: ${a.reason}`).join(' ; ')
       : 'no candidates were generated';
-    const explanation =
-      `Phase13.2 INFEASIBLE: no geometrically valid candidate — ${attempts.length}/${strategies.length} strategy attempts, ` +
-      `0 satisfy the minimum-geometry contract (every room w>0, h>0, area>0, polygon>=3 vertices, minWidth, minLength, minArea). ` +
-      `First failure per strategy: ${attemptSummary}. ` +
-      `bestCandidate is null and no usable candidate is exposed; diagnostic candidates carry HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings. ` +
-      `This result must NOT be treated as a normal architectural plan.`;
+    const explanation = ruleVariant
+      ? `Phase15 M2 INFEASIBLE (HARD_RULE_VIOLATION): ${ruleInvalid.length} geometrically valid candidate(s) generated, every one carries residual HARD findings — 0 hard-clean candidates. ` +
+        `First residual per strategy: ${attemptSummary}. ` +
+        `bestCandidate is null and no usable candidate is exposed; diagnostic candidates carry HARD_RULE_VIOLATION findings. ` +
+        `This result must NOT be treated as a normal architectural plan.`
+      : `Phase13.2 INFEASIBLE: no geometrically valid candidate — ${attempts.length}/${strategies.length} strategy attempts, ` +
+        `0 satisfy the minimum-geometry contract (every room w>0, h>0, area>0, polygon>=3 vertices, minWidth, minLength, minArea). ` +
+        `First failure per strategy: ${attemptSummary}. ` +
+        `bestCandidate is null and no usable candidate is exposed; diagnostic candidates carry HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings. ` +
+        `This result must NOT be treated as a normal architectural plan.`;
     const infeasible: InfeasibleResult = {
-      code: 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
+      code: ruleVariant ? 'HARD_RULE_VIOLATION' : 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION',
       severity: 'hard',
       explanation,
       attempts,
       attemptedCandidates: all.length,
-      // Best-first (same comparator as the feasible path): diagnostics[0] is the least-bad attempt.
-      diagnosticCandidates: rankCandidatesBestFirst(invalidCandidates.map(x => x.cand), strategies),
+      // Best-first (same comparator as the feasible path): diagnostics[0] is the least-bad
+      // attempt — the same candidate the Phase 13.1 fallback would have exposed, now correctly
+      // kept out of the usable result (and out of the project's candidates).
+      diagnosticCandidates: rankCandidatesBestFirst(rejected, strategies),
     };
     project.candidates = [];
     project.selectedCandidateId = undefined;
@@ -184,42 +242,53 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     return { project, candidates: [], bestCandidate: null, infeasible };
   }
 
-  // Phase 13.2 feasible path: rank among valid candidates only (invalid ones are never ranked or exposed)
-  const candidates = rankCandidatesBestFirst(validCandidates, strategies);
+  // Phase 15 M2 feasible path: rank among usable (hard-clean) candidates only. Hard-dirty valid
+  // candidates are never ranked, never selected, never exposed as usable — they are diagnostics.
+  const candidates = rankCandidatesBestFirst(usableCandidates, strategies);
   const bestCandidate = candidates[0];
-  project.candidates = validCandidates;
+  project.candidates = usableCandidates;
   project.selectedCandidateId = bestCandidate.id;
   project.updatedAt = Date.now();
   if (opts.allStrategies) {
-    return { project, candidates: validCandidates, bestCandidate, infeasible: null };
+    return { project, candidates: usableCandidates, bestCandidate, infeasible: null };
   }
   return { project, candidates: [bestCandidate], bestCandidate, infeasible: null };
 }
 
-const INFEASIBLE_DIMENSION_CODE = 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION';
+const INFEASIBLE_MARKER_CODES = ['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION'] as const;
 
-/** Phase 13.2: true for candidates marked infeasible by the minimum-geometry gate (diagnostic-only). */
-function isDimensionInfeasibleCandidate(c: LayoutCandidate): boolean {
-  return c.findings.some(f => f.code === INFEASIBLE_DIMENSION_CODE);
+/**
+ * Phase 13.2 / Phase 15 M2: true for candidates marked diagnostic-only by the gate —
+ * either below the minimum-geometry contract (DIMENSION) or geometrically valid but
+ * carrying residual HARD findings (RULE).
+ */
+function gateMarkerCode(c: LayoutCandidate): string | null {
+  for (const code of INFEASIBLE_MARKER_CODES) {
+    if (c.findings.some(f => f.code === code)) return code;
+  }
+  return null;
 }
 
 /**
- * Phase 13.2 downstream safety: output generation (DXF/XLSX/PDF/report/manifest)
+ * Phase 13.2 / Phase 15 M2 downstream safety: output generation (DXF/XLSX/PDF/report/manifest)
  * must never silently present an infeasible project as a normal architectural plan.
  * Fails explicitly on a null candidate (infeasible result) or on a diagnostic-only
- * candidate marked HARD_CONSTRAINT_INFEASIBLE_DIMENSION. Valid-geometry candidates
- * with ordinary HARD site/constraint findings are NOT rejected here (CASE B semantics).
+ * candidate marked HARD_CONSTRAINT_INFEASIBLE_DIMENSION or HARD_RULE_VIOLATION.
  */
 function requireUsableCandidate(candidate: LayoutCandidate | null | undefined, operation: string): LayoutCandidate {
   if (!candidate) {
     throw new Error(
-      `${operation}: no usable candidate — the project is INFEASIBLE (${INFEASIBLE_DIMENSION_CODE}: no candidate satisfies minimum geometry). ` +
+      `${operation}: no usable candidate — the project is INFEASIBLE (HARD_CONSTRAINT_INFEASIBLE_DIMENSION: no candidate satisfies minimum geometry, or HARD_RULE_VIOLATION: no hard-clean candidate). ` +
       `Refusing to generate output for an infeasible project; adjust site dimensions or the building program.`,
     );
   }
-  if (isDimensionInfeasibleCandidate(candidate)) {
+  const marker = gateMarkerCode(candidate);
+  if (marker) {
+    const what = marker === 'HARD_RULE_VIOLATION'
+      ? 'geometry-valid but carrying residual HARD findings'
+      : 'invalid/below-minimum geometry';
     throw new Error(
-      `${operation}: candidate ${candidate.id} is marked ${INFEASIBLE_DIMENSION_CODE} (invalid/below-minimum geometry) and is diagnostic-only. ` +
+      `${operation}: candidate ${candidate.id} is marked ${marker} (${what}) and is diagnostic-only. ` +
       `Refusing to generate output that would present it as a normal architectural plan.`,
     );
   }

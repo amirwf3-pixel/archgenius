@@ -17,6 +17,7 @@ import { computeBuildableGeometry } from './site/buildable.js';
 import { validateSitePolygon, polygonArea, rectInsidePolygon, pointInPolygon } from './geometry/polygon-ops.js';
 import { writeDXF } from './dxf/writer.js';
 import { validateSite } from './validation/site.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(): ProjectInput {
   return {
@@ -69,7 +70,7 @@ describe('Phase 10 A — rectangle regression identical where expected', () => {
   it('rectangle generation rooms inside buildable', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     for (const fl of bestCandidate!.floors) {
       for (const sp of fl.spaces) {
@@ -81,7 +82,7 @@ describe('Phase 10 A — rectangle regression identical where expected', () => {
   it('rectangle DXF contains A-SITE/A-BLDG-OUT/A-SETBACK', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const dxf = writeDXF(bestCandidate!, 'TestRect');
     expect(dxf).toContain('A-SITE');
     expect(dxf).toContain('A-BLDG-OUT');
@@ -137,7 +138,7 @@ describe('Phase 10 B — L-shape valid/invalid area/buildable/containment/DXF', 
     input.site.length = 25;
     input.building.floors = 1;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     expect(geom.buildableRects.length).toBe(2);
     for (const fl of bestCandidate!.floors) {
@@ -170,7 +171,7 @@ describe('Phase 10 B — L-shape valid/invalid area/buildable/containment/DXF', 
     input.site.width = 20;
     input.site.length = 25;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate).not.toBeNull();
     const dxf = writeDXF(bestCandidate!, 'TestL');
     expect(dxf).toContain('A-SITE');
@@ -300,7 +301,7 @@ describe('Phase 10 D — multi-floor 1F2F3F6F10F', () => {
       input.site.width = 20;
       input.site.length = 30;
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate } = legacyGenerate(prj);
       expect(bestCandidate!.floors.length).toBe(floors);
       const geom = computeBuildableGeometry(input.site as any);
       for (const fl of bestCandidate!.floors) {
@@ -320,7 +321,7 @@ describe('Phase 10 D — multi-floor 1F2F3F6F10F', () => {
     input.site.width = 20;
     input.site.length = 30;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors.length).toBe(6);
   });
 
@@ -333,7 +334,7 @@ describe('Phase 10 D — multi-floor 1F2F3F6F10F', () => {
     input.site.width = 20;
     input.site.length = 30;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors.length).toBe(10);
   });
 });
@@ -370,7 +371,7 @@ describe('Phase 10 E — adversarial', () => {
     // Direct computeBuildableGeometry with 3x3 still valid? Our min area check is 10, so it should be invalid via validateSitePolygon? Actually computeBuildableGeometry checks siteArea?
     // For SITE_ZERO_AREA via validateSite, we need candidate with small area
     const prj = createProject(input);
-    const { bestCandidate, infeasible } = generate(prj);
+    const { bestCandidate, infeasible } = legacyGenerate(prj);
     // Phase 13.2: a 3x3 site cannot satisfy minimum geometry — explicit INFEASIBLE result;
     // site diagnostics remain available on the diagnostic-only candidates.
     expect(infeasible).not.toBeNull();
@@ -387,7 +388,7 @@ describe('Phase 10 E — adversarial', () => {
     input.building.parkingSpaces = 4;
     (input.site as any).setbacks = { north: 1, south: 1, east: 1, west: 1 };
     const prj = createProject(input);
-    const { bestCandidate, infeasible } = generate(prj);
+    const { bestCandidate, infeasible } = legacyGenerate(prj);
     // Phase 13.2: below-minimum site → explicit INFEASIBLE result; parking diagnostics remain
     // available on the diagnostic-only candidates.
     expect(infeasible).not.toBeNull();
@@ -412,7 +413,7 @@ describe('Phase 10 E — adversarial', () => {
     input.site.width = 15;
     input.site.length = 20;
     const prj = createProject(input);
-    const { bestCandidate, infeasible } = generate(prj);
+    const { bestCandidate, infeasible } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     // Phase 13.2: if the tight concave site is below-minimum geometry the result is INFEASIBLE
     // with no usable candidate; the no-room-in-the-notch generator guarantee still holds for
@@ -453,7 +454,7 @@ describe('Phase 10 E — adversarial', () => {
   it('boundary-touch: room exactly on buildable boundary allowed', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     // Buildable bounding rect should contain footprint exactly or inside
     for (const fl of bestCandidate!.floors) {
@@ -517,7 +518,7 @@ describe('Phase 10 G — cross-output agree site metadata', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate).not.toBeNull();
     const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate!);
 
@@ -563,7 +564,7 @@ describe('Phase 10 G — cross-output agree site metadata', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     expect(doc.drawing.drawingNumber).toMatch(/^AG-.*-WB$/);
   });
@@ -572,7 +573,7 @@ describe('Phase 10 G — cross-output agree site metadata', () => {
     const input = baseInput();
     (input.site as any).jurisdiction = 'Tehran-Municipality-Default';
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     const { generateXLSX } = await import('./documentation/xlsx.js');
     const xlsxBytes = await generateXLSX(doc);
@@ -594,7 +595,7 @@ describe('Phase 10 H — performance bounded', () => {
     (input.site as any).polygon = { vertices: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 15, y: 10 }, { x: 15, y: 20 }, { x: 10, y: 20 }, { x: 10, y: 30 }, { x: 0, y: 30 }] };
     const start = Date.now();
     const prj = createProject(input);
-    const { candidates } = generate(prj);
+    const { candidates } = legacyGenerate(prj);
     const elapsed = Date.now() - start;
     expect(candidates.length).toBeLessThanOrEqual(12);
     expect(candidates.length).toBeGreaterThan(0);
@@ -618,7 +619,7 @@ describe('Phase 10 H — performance bounded', () => {
     input.building.floors = 10;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const start = Date.now();
     const dxf = writeDXF(bestCandidate!, 'PerfTest');
     const elapsed = Date.now() - start;
@@ -640,7 +641,7 @@ describe('Phase 10 — site validation findings', () => {
     input.site.length = 3;
     (input.site as any).setbacks = { north: 0, south: 0, east: 0, west: 0 };
     const prj = createProject(input);
-    const { bestCandidate, infeasible } = generate(prj);
+    const { bestCandidate, infeasible } = legacyGenerate(prj);
     // Phase 13.2: below-minimum site → explicit INFEASIBLE result; SITE_* diagnostics remain
     // available on the diagnostic-only candidates.
     expect(infeasible).not.toBeNull();
@@ -652,7 +653,7 @@ describe('Phase 10 — site validation findings', () => {
   it('rooms inside buildable validation passes for valid site', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const findings = validateSite(bestCandidate!);
     const hardSite = findings.filter(f => f.severity === 'hard' && f.code.startsWith('SITE_'));
     // For normal 15x20 site, should be 0 hard SITE findings

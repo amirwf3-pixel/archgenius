@@ -62,7 +62,8 @@ describe('Room boundary integrity (regression: 5 mm drift)', () => {
         // Narrow sites may be genuinely infeasible (below-min geometry) — that's an honest HARD via infeasible result, not a silent drift.
         if (!bestCandidate) {
           expect(infeasible).toBeDefined();
-          expect(infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+          // Phase 15 M2: below-min (DIMENSION) OR valid-but-hard-dirty (RULE) — both honest INFEASIBLE.
+          expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible.code);
           // At least one diagnostic candidate exists for inspection
           expect(infeasible.diagnosticCandidates.length).toBeGreaterThan(0);
           return;

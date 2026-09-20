@@ -423,7 +423,11 @@ describe('end-to-end: real core findings translate to Persian', () => {
       deterministic: true, seed: 42,
     } as any;
     const result = generate(createProject(input));
-    const vr = validateCandidate(result.candidates[0]);
+    // Phase 15 M2: every strategy for this fixture carries residual HARD findings, so the
+    // honest gate demotes them to diagnostic-only. The i18n layer must translate the REAL
+    // validator findings either way — diagnostics keep every finding verbatim.
+    const plan = (result.bestCandidate ?? result.infeasible!.diagnosticCandidates[0]) as any;
+    const vr = validateCandidate(plan);
     const hard = vr.findings.filter(f => f.severity === 'hard');
     expect(hard.length).toBeGreaterThan(0);
     for (const f of hard) expect(isPersianText(findingMessageFa(f))).toBe(true);

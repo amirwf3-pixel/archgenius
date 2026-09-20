@@ -16,6 +16,7 @@ import { evaluateDaylight } from './intelligence/daylight.js';
 import { evaluateFurniture } from './intelligence/furniture.js';
 import { evaluateStacking } from './intelligence/stacking.js';
 import type { Space } from './model/space.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(): ProjectInput {
   return {
@@ -50,7 +51,7 @@ describe('Phase 11.1 F-01 constraint integration', () => {
   it('validateParametricConstraints called in production via validateLayout', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const vr = validateLayout(bestCandidate!);
     // Should have CONSTRAINT_ findings from DEFAULT_RESIDENTIAL_CONSTRAINTS wiring — now hard per declared strength
     const constraintFindings = vr.findings.filter(f => f.code.startsWith('CONSTRAINT_'));
@@ -86,7 +87,7 @@ describe('Phase 11.1 F-02 bounded shrink repair', () => {
   it('tryShrink preserves polygon authoritative, rect derived, area derived', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces.find(s => s.type === 'living') ?? bestCandidate!.floors[0].spaces[0];
     // Resize to smaller should trigger shrink logic if overlap
     const newW = Math.max(2, space.rect.w * 0.8);
@@ -106,7 +107,7 @@ describe('Phase 11.1 F-02 bounded shrink repair', () => {
   it('editing enforces hard parametric constraints (minArea)', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const floor = bestCandidate!.floors[0];
     const space = floor.spaces[0];
     // Add explicit minArea constraint
@@ -121,7 +122,7 @@ describe('Phase 11.1 F-02 bounded shrink repair', () => {
   it('bounded repair deterministic order', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const op = { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.1, newY: space.rect.y };
     const r1 = moveRoom(bestCandidate!, op);
@@ -137,7 +138,7 @@ describe('Phase 11.1 F-03 polygon-aware intelligence', () => {
   it('daylight uses polygon bounding, not rect area as actual', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const floor = bestCandidate!.floors[0];
     const eval1 = evaluateDaylight(floor);
     expect(eval1.score).toBeGreaterThanOrEqual(0);
@@ -150,7 +151,7 @@ describe('Phase 11.1 F-03 polygon-aware intelligence', () => {
   it('furniture intelligence heuristic, hard containment separate', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const floor = bestCandidate!.floors[0];
     const evalF = evaluateFurniture(floor);
     expect(evalF.score).toBeGreaterThanOrEqual(0);
@@ -164,7 +165,7 @@ describe('Phase 11.1 F-03 polygon-aware intelligence', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const stacking = evaluateStacking(bestCandidate!);
     expect(stacking.isHeuristic).toBe(true);
     expect(stacking.score).toBeGreaterThanOrEqual(0);
@@ -177,7 +178,7 @@ describe('Phase 11.1 F-05 web tsc + core exports', () => {
   it('Space has locked, shapeType, constraints', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     // Check optional fields exist as properties (may be undefined, but not throw)
     expect('locked' in space || space.locked === undefined).toBe(true);
@@ -198,7 +199,7 @@ describe('Phase 11.1 F-07 duplicate type canonical', () => {
     // Import from space.ts canonical
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     // If constraints present, check it can have zone/privacy
     const testConstraint: any = { minArea: 10, zone: 'public', privacy: 'public' };
@@ -231,7 +232,7 @@ describe('Phase 11.1 Required 27 cases', () => {
   it('B1 minArea', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const cloned = JSON.parse(JSON.stringify(bestCandidate));
     const s = cloned.floors[0].spaces.find((sp: any) => sp.id === space.id);
@@ -243,7 +244,7 @@ describe('Phase 11.1 Required 27 cases', () => {
   it('C1 locking', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const locked = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'position' });
     expect(locked.success).toBe(true);
@@ -254,7 +255,7 @@ describe('Phase 11.1 Required 27 cases', () => {
   it('D1 editing', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.1, newY: space.rect.y });
     expect(typeof res.success).toBe('boolean');
@@ -263,7 +264,7 @@ describe('Phase 11.1 Required 27 cases', () => {
   it('E1 site rect', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors[0].spaces.length).toBeGreaterThan(0);
   });
   // F Multi-floor 1F/2F/3F/6F/10F
@@ -272,7 +273,7 @@ describe('Phase 11.1 Required 27 cases', () => {
     input.building.floors = 6;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors.length).toBe(6);
   });
   // G Outputs DXF polygon coords PDF/XLSX/report/manifest consistency — covered in phase11.test.ts
@@ -299,7 +300,7 @@ describe('Phase 11.1 Required 27 cases', () => {
     input.building.hasStair = true;
     const prj = createProject(input);
     const start = Date.now();
-    const { candidates } = generate(prj);
+    const { candidates } = legacyGenerate(prj);
     const elapsed = Date.now() - start;
     expect(candidates.length).toBeLessThanOrEqual(12);
     expect(elapsed).toBeLessThan(10000);
@@ -322,7 +323,7 @@ describe('Phase 11.1 Adversarial A-M', () => {
     (input.site as any).shape = 'l-shape';
     (input.site as any).lShape = { width: 10, length: 10, notchWidth: 4, notchLength: 4, notchCorner: 'ne' };
     const prj = createProject(input);
-    const { bestCandidate, infeasible } = generate(prj);
+    const { bestCandidate, infeasible } = legacyGenerate(prj);
     // Phase 13.2: tight concave L is below-minimum geometry → INFEASIBLE; generation still
     // produced geometry, visible on diagnostic candidates (never exposed as usable).
     if (!bestCandidate) {
@@ -344,7 +345,7 @@ describe('Phase 11.1 Adversarial A-M', () => {
   it('E impossible resize', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const res = resizeRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newWidth: 0.5, newHeight: 0.5 });
     expect(res.success).toBe(false);
@@ -352,7 +353,7 @@ describe('Phase 11.1 Adversarial A-M', () => {
   it('F locked collision', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const a = bestCandidate!.floors[0].spaces[0];
     const b = bestCandidate!.floors[0].spaces[1];
     const locked = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: a.id, lockKind: 'all' });
@@ -378,7 +379,7 @@ describe('Phase 11.1 Adversarial A-M', () => {
   it('J L-shape preserve via editing', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces.find(s => s.type === 'living')!;
     const res = setLShape(bestCandidate!, { floorLevel: 0, spaceId: space.id, notchWidth: 1, notchLength: 1, notchCorner: 'ne' });
     if (res.success) {
@@ -389,7 +390,7 @@ describe('Phase 11.1 Adversarial A-M', () => {
   it('K site containment after move', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX: 100, newY: 100 });
     expect(res.success).toBe(false);
@@ -397,7 +398,7 @@ describe('Phase 11.1 Adversarial A-M', () => {
   it('L determinism after lock/unlock', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const locked = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'position' });
     const unlocked = unlockRoom(locked.candidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'position' });
@@ -406,7 +407,7 @@ describe('Phase 11.1 Adversarial A-M', () => {
   it('M DXF polygon coords actual not bbox fallback', async () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { writeDXF } = await import('./dxf/writer.js');
     const dxf = writeDXF(bestCandidate!, 'Test');
     expect(dxf).toContain('A-ROOM');

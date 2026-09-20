@@ -10,6 +10,7 @@ import { DEFAULT_RESIDENTIAL_CONSTRAINTS } from './layout/constraints.js';
 import { sharedWallEdges, createRectangleRoomPolygon } from './geometry/room-polygon.js';
 import { moveRoom, lockRoom } from './editing/room-editing.js';
 import type { ProjectInput } from './model/project.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(overrides: Partial<ProjectInput> = {}): ProjectInput {
   return {
@@ -240,7 +241,7 @@ describe('Phase12 J: Preserve 4 strategies constraint-aware', () => {
   it('all 4 strategies generate candidates', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { candidates } = generate(prj, { allStrategies: true } as any);
+    const { candidates } = legacyGenerate(prj, { allStrategies: true } as any); // M2: generator fan-out guarantee (product gate may reject)
     expect(candidates.length).toBe(4);
     const strategies = candidates.map(c => c.metadata.strategy).sort();
     expect(strategies).toEqual(['alternative-zoning', 'area-efficiency', 'daylight-orientation', 'functional-circulation'].sort());
@@ -263,7 +264,7 @@ describe('Phase12 K: Hard-first ranking', () => {
       seed: 42,
     });
     const prj = createProject(input);
-    const { candidates } = generate(prj, { allStrategies: true } as any);
+    const { candidates } = legacyGenerate(prj, { allStrategies: true } as any); // M2: ranking comparator test on generator candidates
     // Sort by hard count
     const sorted = [...candidates].sort((a, b) => {
       const ha = a.findings.filter(f => f.severity === 'hard').length;
@@ -285,7 +286,7 @@ describe('Phase12 L: Multi-floor preserved', () => {
         building: { type: 'villa', floors, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1, hasStair: floors > 1, hasStorage: true },
       });
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate } = legacyGenerate(prj);
       expect(bestCandidate!.floors.length).toBe(floors);
     });
   }
@@ -316,7 +317,8 @@ describe('Phase12 M: Site compatibility', () => {
     // Phase 13.2: tight L 15x20 notch 5x5 is below-minimum geometry → explicit INFEASIBLE;
     // generation still produced geometry on diagnostic candidates.
     if (!bestCandidate) {
-      expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      // Phase 15 M2: DIMENSION or RULE — both are explicit honest INFEASIBLE (no usable plan exposed).
+        expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
       expect(infeasible!.diagnosticCandidates[0].floors[0].spaces.length).toBeGreaterThan(0);
     } else {
       expect(bestCandidate.floors[0].spaces.length).toBeGreaterThan(0);
@@ -395,13 +397,15 @@ describe('Phase12 Adversarial matrix', () => {
         // No silent fallback: bestCandidate is null, usable candidates are empty, and the
         // diagnostic candidates carry explicit HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings.
         expect(infeasible).not.toBeNull();
-        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        // Phase 15 M2: DIMENSION or RULE — both are explicit honest INFEASIBLE (no usable plan exposed).
+        expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
         expect(infeasible!.explanation).toBeTruthy();
         expect(infeasible!.attempts.length).toBeGreaterThan(0);
         expect(prj.candidates).toEqual([]);
         for (const d of infeasible!.diagnosticCandidates) {
           expect(d.floors[0].spaces.length).toBeGreaterThan(0);
-          expect(d.findings.some((f: any) => f.code === 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION' && f.severity === 'hard')).toBe(true);
+          // Phase 15 M2: every diagnostic carries a gate marker — DIMENSION or RULE — never silently exposed.
+          expect(d.findings.some((f: any) => (f.code === 'HARD_CONSTRAINT_INFEASIBLE_DIMENSION' || f.code === 'HARD_RULE_VIOLATION') && f.severity === 'hard')).toBe(true);
           for (const fl of d.floors) for (const s of fl.spaces) {
             // Phase 13.1 guarantee intact even on diagnostics: no zero/negative geometry.
             expect(s.rect.w).toBeGreaterThan(0);

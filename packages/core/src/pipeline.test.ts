@@ -112,7 +112,7 @@ describe('End-to-end pipeline', () => {
     expect(dxf.length).toBeGreaterThan(2000);
   });
 
-  it('works for 2-story villa with stair', () => {
+  it('2-story villa with stair — Phase 15 M2 honest gate: usable winner is HARD-clean, else explicit INFEASIBLE', () => {
     const inp = baseInput();
     inp.building.floors = 2;
     inp.building.hasStair = true;
@@ -120,19 +120,26 @@ describe('End-to-end pipeline', () => {
     inp.building.masterBedrooms = 1;
     inp.site.width = 18; inp.site.length = 25;
     const prj = createProject(inp);
-    const { candidates } = generate(prj);
-    expect(candidates[0].floors.length).toBe(2);
-    expect(candidates[0].floors[0].stairs.length).toBeGreaterThanOrEqual(1);
-    const vr = validateCandidate(candidates[0]);
-    const hardGeo = vr.hard.filter(f => f.code.startsWith('GEO_'));
-    if (hardGeo.length) {
-      console.log('2-story hard failures:', hardGeo.map(h => h.message));
+    const res = generate(prj);
+    if (!res.bestCandidate) {
+      // Honest INFEASIBLE — never a hard-dirty winner (the pre-M2 CASE-B exposure is closed).
+      expect(res.infeasible).not.toBeNull();
+      expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(res.infeasible!.code);
+      expect(res.candidates).toEqual([]);
+      expect(prj.selectedCandidateId).toBeUndefined();
+      expect(res.infeasible!.diagnosticCandidates.length).toBeGreaterThan(0);
+      const diag = res.infeasible!.diagnosticCandidates[0];
+      expect(diag.floors.length).toBe(2);
+      expect(diag.floors[0].stairs.length).toBeGreaterThanOrEqual(1);
+      expect(() => exportDXF(diag as any, '2-story-villa')).toThrow(/diagnostic-only/);
+      return;
     }
-    expect(hardGeo).toEqual([]);
-    // CIRC hard may appear for 2-story due to stair pocket, allow but log
-    const circHard = vr.hard.filter(f => f.code.startsWith('CIRC_'));
-    if (circHard.length) console.log('2-story CIRC hard:', circHard.map(h=>h.message));
-    const { dxf, validation } = exportDXF(candidates[0], '2-story-villa');
+    // Usable winner: structurally sound AND zero HARD findings (gate guarantee, re-checked here).
+    expect(res.bestCandidate.floors.length).toBe(2);
+    expect(res.bestCandidate.floors[0].stairs.length).toBeGreaterThanOrEqual(1);
+    const vr = validateCandidate(res.bestCandidate);
+    expect(vr.hard).toEqual([]);
+    const { dxf, validation } = exportDXF(res.bestCandidate, '2-story-villa');
     expect(validation.ok).toBe(true);
     writeFileSync(join('/home/user/archgenius', 'test-output-2story.dxf'), dxf, 'utf8');
   });

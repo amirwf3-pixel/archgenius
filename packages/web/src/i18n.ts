@@ -734,6 +734,7 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
   'DEF-PARK-001': [{ re: /^Parking (\d+)\/(\d+) stalls \(default assumption: 1 stall per residential unit — verify with municipality\)\.$/, fa: 'پارکینگ: {1} جای پارک از {2} جای لازم (فرض پیش‌فرض: یک جای پارک به ازای هر واحد مسکونی — با شهرداری تطبیق داده شود).' }],
   SITE_GEOM_INVALID: [{ re: /^Site\/buildable geometry invalid: (.*)$/, fa: 'هندسهٔ سایت/سطح قابل‌ساخت نامعتبر است: {1}' }],
   HARD_CONSTRAINT_INFEASIBLE_DIMENSION: [{ re: /^Phase13\.2 infeasible dimension: (.*) — candidate excluded from usable candidates \(diagnostic only\); when no valid candidate exists the result is INFEASIBLE with bestCandidate=null$/, fa: 'ابعاد غیرقابل‌حل (Phase13.2): {1} — گزینه از گزینه‌های قابل‌استفاده کنار گذاشته شد (صرفاً تشخیصی)؛ در نبودِ گزینهٔ معتبر، نتیجه INFEASIBLE با bestCandidate=null است' }],
+  HARD_RULE_VIOLATION: [{ re: /^Phase15 M2 rule violation: (.*) — candidate excluded from usable candidates \(diagnostic only\); when no hard-clean candidate exists the result is INFEASIBLE with bestCandidate=null$/, fa: 'تخلف از قواعد صریح (Phase15 M2): {1} — گزینه از گزینه‌های قابل‌استفاده کنار گذاشته شد (صرفاً تشخیصی)؛ در نبودِ گزینهٔ بدون خطای hard، نتیجه INFEASIBLE با bestCandidate=null است' }],
 
   // --- validation/site.ts ---
   SITE_INVALID_POLYGON: [{ re: /^Site polygon invalid: (.*) — shape (\S+)$/, fa: 'چندضلعی سایت نامعتبر است: {1} — شکل {2}', maps: { 2: SITE_SHAPE_FA } }],
@@ -798,15 +799,26 @@ export function findingMessageFa(f: { code?: string | null; message: string }): 
   return msg;
 }
 
-/** Persian translation of the Phase13.2 INFEASIBLE explanation (fixed frame;
- *  the per-strategy diagnostic summary is preserved verbatim). */
+/** Persian translation of the INFEASIBLE explanation (fixed frame;
+ *  the per-strategy diagnostic summary is preserved verbatim). Covers the
+ *  Phase 13.2 minimum-geometry variant and the Phase 15 M2 HARD_RULE_VIOLATION variant. */
 export function translateInfeasibleExplanation(s: string): string {
   if (!s) return s;
-  const rule: MsgRule = {
-    re: /^Phase13\.2 INFEASIBLE: no geometrically valid candidate — (\d+)\/(\d+) strategy attempts, 0 satisfy the minimum-geometry contract \(every room w>0, h>0, area>0, polygon>=3 vertices, minWidth, minLength, minArea\)\. First failure per strategy: (.*)\. bestCandidate is null and no usable candidate is exposed; diagnostic candidates carry HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings\. This result must NOT be treated as a normal architectural plan\.$/,
-    fa: 'Phase13.2 INFEASIBLE: هیچ گزینهٔ هندسی معتبری وجود ندارد — {1} از {2} تلاش راهبردی، هیچ‌یک قرارداد حداقل هندسه را برآورده نمی‌کند (هر فضا w>0، h>0، area>0، چندضلعی با ≥3 رأس، minWidth، minLength، minArea). نخستین شکست هر راهبرد: {3}. bestCandidate برابر null است و هیچ گزینهٔ قابل‌استفاده‌ای ارائه نمی‌شود؛ گزینه‌های تشخیصی حامل یافته‌های HARD_CONSTRAINT_INFEASIBLE_DIMENSION هستند. این نتیجه را نباید پلان معماری عادی تلقی کرد.',
-  };
-  return applyMsgRule(rule, s) ?? s;
+  const rules: MsgRule[] = [
+    {
+      re: /^Phase13\.2 INFEASIBLE: no geometrically valid candidate — (\d+)\/(\d+) strategy attempts, 0 satisfy the minimum-geometry contract \(every room w>0, h>0, area>0, polygon>=3 vertices, minWidth, minLength, minArea\)\. First failure per strategy: (.*)\. bestCandidate is null and no usable candidate is exposed; diagnostic candidates carry HARD_CONSTRAINT_INFEASIBLE_DIMENSION findings\. This result must NOT be treated as a normal architectural plan\.$/,
+      fa: 'Phase13.2 INFEASIBLE: هیچ گزینهٔ هندسی معتبری وجود ندارد — {1} از {2} تلاش راهبردی، هیچ‌یک قرارداد حداقل هندسه را برآورده نمی‌کند (هر فضا w>0، h>0، area>0، چندضلعی با ≥3 رأس، minWidth، minLength، minArea). نخستین شکست هر راهبرد: {3}. bestCandidate برابر null است و هیچ گزینهٔ قابل‌استفاده‌ای ارائه نمی‌شود؛ گزینه‌های تشخیصی حامل یافته‌های HARD_CONSTRAINT_INFEASIBLE_DIMENSION هستند. این نتیجه را نباید پلان معماری عادی تلقی کرد.',
+    },
+    {
+      re: /^Phase15 M2 INFEASIBLE \(HARD_RULE_VIOLATION\): (\d+) geometrically valid candidate\(s\) generated, every one carries residual HARD findings — (\d+) hard-clean candidates\. First residual per strategy: (.*)\. bestCandidate is null and no usable candidate is exposed; diagnostic candidates carry HARD_RULE_VIOLATION findings\. This result must NOT be treated as a normal architectural plan\.$/,
+      fa: 'Phase15 M2 INFEASIBLE (HARD_RULE_VIOLATION): {1} گزینهٔ دارای هندسهٔ معتبر تولید شد، اما همه حامل یافته‌های HARD باقی‌مانده‌اند — {2} گزینهٔ بدون خطای hard. باقیماندهٔ نخست هر راهبرد: {3}. bestCandidate برابر null است و هیچ گزینهٔ قابل‌استفاده‌ای ارائه نمی‌شود؛ گزینه‌های تشخیصی حامل یافته‌های HARD_RULE_VIOLATION هستند. این نتیجه را نباید پلان معماری عادی تلقی کرد.',
+    },
+  ];
+  for (const rule of rules) {
+    const out = applyMsgRule(rule, s);
+    if (out !== null) return out;
+  }
+  return s;
 }
 
 /** True when the string contains Persian script (used by tests). */

@@ -11,6 +11,7 @@ import { evaluateCandidate, evaluateFloor } from './intelligence/evaluation.js';
 import { writeDXF } from './dxf/writer.js';
 import { buildManifest } from './documentation/manifest.js';
 import { buildQAReport } from './documentation/report.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(): ProjectInput {
   return {
@@ -44,7 +45,7 @@ describe('Phase 9.1 — Obsolete scoring scope cannot reappear', () => {
         input.site.length = n >= 6 ? 30 : 20;
       }
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate } = legacyGenerate(prj);
       const evalC = evaluateCandidate(bestCandidate!);
       // Whole-building scope must be Whole-Building, not legacy
       expect(evalC.intelligenceScope).not.toContain('not evaluated');
@@ -77,7 +78,7 @@ describe('Phase 9.1 — Obsolete scoring scope cannot reappear', () => {
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     const allScopes = [
       evalC.intelligenceScope,
@@ -100,7 +101,7 @@ describe('Phase 9.1 — Multi-floor scope correctness', () => {
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     expect(evalC.perFloor[0].intelligenceScope).toBe('Floor 0 Intelligence — Ground Floor');
     expect(evalC.perFloor[1].intelligenceScope).toBe('Floor 1 Intelligence');
@@ -117,7 +118,7 @@ describe('Phase 9.1 — DXF generic layer backward compatibility + no duplicate 
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const dxfWithGeneric = writeDXF(bestCandidate!, 'Test', { includeGenericLayers: true });
     const dxfWithoutGeneric = writeDXF(bestCandidate!, 'Test', { includeGenericLayers: false });
 
@@ -144,7 +145,7 @@ describe('Phase 9.1 — DXF generic layer backward compatibility + no duplicate 
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const dxf = writeDXF(bestCandidate!, 'Test');
     // All floors represented
     expect(dxf).toContain('A-FLOOR-0-A-WALL-EXT');
@@ -164,7 +165,7 @@ describe('Phase 9.1 — DXF generic layer backward compatibility + no duplicate 
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const dxf = writeDXF(bestCandidate!, 'Test');
     // Should contain STAIR STACK marker indicating whole-building presentation
     expect(dxf).toContain('STAIR STACK');
@@ -181,7 +182,7 @@ describe('Phase 9.1 — Explicit footprint reconciliation scope', () => {
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     const recon = doc.areaSummary.reconciliation;
     // Explanations must explicitly label scopes
@@ -200,7 +201,7 @@ describe('Phase 9.1 — Explicit footprint reconciliation scope', () => {
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     // Ground rooms sum != total room area for multi-floor
     const groundRoomsSum = bestCandidate!.floors[0].spaces.reduce((s, sp) => s + sp.area, 0);
@@ -219,7 +220,7 @@ describe('Phase 9.1 — PDF drawing number semantics', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     // Drawing number must be WB, not F0
     expect(doc.drawing.drawingNumber).toContain('-WB');
@@ -245,7 +246,7 @@ describe('Phase 9.1 — PDF drawing number semantics', () => {
     const { bestCandidate: bc1 } = generate(prj1);
     const doc1 = buildDocumentation(prj1, bc1!);
     const prj2 = createProject(input);
-    const { bestCandidate: bc2 } = generate(prj2);
+    const { bestCandidate: bc2 } = legacyGenerate(prj2);
     const doc2 = buildDocumentation(prj2, bc2!);
     expect(doc1.drawing.drawingNumber).toBe(doc2.drawing.drawingNumber);
   });
@@ -257,7 +258,7 @@ describe('Phase 9.1 — XLSX stacking details', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel, xlsx } = await exportAll(prj, bestCandidate!);
     expect(docModel.intelligence!.stacking.details).toBeDefined();
     expect(Array.isArray(docModel.intelligence!.stacking.details)).toBe(true);
@@ -285,7 +286,7 @@ describe('Phase 9.1 — XLSX stacking details', () => {
     input.site.width = 20;
     input.site.length = 30;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     const details = doc.intelligence!.stacking.details!;
     // Should be <=100 (bounded) but could be >20 for 10F if many wet areas
@@ -310,7 +311,7 @@ describe('Phase 9.1 — Determinism and performance 1F/2F/3F/6F/10F', () => {
     }
     const prj = createProject(input);
     const startGen = Date.now();
-    const { candidates, bestCandidate } = generate(prj);
+    const { candidates, bestCandidate } = legacyGenerate(prj);
     const genTime = Date.now() - startGen;
     const startEval = Date.now();
     const evalC = evaluateCandidate(bestCandidate!);
@@ -325,7 +326,7 @@ describe('Phase 9.1 — Determinism and performance 1F/2F/3F/6F/10F', () => {
 
     // Deterministic repeat
     const prj2 = createProject(input);
-    const { bestCandidate: bc2 } = generate(prj2);
+    const { bestCandidate: bc2 } = legacyGenerate(prj2);
     const evalC2 = evaluateCandidate(bc2!);
     expect(evalC.overallQuality).toBe(evalC2.overallQuality);
     expect(evalC.candidateId).toBe(evalC2.candidateId);
@@ -338,7 +339,7 @@ describe('Phase 9.1 — Cross-output consistency remains', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate!);
 
     expect(docModel.intelligence!.floorCount).toBe(2);

@@ -26,6 +26,7 @@ import { optimizeCandidates } from './intelligence/optimization/index.js';
 import { writeDXF } from './dxf/writer.js';
 import { buildManifest } from './documentation/manifest.js';
 import { buildQAReport } from './documentation/report.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(): ProjectInput {
   return {
@@ -54,7 +55,7 @@ describe('Phase 9 B — floor-count 1F/2F/3F/higher/invalid', () => {
     input.building.floors = 1;
     expect(() => validateInput(input)).not.toThrow();
     const prj = createProject(input);
-    const { candidates, bestCandidate } = generate(prj);
+    const { candidates, bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors.length).toBe(1);
     expect(candidates.length).toBeGreaterThan(0);
   });
@@ -65,7 +66,7 @@ describe('Phase 9 B — floor-count 1F/2F/3F/higher/invalid', () => {
     input.building.hasStair = true;
     expect(() => validateInput(input)).not.toThrow();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors.length).toBe(2);
   });
 
@@ -75,7 +76,7 @@ describe('Phase 9 B — floor-count 1F/2F/3F/higher/invalid', () => {
     input.building.hasStair = true;
     expect(() => validateInput(input)).not.toThrow();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors.length).toBe(3);
   });
 
@@ -87,7 +88,7 @@ describe('Phase 9 B — floor-count 1F/2F/3F/higher/invalid', () => {
     input.site.length = 30;
     expect(() => validateInput(input)).not.toThrow();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors.length).toBe(10);
   });
 
@@ -123,7 +124,7 @@ describe('Phase 9 C — per-floor every floor no floors[0] dependence', () => {
       input.building.floors = n;
       if (n > 1) input.building.hasStair = true;
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate } = legacyGenerate(prj);
       const evalC = evaluateCandidate(bestCandidate!);
       expect(evalC.perFloor.length).toBe(n);
       expect(evalC.floorCount).toBe(n);
@@ -137,7 +138,7 @@ describe('Phase 9 C — per-floor every floor no floors[0] dependence', () => {
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     for (let i = 0; i < 3; i++) {
       const pf = evalC.perFloor[i];
@@ -167,7 +168,7 @@ describe('Phase 9 C — per-floor every floor no floors[0] dependence', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const f0a = evaluateFloor(bestCandidate!.floors[0], 0, 2);
     const f0b = evaluateFloor(bestCandidate!.floors[0], 0, 2);
     expect(f0a.overallQuality).toBe(f0b.overallQuality);
@@ -181,7 +182,7 @@ describe('Phase 9 C — per-floor every floor no floors[0] dependence', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     expect(evalC.intelligenceScope).toContain('Whole-Building');
     expect(evalC.intelligenceScope).toContain('2 floors');
@@ -195,7 +196,7 @@ describe('Phase 9 D — vertical connected/disconnected/inconsistent', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     // Our generator places stairs on every floor below top, so 2F should have stair on floor 0
     // Vertical should be evaluated
@@ -211,7 +212,7 @@ describe('Phase 9 D — vertical connected/disconnected/inconsistent', () => {
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     // Clone and remove stair from floor 1
     const modified = JSON.parse(JSON.stringify(bestCandidate));
     modified.floors[1].stairs = [];
@@ -227,7 +228,7 @@ describe('Phase 9 D — vertical connected/disconnected/inconsistent', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const original = evaluateVerticalCirculation(bestCandidate!);
     // Displace stair on floor 1 by 10m
     const displaced = JSON.parse(JSON.stringify(bestCandidate));
@@ -255,7 +256,7 @@ describe('Phase 9 D — vertical connected/disconnected/inconsistent', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const v = evaluateVerticalCirculation(bestCandidate!);
     expect(v.isHeuristic).toBe(true);
     expect(v.strengths.length).toBeGreaterThan(0);
@@ -270,7 +271,7 @@ describe('Phase 9 E — stacking aligned/displaced deterministic score change', 
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const originalStack = evaluateStacking(bestCandidate!);
     // Displace kitchen/bathroom on floor 1 far away
     const displaced = JSON.parse(JSON.stringify(bestCandidate));
@@ -301,7 +302,7 @@ describe('Phase 9 E — stacking aligned/displaced deterministic score change', 
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const a = evaluateStacking(bestCandidate!);
     const b = evaluateStacking(bestCandidate!);
     expect(a.score).toBe(b.score);
@@ -314,7 +315,7 @@ describe('Phase 9 E — stacking aligned/displaced deterministic score change', 
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const s = evaluateStacking(bestCandidate!);
     expect(s.isHeuristic).toBe(true);
     expect(typeof s.kitchenStackingScore).toBe('number');
@@ -329,7 +330,7 @@ describe('Phase 9 F — whole-building scoring propagation/N/A/no double count',
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     const wb = evalC.wholeBuilding;
     // Recompute weighted sum
@@ -341,7 +342,7 @@ describe('Phase 9 F — whole-building scoring propagation/N/A/no double count',
     const input = baseInput();
     input.building.floors = 1;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     expect(evalC.quality.evaluableWeightsSum).toBeGreaterThan(0);
     expect(evalC.quality.evaluableWeightsSum).toBeLessThanOrEqual(1);
@@ -357,7 +358,7 @@ describe('Phase 9 F — whole-building scoring propagation/N/A/no double count',
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     // Per-floor contributions
     for (const pf of evalC.perFloor) {
@@ -384,7 +385,7 @@ describe('Phase 9 F — whole-building scoring propagation/N/A/no double count',
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     const avg = evalC.perFloor.reduce((s, pf) => s + pf.overallQuality, 0) / evalC.perFloor.length;
     expect(evalC.wholeBuilding.avgFloorQuality.overall).toBeCloseTo(avg, 2);
@@ -397,7 +398,7 @@ describe('Phase 9 G — optimization whole-building/hard/deterministic', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { candidates } = generate(prj);
+    const { candidates } = legacyGenerate(prj);
     const result = optimizeCandidates(candidates);
     expect(result.best).toBeDefined();
     expect(result.best.floorCount).toBe(2);
@@ -416,7 +417,7 @@ describe('Phase 9 G — optimization whole-building/hard/deterministic', () => {
     const input = baseInput();
     input.building.floors = 1;
     const prj = createProject(input);
-    const { candidates } = generate(prj);
+    const { candidates } = legacyGenerate(prj);
     const result = optimizeCandidates(candidates);
     for (const c of result.candidates) {
       expect(typeof c.feasible).toBe('boolean');
@@ -494,7 +495,7 @@ describe('Phase 9 I — cross-output consistency doc=report=manifest=DXF/PDF/XLS
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     const manifest = buildManifest(doc, prj, bestCandidate!);
     const report = buildQAReport(doc);
@@ -522,7 +523,7 @@ describe('Phase 9 I — cross-output consistency doc=report=manifest=DXF/PDF/XLS
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const dxf = writeDXF(bestCandidate!, 'Test');
     expect(dxf).toContain('A-FLOOR-0-A-WALL-EXT');
     expect(dxf).toContain('A-FLOOR-1-A-WALL-EXT');
@@ -543,7 +544,7 @@ describe('Phase 9 I — cross-output consistency doc=report=manifest=DXF/PDF/XLS
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate!);
 
     // PDF should be multi-page (at least 2 pages for 2 floors)
@@ -569,7 +570,7 @@ describe('Phase 9 I — cross-output consistency doc=report=manifest=DXF/PDF/XLS
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     expect(doc.intelligence!.floorCount).toBe(3);
     expect(doc.intelligence!.perFloor.length).toBe(3);
@@ -587,7 +588,7 @@ describe('Phase 9 J — adversarial worsen/improve', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalOrig = evaluateCandidate(bestCandidate!);
     // Worsen floor 1 by shrinking a bedroom drastically
     const worsened = JSON.parse(JSON.stringify(bestCandidate));
@@ -609,7 +610,7 @@ describe('Phase 9 J — adversarial worsen/improve', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const orig = evaluateVerticalCirculation(bestCandidate!);
     const worsened = JSON.parse(JSON.stringify(bestCandidate));
     worsened.floors[1].stairs = []; // remove stair
@@ -622,7 +623,7 @@ describe('Phase 9 J — adversarial worsen/improve', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const orig = evaluateStacking(bestCandidate!);
     const worsened = JSON.parse(JSON.stringify(bestCandidate));
     // Move kitchen far
@@ -642,7 +643,7 @@ describe('Phase 9 J — adversarial worsen/improve', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const modified = JSON.parse(JSON.stringify(bestCandidate));
     modified.floors[1].stairs = [];
     const inter = evaluateInterFloor(modified);
@@ -658,7 +659,7 @@ describe('Phase 9 J — adversarial worsen/improve', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     // Create misaligned version
     const misaligned = JSON.parse(JSON.stringify(bestCandidate));
     for (const fl of misaligned.floors) {
@@ -689,7 +690,7 @@ describe('Phase 9 K — E2E 1F/2F/3F/multi-kitchen/multi-bedroom/small/no parkin
     input.building.floors = 1;
     input.name = 'E2E-1F';
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel, pdf, xlsx, report, manifest, dxf } = await exportAll(prj, bestCandidate!);
     expect(docModel.building.floors).toBe(1);
     expect(docModel.intelligence!.floorCount).toBe(1);
@@ -706,7 +707,7 @@ describe('Phase 9 K — E2E 1F/2F/3F/multi-kitchen/multi-bedroom/small/no parkin
     input.building.hasStair = true;
     input.name = 'E2E-2F';
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel, pdf, xlsx, report, manifest, dxf } = await exportAll(prj, bestCandidate!);
     expect(docModel.building.floors).toBe(2);
     expect(docModel.intelligence!.floorCount).toBe(2);
@@ -724,7 +725,7 @@ describe('Phase 9 K — E2E 1F/2F/3F/multi-kitchen/multi-bedroom/small/no parkin
     input.site.width = 18;
     input.site.length = 25;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel, pdf, xlsx, report, manifest, dxf } = await exportAll(prj, bestCandidate!);
     expect(docModel.building.floors).toBe(3);
     expect(docModel.intelligence!.floorCount).toBe(3);
@@ -745,7 +746,7 @@ describe('Phase 9 K — E2E 1F/2F/3F/multi-kitchen/multi-bedroom/small/no parkin
     input.site.width = 18;
     input.site.length = 25;
     const prj = createProject(input);
-    const res = generate(prj) as any;
+    const res = legacyGenerate(prj) as any;
     if (!res.bestCandidate) {
       // After quality improvements, very dense 4BR on 15x20 may be genuinely infeasible — that's honest, check diagnostic instead
       expect(res.infeasible).toBeDefined();
@@ -769,7 +770,7 @@ describe('Phase 9 K — E2E 1F/2F/3F/multi-kitchen/multi-bedroom/small/no parkin
     input.building.parkingSpaces = 0;
     input.name = 'E2E-Small';
     const prj = createProject(input);
-    const { bestCandidate, infeasible } = generate(prj);
+    const { bestCandidate, infeasible } = legacyGenerate(prj);
     // Phase 13.2: 8x12 for this 2F program cannot satisfy minimum geometry — explicit INFEASIBLE
     // result with no usable candidate (no normal architectural plan is exposed).
     expect(bestCandidate).toBeNull();
@@ -786,7 +787,7 @@ describe('Phase 9 K — E2E 1F/2F/3F/multi-kitchen/multi-bedroom/small/no parkin
     input.building.parkingSpaces = 0;
     input.name = 'E2E-NoPark';
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     expect(evalC.floorCount).toBe(2);
     expect(evalC.overallQuality).toBeGreaterThanOrEqual(0);
@@ -818,7 +819,7 @@ describe('Phase 9 K — E2E 1F/2F/3F/multi-kitchen/multi-bedroom/small/no parkin
     input.site.length = 25;
     const prj = createProject(input);
     const startGen = Date.now();
-    const { candidates } = generate(prj);
+    const { candidates } = legacyGenerate(prj);
     const genTime = Date.now() - startGen;
     expect(candidates.length).toBeGreaterThan(0);
     expect(candidates.length).toBeLessThanOrEqual(10); // bounded
@@ -843,7 +844,7 @@ describe('Phase 9 — Whole-Building Data Model', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const evalC = evaluateCandidate(bestCandidate!);
     // Building has floors
     expect(bestCandidate!.floors.length).toBe(2);
@@ -868,7 +869,7 @@ describe('Phase 9 — Whole-Building Data Model', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel, dxf, pdf, xlsx, report, manifest } = await exportAll(prj, bestCandidate!);
     // All outputs derive from same candidate
     expect(docModel.canonicalCandidateId).toBe(bestCandidate!.id);

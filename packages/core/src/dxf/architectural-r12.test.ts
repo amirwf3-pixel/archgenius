@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeDXF, validateDXFStructure } from './writer.js';
 import { createProject, generate, exportDXF } from '../pipeline.js';
+import { legacyGenerate } from '../testutil/legacy-generate.js';
 
 /**
  * Full architectural DXF regression — proves that the complete villa plan
@@ -87,7 +88,7 @@ describe('Full architectural DXF — same valid R12 primitives as minimal refere
         deterministic:true, seed:42
       };
       const proj = createProject(input);
-      const res = generate(proj, { allStrategies:true });
+      const res = legacyGenerate(proj, { allStrategies:true });
       expect(res.candidates.length).toBeGreaterThan(0);
       // Find first exportable (in-envelope) candidate — top may be out-of-envelope and refused by gate
       let cand = res.candidates[0];
@@ -205,7 +206,7 @@ describe('Full architectural DXF — same valid R12 primitives as minimal refere
       deterministic:true, seed:42
     };
     const proj = createProject(input);
-    const res = generate(proj, { allStrategies:true });
+    const res = legacyGenerate(proj, { allStrategies:true });
     const { dxf } = exportDXF(res.candidates[0], 'compare');
     const arch = analyze(dxf);
     const allowed = new Set(['LINE','ARC','TEXT','POLYLINE','VERTEX','SEQEND']);

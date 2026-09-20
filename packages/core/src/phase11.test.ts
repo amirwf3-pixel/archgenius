@@ -29,6 +29,7 @@ import { validateRoomSizeConstraints } from './model/room-constraints.js';
 import { validateParametricConstraints } from './layout/parametric-constraints.js';
 import { rArea } from './geometry/rect.js';
 import type { Space } from './model/space.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(): ProjectInput {
   return {
@@ -267,7 +268,7 @@ describe('Phase 11 C. Locking', () => {
   it('locked room position preserved', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const floor = bestCandidate!.floors[0];
     const space = floor.spaces[0];
     // Lock position
@@ -283,7 +284,7 @@ describe('Phase 11 C. Locking', () => {
   it('locked room size preserved', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const lockedRes = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'size' });
     expect(lockedRes.success).toBe(true);
@@ -295,7 +296,7 @@ describe('Phase 11 C. Locking', () => {
   it('locked geometry survives repair', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const floor = bestCandidate!.floors[0];
     const spaceA = floor.spaces[0];
     const spaceB = floor.spaces[1];
@@ -310,7 +311,7 @@ describe('Phase 11 C. Locking', () => {
   it('impossible edit produces explicit failure, no silent lock violation', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const lockedRes = lockRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, lockKind: 'all' });
     const lockedCand = lockedRes.candidate!;
@@ -328,7 +329,7 @@ describe('Phase 11 D. Editing', () => {
   it('move room', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const oldX = space.rect.x;
     const newX = oldX + 0.5;
@@ -346,7 +347,7 @@ describe('Phase 11 D. Editing', () => {
   it('resize room', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces.find(s => s.type === 'living') ?? bestCandidate!.floors[0].spaces[0];
     const newW = Math.max(2, space.rect.w * 0.9);
     const newH = Math.max(2, space.rect.h * 0.9);
@@ -362,7 +363,7 @@ describe('Phase 11 D. Editing', () => {
   it('deterministic repair', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const spaceA = bestCandidate!.floors[0].spaces[0];
     const spaceB = bestCandidate!.floors[0].spaces[1];
     // Move A slightly, should trigger bounded repair of B if overlap
@@ -377,7 +378,7 @@ describe('Phase 11 D. Editing', () => {
   it('invalid edit rejected', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     // Try to move outside buildable
     const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX: 100, newY: 100 });
@@ -387,7 +388,7 @@ describe('Phase 11 D. Editing', () => {
   it('validation after edit', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const res = moveRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.3, newY: space.rect.y });
     if (res.success) {
@@ -401,7 +402,7 @@ describe('Phase 11 D. Editing', () => {
   it('set L-shape via editing', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces.find(s => s.type === 'living')!;
     const res = setLShape(bestCandidate!, { floorLevel: 0, spaceId: space.id, notchWidth: 1, notchLength: 1, notchCorner: 'ne' });
     // May succeed if space large enough
@@ -463,7 +464,7 @@ describe('Phase 11 E. Site', () => {
     (input.site as any).shape = 'l-shape';
     (input.site as any).lShape = { width: 15, length: 20, notchWidth: 5, notchLength: 6, notchCorner: 'ne' };
     const prj = createProject(input);
-    const { bestCandidate, infeasible } = generate(prj);
+    const { bestCandidate, infeasible } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     // Phase 13.2: tight L-shape may be below-minimum geometry → INFEASIBLE with no usable candidate;
     // the canonical-polygon containment guarantee is still verified on the ranked-first diagnostic
@@ -487,7 +488,7 @@ describe('Phase 11 F. Multi-floor', () => {
       input.building.floors = floors;
       input.building.hasStair = floors > 1;
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate } = legacyGenerate(prj);
       expect(bestCandidate!.floors.length).toBe(floors);
       // Check no floors[0] dependency for whole-building logic — each floor should have spaces
       for (const fl of bestCandidate!.floors) {
@@ -507,7 +508,7 @@ describe('Phase 11 G. Outputs', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const dxf = writeDXF(bestCandidate!, 'Test11');
     const polylines = parseDXFPolylines(dxf);
     // Check room polygons exist on floor-specific layers
@@ -524,7 +525,7 @@ describe('Phase 11 G. Outputs', () => {
   it('PDF integration — documentation uses actual polygon area', async () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const doc = buildDocumentation(prj, bestCandidate!);
     for (const room of doc.roomSchedule) {
       const space = bestCandidate!.floors.flatMap(f => f.spaces).find(s => s.id === room.id);
@@ -536,7 +537,7 @@ describe('Phase 11 G. Outputs', () => {
   it('XLSX room area/geometry consistency', async () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel } = await exportAll(prj, bestCandidate!);
     // Check room areas in docModel match candidate
     for (const fl of bestCandidate!.floors) {
@@ -551,7 +552,7 @@ describe('Phase 11 G. Outputs', () => {
   it('report/manifest consistency', async () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel, report, manifest } = await exportAll(prj, bestCandidate!);
     expect(manifest.geometry.candidateId).toBe(bestCandidate!.id);
     expect(docModel.canonicalCandidateId).toBe(bestCandidate!.id);
@@ -564,7 +565,7 @@ describe('Phase 11 H. Determinism', () => {
   it('same input+seed+edit → same canonical geometry, validation, scores, DXF', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
 
     const op = { floorLevel: 0, spaceId: space.id, newX: space.rect.x + 0.2, newY: space.rect.y };
@@ -607,7 +608,7 @@ describe('Phase 11 I. Adversarial', () => {
     (input.site as any).shape = 'l-shape';
     (input.site as any).lShape = { width: 10, length: 10, notchWidth: 4, notchLength: 4, notchCorner: 'ne' };
     const prj = createProject(input);
-    const { bestCandidate, infeasible } = generate(prj);
+    const { bestCandidate, infeasible } = legacyGenerate(prj);
     // Phase 13.2: tight concave 10x10 L is below-minimum geometry → INFEASIBLE with no usable
     // candidate; site validation still runs (does not crash) on diagnostic candidates.
     expect(infeasible).not.toBeNull();
@@ -632,7 +633,7 @@ describe('Phase 11 I. Adversarial', () => {
   it('impossible resize', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const res = resizeRoom(bestCandidate!, { floorLevel: 0, spaceId: space.id, newWidth: 0.5, newHeight: 0.5 });
     expect(res.success).toBe(false);
@@ -641,7 +642,7 @@ describe('Phase 11 I. Adversarial', () => {
   it('locked-room collision', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const floor = bestCandidate!.floors[0];
     const a = floor.spaces[0];
     const b = floor.spaces[1];
@@ -678,7 +679,7 @@ describe('Phase 11 J. Performance', () => {
     input.building.hasStair = true;
     const start = Date.now();
     const prj = createProject(input);
-    const { candidates } = generate(prj);
+    const { candidates } = legacyGenerate(prj);
     const elapsed = Date.now() - start;
     expect(candidates.length).toBeLessThanOrEqual(12);
     expect(elapsed).toBeLessThan(10000);
@@ -689,7 +690,7 @@ describe('Phase 11 J. Performance', () => {
   it('editing bounded — no uncontrolled loops', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const space = bestCandidate!.floors[0].spaces[0];
     const start = Date.now();
     for (let i = 0; i < 10; i++) {
@@ -705,7 +706,7 @@ describe('Phase 11 — Canonical invariants', () => {
   it('Space.polygon authoritative, rect derived compatibility', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     for (const fl of bestCandidate!.floors) {
       for (const sp of fl.spaces) {
         // Polygon area should equal stored area

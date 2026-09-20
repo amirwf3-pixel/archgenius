@@ -9,6 +9,7 @@ import { buildHardConstraintGraph, placementOrderForTypes, classifyFeasibility, 
 import { DEFAULT_RESIDENTIAL_CONSTRAINTS } from './layout/constraints.js';
 import { sharedWallEdges, createRectangleRoomPolygon } from './geometry/room-polygon.js';
 import type { ProjectInput } from './model/project.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(overrides: Partial<ProjectInput> = {}): ProjectInput {
   return {
@@ -353,7 +354,8 @@ describe('Phase13 H: Min dimensions remain hard', () => {
       } else {
         // Phase 13.2 CASE A: no candidate satisfies minimum geometry → explicit INFEASIBLE result.
         expect(infeasible).not.toBeNull();
-        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        // Phase 15 M2: DIMENSION or RULE — both are explicit honest INFEASIBLE.
+        expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
         // Unusable threshold (0.9m) still respected even on diagnostic-only candidates
         for (const d of infeasible!.diagnosticCandidates) {
           for (const s of d.floors[0].spaces) {
@@ -386,7 +388,8 @@ describe('Phase13 I: Site containment', () => {
         // Phase 13.2 CASE A: below-minimum geometry → explicit INFEASIBLE; the containment
         // guarantee is still verified on the ranked-first diagnostic candidate (the same
         // candidate Phase 13.1 would have exposed, now correctly marked non-usable).
-        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        // Phase 15 M2: DIMENSION or RULE — both are explicit honest INFEASIBLE.
+        expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
         const d = infeasible!.diagnosticCandidates[0];
         const vr = validateCandidate(d);
         const geoOutside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
@@ -401,7 +404,7 @@ describe('Phase13 J: Four strategies preserved', () => {
   it('all 4 strategies generate and respect site and hard where feasible', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { candidates } = generate(prj, { allStrategies: true } as any);
+    const { candidates } = legacyGenerate(prj, { allStrategies: true } as any); // M2: generator fan-out guarantee (product gate may reject)
     expect(candidates.length).toBe(4);
     for (const cand of candidates) {
       const vr = validateCandidate(cand);
@@ -421,7 +424,7 @@ describe('Phase13 K: Stair regression', () => {
       seed: 42,
     });
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate!.floors[0].stairs.length).toBeGreaterThanOrEqual(1);
     const st = bestCandidate!.floors[0].stairs[0];
     expect(st.type).toBe('u-stair');
@@ -437,7 +440,7 @@ describe('Phase13 L: Multi-floor 1F/2F/3F/6F/10F', () => {
         building: { type: 'villa', floors, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1, hasStair: floors > 1, hasStorage: true },
       });
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate } = legacyGenerate(prj);
       expect(bestCandidate!.floors.length).toBe(floors);
       const vr = validateCandidate(bestCandidate!);
       const geoOutside = vr.hard.filter(f => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT');
@@ -499,7 +502,8 @@ describe('Phase13 O: Adversarial matrix', () => {
       if (!bestCandidate) {
         // Phase 13.2 CASE A: below-minimum geometry → explicit INFEASIBLE, no usable candidate.
         expect(infeasible).not.toBeNull();
-        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        // Phase 15 M2: DIMENSION or RULE — both are explicit honest INFEASIBLE.
+        expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
         expect(infeasible!.explanation).toContain('INFEASIBLE');
         // Geometry was still generated and the unusable <0.9 threshold is still respected on diagnostics
         for (const d of infeasible!.diagnosticCandidates) {

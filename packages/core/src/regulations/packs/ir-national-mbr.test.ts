@@ -17,6 +17,7 @@ import { createProject, generate } from '../../pipeline.js';
 import { IR_NATIONAL_MBR_PACK } from './ir-national-mbr.js';
 import type { LayoutCandidate } from '../../model/layout.js';
 import type { RuleContext } from '../types.js';
+import { legacyGenerate } from '../../testutil/legacy-generate.js';
 
 function findCode(cand: LayoutCandidate, code: string) {
   return cand.findings.filter((f: any) => f.code === code);
@@ -80,7 +81,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
         deterministic: true, seed: 1,
       });
-      const { bestCandidate, infeasible } = generate(prj);
+      const { bestCandidate, infeasible } = legacyGenerate(prj);
       // Phase 13.2: on a below-minimum site the rule still fires — on the diagnostic candidates
       // when no usable candidate exists.
       const target = bestCandidate ?? infeasible!.diagnosticCandidates[0];
@@ -97,7 +98,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2 },
         deterministic: true, seed: 2,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       const hard = findCode(candidates[0], 'MBH4-ROOM-001').filter((f: any) => f.severity === 'hard');
       expect(hard).toHaveLength(0);
     });
@@ -182,7 +183,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2 },
         deterministic: true, seed: 2,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       expect(findCode(candidates[0], 'MBH4-ROOM-002').filter((f: any) => f.severity === 'hard').length).toBe(0);
     });
   });
@@ -221,7 +222,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
         deterministic: true, seed: 3,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       const spaces = candidates[0].floors[0].spaces;
       for (const s of spaces) {
         expect(s.rect.w).toBeGreaterThan(0);
@@ -264,7 +265,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
         deterministic: true, seed: 1,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       const hard = findCode(candidates[0], 'MBH4-ROOM-007').filter((f: any) => f.severity === 'hard');
       expect(hard.length).toBe(0);
     });
@@ -335,7 +336,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 2, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true, hasStorage: true },
         deterministic: true, seed: 7,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       const hard = findCode(candidates[0], 'MBH4-STAIR-003').filter((h: any) => h.severity === 'hard');
       expect(hard).toHaveLength(0);
       const st = candidates[0].floors[0].stairs[0];
@@ -392,7 +393,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 3, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true, hasStorage: true },
         deterministic: true, seed: 42,
       });
-      const c3 = generate(prj3).candidates[0];
+      const c3 = legacyGenerate(prj3).candidates[0];
       expect(findCode(c3, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'hard').length).toBe(0);
       expect(findCode(c3, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'soft').length).toBeGreaterThan(0);
 
@@ -402,7 +403,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 4, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true, hasStorage: true },
         deterministic: true, seed: 42,
       });
-      const c4 = generate(prj4).candidates[0];
+      const c4 = legacyGenerate(prj4).candidates[0];
       expect(findCode(c4, 'MBH15-LIFT-001').filter((f: any) => f.severity === 'hard').length).toBeGreaterThan(0);
     });
 
@@ -432,7 +433,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
         deterministic: true, seed: 1,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       expect(findCode(candidates[0], 'MBH4-DYL-001').filter((h: any) => h.severity === 'hard').length).toBe(0);
     });
   });
@@ -448,7 +449,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
           building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
           deterministic: true, seed: 1,
         });
-        const { candidates } = generate(prj);
+        const { candidates } = legacyGenerate(prj);
         const hits = findCode(candidates[0], code);
         expect(hits.length).toBeGreaterThanOrEqual(1);
         for (const h of hits) expect(h.severity).toBe('advisory');
@@ -465,7 +466,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 4, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true, hasStorage: true },
         deterministic: true, seed: 42,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       const verified = candidates[0].findings.filter((f: any) => f.status === 'VERIFIED');
       expect(verified.length).toBeGreaterThan(0);
       for (const f of verified) {
@@ -482,7 +483,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
         deterministic: true, seed: 3,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       const hits = findCode(candidates[0], 'MBH4-ROOM-004');
       if (hits.length > 0) {
         expect(hits[0].status).toBe('VERIFIED');
@@ -499,7 +500,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 0, unitsPerFloor: 1 },
         deterministic: true, seed: 1,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       const hits = findCode(candidates[0], 'MUN-PARK-001');
       expect(hits.length).toBeGreaterThanOrEqual(1);
       expect(hits[0].severity).toBe('soft');
@@ -513,7 +514,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
         building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
         deterministic: true, seed: 1,
       });
-      const { candidates } = generate(prj);
+      const { candidates } = legacyGenerate(prj);
       const hits = findCode(candidates[0], 'MUN-SET-001');
       expect(hits.length).toBeGreaterThanOrEqual(1);
       expect(hits[0].severity).toBe('advisory');
@@ -527,7 +528,7 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
       building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
       deterministic: true, seed: 1,
     });
-    const { candidates } = generate(prj);
+    const { candidates } = legacyGenerate(prj);
     const mbh = candidates[0].findings.filter((f: any) => /^MBH/.test(f.code));
     expect(mbh).toHaveLength(0);
   });

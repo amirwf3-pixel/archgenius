@@ -3,6 +3,7 @@ import { createProject, generate, validateCandidate, exportDXF } from './pipelin
 import { solveStair, distributeRisers } from './generator/stair-solver.js';
 import { DEFAULT_STAIR_CONFIG } from './model/stairs.js';
 import { rArea, rContains, rOverlapArea } from './geometry/rect.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 // --- 12x18 regression ---
 describe('12x18 / 2-bed / 1-story / seed 1 regression', () => {
@@ -139,7 +140,7 @@ describe('Stair door access', () => {
       building: { type: 'villa', floors: 2, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true, hasStorage: true },
       deterministic: true, seed: 42,
     });
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const fl = bestCandidate!.floors[0];
     const stairSpace = fl.spaces.find(s=>s.type==='stair-hall');
     expect(stairSpace).toBeTruthy();
@@ -200,7 +201,7 @@ describe('DXF QA per layer', () => {
       building: { type: 'villa', floors: 2, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true, hasStorage: true },
       deterministic: true, seed: 42,
     });
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { dxf, validation } = exportDXF(bestCandidate!, 'qa');
     expect(validation.ok).toBe(true);
     // Parse DXF lines for layer counts.
@@ -256,7 +257,9 @@ describe('Regression matrix', () => {
         // Phase 13.2 CASE A: below-minimum geometry (8x12 for this program) → explicit INFEASIBLE
         // result — honest, not silent: no usable candidate is exposed.
         expect(infeasible).not.toBeNull();
-        expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        // Phase 15 M2: explicit INFEASIBLE is honest either way — below-min geometry (DIMENSION)
+        // or geometry-valid but hard-dirty (RULE). No usable plan is ever exposed.
+        expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
         expect(infeasible!.diagnosticCandidates.length).toBeGreaterThan(0);
         return;
       }

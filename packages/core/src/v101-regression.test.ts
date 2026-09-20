@@ -366,10 +366,12 @@ describe('AGX-03: setbacks must be finite and >= 0 (buildable stays inside the p
 // AGX-04 — bestCandidate geometry contract (CASE-B stays INVALID, findings stay)
 // ---------------------------------------------------------------------------
 
-describe('AGX-04: usable CASE-B candidates with HARD geometry findings are never labeled valid', () => {
-  it('overlapping-rooms fixture: candidate usable, but valid=false, HARD findings preserved, exports honest', () => {
-    // Audit fixture: 6×12 site with a minimal program produces a usable best
-    // candidate carrying GEO/SITE overlap+containment HARD findings (CASE B).
+describe('AGX-04 (updated Phase 15 M2): hard-dirty candidates are never usable — the gate demotes them to diagnostic-only', () => {
+  it('overlapping-rooms fixture: no usable candidate, explicit INFEASIBLE, HARD findings preserved, exports refused', () => {
+    // Audit fixture: 6×12 site with a minimal program produced (pre-M2) a usable best
+    // candidate carrying GEO/SITE overlap+containment HARD findings (CASE B). Under the
+    // Phase 15 M2 honest gate such a candidate is NEVER usable: the result is an explicit
+    // INFEASIBLE and the plan survives only as a diagnostic.
     const input: ProjectInput = {
       name: 'case-b',
       country: 'IR',
@@ -381,26 +383,22 @@ describe('AGX-04: usable CASE-B candidates with HARD geometry findings are never
       deterministic: true,
       seed: 1,
     };
-    const { bestCandidate, infeasible } = generate(createProject(input));
-    expect(infeasible).toBeNull();
-    expect(bestCandidate).toBeTruthy();
-    // The candidate is exportable per the CASE-B contract…
-    const vr = validateCandidate(bestCandidate!);
+    const { bestCandidate, candidates, infeasible } = generate(createProject(input));
+    expect(bestCandidate).toBeNull();
+    expect(candidates).toEqual([]);
+    expect(infeasible).not.toBeNull();
+    expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
+    expect(infeasible!.diagnosticCandidates.length).toBeGreaterThan(0);
+    const diag = infeasible!.diagnosticCandidates[0];
+    // HARD geometry findings are NOT suppressed (overlap and/or containment) — honest, not silenced.
+    const vr = validateCandidate(diag);
     expect(vr.ok).toBe(false);
-    expect(bestCandidate!.valid).toBe(false);
     expect(vr.hard.length).toBeGreaterThan(0);
-    // …HARD geometry findings are NOT suppressed (overlap and/or containment).
     const geoHards = vr.hard.filter(h => h.code.startsWith('GEO_') || h.code.startsWith('SITE_'));
     expect(geoHards.length).toBeGreaterThan(0);
-    // DXF export is REFUSED (Phase-A hardening): this CASE-B fixture's geometry
-    // lies outside the site/buildable envelope, so a DXF would be a misleading
-    // apparently-valid CAD file. The refusal itself is the honest behaviour.
-    expect(() => exportDXF(bestCandidate!, 'case-b')).toThrowError(/hard site-envelope geometry violations/);
-    // Documentation + manifest still work and report the HARD count honestly.
-    const prj = createProject(input);
-    const doc = buildDocumentation(prj, bestCandidate!);
-    const manifest = buildManifest(doc, prj, bestCandidate!);
-    expect(manifest.qa.hardCount).toBeGreaterThan(0);
+    // Every output surface refuses the diagnostic plan explicitly (no silent normal plan).
+    expect(() => exportDXF(diag, 'case-b')).toThrowError(/diagnostic-only/);
+    expect(() => buildDocumentation(createProject(input), diag)).toThrowError(/diagnostic-only/);
   });
 });
 

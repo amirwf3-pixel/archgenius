@@ -15,6 +15,7 @@ import { validateSitePolygon, polygonArea, rectInsidePolygon, pointInPolygon, de
 import { writeDXF } from './dxf/writer.js';
 import { validateSite } from './validation/site.js';
 import { rArea } from './geometry/rect.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 function baseInput(): ProjectInput {
   return {
@@ -112,7 +113,7 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate).not.toBeNull();
     const dxf = writeDXF(bestCandidate!, 'Test101');
     const polylines = parseDXFPolylines(dxf);
@@ -136,7 +137,7 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate).not.toBeNull();
     const dxf = writeDXF(bestCandidate!, 'Test101');
     const polylines = parseDXFPolylines(dxf);
@@ -159,7 +160,7 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate).not.toBeNull();
     const dxf = writeDXF(bestCandidate!, 'Test101');
     const polylines = parseDXFPolylines(dxf);
@@ -198,7 +199,7 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
     input.building.floors = 3;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const dxf = writeDXF(bestCandidate!, 'Test101');
     const polylines = parseDXFPolylines(dxf);
     // Upper floor (floor 2) BLDG-OUT should have 6 vertices (L-shape), not 4
@@ -216,7 +217,7 @@ describe('Phase 10.1 — 1. DXF per-floor canonical geometry', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate).not.toBeNull();
     const dxf = writeDXF(bestCandidate!, 'Test101Poly');
     const polylines = parseDXFPolylines(dxf);
@@ -263,7 +264,7 @@ describe('Phase 10.1 — 2. 8-vertex orthogonal polygon', () => {
     const geom = computeBuildableGeometry(input.site as any);
     if (geom.isValid) {
       const prj = createProject(input);
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate } = legacyGenerate(prj);
       const { validateCandidate: vc } = await import('./pipeline.js');
       const vr = vc(bestCandidate!);
       const outside = vr.hard.filter((f: any) => f.code === 'GEO_ROOM_OUTSIDE_FOOTPRINT' || f.code === 'SITE_ROOM_OUTSIDE_BUILDABLE');
@@ -340,7 +341,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
   it('rooms outside buildable => HARD', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     // Manually move a room outside buildable
     const geom = computeBuildableGeometry(input.site as any);
     const outsideRect = { x: geom.siteBoundingRect.x + geom.siteBoundingRect.w + 5, y: geom.siteBoundingRect.y, w: 3, h: 3 };
@@ -352,7 +353,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
   it('corridor outside buildable => HARD (not skipped)', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     // Find corridor or create one
     let corridor = bestCandidate!.floors[0].spaces.find(s => s.type === 'corridor');
@@ -369,7 +370,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
   it('wall outside buildable => HARD', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     const outsideWall = {
       id: 'wall-outside',
@@ -388,7 +389,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
   it('opening outside buildable => HARD', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     const outsideOpening = {
       id: 'opening-outside',
@@ -409,7 +410,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
   it('furniture outside buildable => HARD', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     const outsideFurn = {
       id: 'f-outside',
@@ -426,7 +427,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
   it('furniture outside its room => HARD', () => {
     const input = baseInput();
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const room = bestCandidate!.floors[0].spaces[0];
     const outsideFurn = {
       id: 'f-outside-room',
@@ -446,7 +447,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     if (bestCandidate!.floors[0].stairs.length > 0) {
       const outsideRect = { x: geom.siteBoundingRect.x + geom.siteBoundingRect.w + 5, y: 0, w: 3, h: 5 };
@@ -460,7 +461,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
     const input = baseInput();
     input.building.parkingSpaces = 1;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const geom = computeBuildableGeometry(input.site as any);
     const outsideStall = {
       id: 'parking-outside',
@@ -476,7 +477,7 @@ describe('Phase 10.1 — 3. Complete site containment', () => {
     const input = baseInput();
     input.building.floors = 1;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const findings = validateSite(bestCandidate!);
     const hard = findings.filter(f => f.severity === 'hard' && f.code.startsWith('SITE_'));
     expect(hard.length).toBe(0);
@@ -528,7 +529,7 @@ describe('Phase 10.1 — 4. Area semantics', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     expect(bestCandidate).not.toBeNull();
     const { docModel, report, manifest } = await exportAll(prj, bestCandidate!);
     const geom = computeBuildableGeometry(input.site as any);
@@ -551,7 +552,7 @@ describe('Phase 10.1 — 4. Area semantics', () => {
     input.site.length = 18;
     (input.site as any).setbacks = { north: 1, south: 1, east: 1, west: 1 };
     const prj = createProject(input);
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { docModel } = await exportAll(prj, bestCandidate!);
     const geom = computeBuildableGeometry(input.site as any);
     expect(docModel.areaSummary.buildingFootprint).toBeCloseTo(geom.buildableArea, 1);
@@ -572,11 +573,11 @@ describe('Phase 10.1 — determinism and performance', () => {
     input.building.floors = 2;
     input.building.hasStair = true;
     const prj1 = createProject(input);
-    const { bestCandidate: c1 } = generate(prj1);
+    const { bestCandidate: c1 } = legacyGenerate(prj1);
     expect(c1).not.toBeNull();
     const dxf1 = writeDXF(c1!, 'Test');
     const prj2 = createProject(input);
-    const { bestCandidate: c2 } = generate(prj2);
+    const { bestCandidate: c2 } = legacyGenerate(prj2);
     expect(c2).not.toBeNull();
     const dxf2 = writeDXF(c2!, 'Test');
     expect(c1!.id).toBe(c2!.id);
@@ -596,7 +597,7 @@ describe('Phase 10.1 — determinism and performance', () => {
     (input.site as any).polygon = { vertices: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 15, y: 10 }, { x: 15, y: 20 }, { x: 10, y: 20 }, { x: 10, y: 30 }, { x: 0, y: 30 }] };
     const start = Date.now();
     const prj = createProject(input);
-    const { candidates } = generate(prj);
+    const { candidates } = legacyGenerate(prj);
     const elapsed = Date.now() - start;
     expect(candidates.length).toBeLessThanOrEqual(12);
     expect(elapsed).toBeLessThan(10000);

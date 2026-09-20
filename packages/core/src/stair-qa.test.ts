@@ -4,6 +4,7 @@ import { solveStair, distributeRisers, chooseTreadDepth } from './generator/stai
 import { DEFAULT_STAIR_CONFIG } from './model/stairs.js';
 import { rArea, rContains, rOverlapArea } from './geometry/rect.js';
 import { validateFloor } from './validation/validator.js';
+import { legacyGenerate } from './testutil/legacy-generate.js';
 
 describe('Flight distribution (distributeRisers)', () => {
   const cases: Array<[number, number[]]> = [
@@ -105,7 +106,7 @@ describe('Multi-floor alignment (18×25 2-story, 15×22 3-story)', () => {
         building: { type:'villa', floors, bedrooms:3, masterBedrooms:1, bathrooms:2, wc:1, kitchenType:'closed', parkingSpaces:2, hasStair:true, hasStorage:true },
         deterministic:true, seed,
       });
-      const { bestCandidate } = generate(prj);
+      const { bestCandidate } = legacyGenerate(prj);
       let prev: any = null;
       for (const fl of bestCandidate!.floors) {
         expect(fl.stairs.length).toBeGreaterThanOrEqual(1);
@@ -161,7 +162,7 @@ describe('Determinism', () => {
         building:{type:'villa', floors:2, bedrooms:3, masterBedrooms:1, bathrooms:2, wc:1, kitchenType:'closed', parkingSpaces:2, hasStair:true, hasStorage:true},
         deterministic:true, seed:42,
       });
-      return generate(prj).bestCandidate;
+      return legacyGenerate(prj).bestCandidate;
     };
     const a = mk(), b = mk();
     expect(a!.floors[0].stairs.length).toBeGreaterThan(0);
@@ -183,7 +184,7 @@ describe('Furniture-on-stair detection', () => {
       building:{type:'villa', floors:2, bedrooms:3, masterBedrooms:1, bathrooms:2, wc:1, kitchenType:'closed', parkingSpaces:2, hasStair:true, hasStorage:true},
       deterministic:true, seed:42,
     });
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const fl = bestCandidate!.floors[0];
     const st = fl.stairs[0];
     // True positive: furniture on flight 0.
@@ -210,7 +211,7 @@ describe('DXF stair geometry', () => {
       building:{type:'villa', floors:2, bedrooms:3, masterBedrooms:1, bathrooms:2, wc:1, kitchenType:'closed', parkingSpaces:2, hasStair:true, hasStorage:true},
       deterministic:true, seed:42,
     });
-    const { bestCandidate } = generate(prj);
+    const { bestCandidate } = legacyGenerate(prj);
     const { dxf, validation } = exportDXF(bestCandidate!, 'u-stair dxf');
     expect(validation.ok).toBe(true);
     expect(dxf).toContain('A-STAIR');
@@ -253,7 +254,7 @@ describe('Candidate ranking: invalid stair cannot outrank valid candidate', () =
       building:{type:'villa', floors:2, bedrooms:2, masterBedrooms:1, bathrooms:1, wc:1, kitchenType:'closed', parkingSpaces:1, hasStair:true},
       deterministic:true, seed:42,
     });
-    const { candidates } = generate(prj, {allStrategies:true});
+    const { candidates } = legacyGenerate(prj, {allStrategies:true});
     const hards = (c:any) => c.findings.filter((f:any)=>f.severity==='hard' && (f.code.startsWith('STAIR_') || f.code.startsWith('GEO_') || f.code.startsWith('CIRC_'))).length;
     const validCount = candidates.filter(c => hards(c) === 0).length;
     expect(validCount).toBeGreaterThan(0);

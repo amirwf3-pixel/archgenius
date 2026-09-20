@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createProject, generate, exportDXF, summarizeValidation } from '../pipeline.js';
 import { writeDXF, dxfSafeText } from './writer.js';
 import { generateLayouts } from '../generator/generator.js';
+import { legacyGenerate } from '../testutil/legacy-generate.js';
 
 /**
  * DXF R12 (AC1009) compatibility regression tests — Phase-A hardening.
@@ -145,7 +146,7 @@ const EXPORTABLE = [
 describe('DXF R12 compatibility — writer output (Phase-A hardening)', () => {
   for (const sc of EXPORTABLE) {
     it(`header + structure: ${sc.key}`, () => {
-      const res = generate(createProject(makeInput(sc.width, sc.length, sc.bedrooms, sc.floors)), { allStrategies: true });
+      const res = legacyGenerate(createProject(makeInput(sc.width, sc.length, sc.bedrooms, sc.floors)), { allStrategies: true });
       const { dxf, validation } = exportDXF(res.candidates[0], 'ویلای نمونه');
       expect(validation.ok).toBe(true);
       expect(validation.errors).toEqual([]);
@@ -178,7 +179,7 @@ describe('DXF R12 compatibility — writer output (Phase-A hardening)', () => {
     });
 
     it(`tables + text: ${sc.key}`, () => {
-      const res = generate(createProject(makeInput(sc.width, sc.length, sc.bedrooms, sc.floors)), { allStrategies: true });
+      const res = legacyGenerate(createProject(makeInput(sc.width, sc.length, sc.bedrooms, sc.floors)), { allStrategies: true });
       const { dxf } = exportDXF(res.candidates[0], 'ویلای نمونه');
       const a = analyze(dxf);
 
@@ -263,7 +264,7 @@ describe('DXF export gate — hard site-envelope geometry violations', () => {
 
   it('in-envelope candidates (all ranks used by the exportable scenarios) still export', () => {
     for (const sc of EXPORTABLE) {
-      const res = generate(createProject(makeInput(sc.width, sc.length, sc.bedrooms, sc.floors)), { allStrategies: true });
+      const res = legacyGenerate(createProject(makeInput(sc.width, sc.length, sc.bedrooms, sc.floors)), { allStrategies: true });
       // Top-ranked candidate must always export (primary user flow).
       const { validation } = exportDXF(res.candidates[0], 'T');
       expect(validation.ok).toBe(true);
