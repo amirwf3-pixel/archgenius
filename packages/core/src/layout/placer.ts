@@ -23,7 +23,7 @@ import type { Space, SpaceSpec, Zone, SpaceType } from '../model/space.js';
 import type { CandidateStrategy } from '../model/layout.js';
 import { buildHardConstraintGraph, placementOrderForTypes, classifyFeasibility, MAX_CONSTRAINT_PLACEMENT_ATTEMPTS, MAX_LOCAL_REPAIR_ITERATIONS, MAX_CANDIDATE_POSITIONS } from './constraint-graph.js';
 import { sharedWallEdges } from '../geometry/room-polygon.js';
-import { bandCanHost, chooseSpineFraction, type BandCellDemand } from './topology.js';
+import { bandCanHost, chooseSpineFraction, solveRow, solveCol, type BandCellDemand } from './topology.js';
 
 const CORRIDOR_W = 1.5;
 const MIN_SIDE = 1.0;
@@ -579,17 +579,55 @@ export function placeSpaces(
           return Math.max(cl.rooms[0].minWidth ?? 2.0, 1.0);
         });
         let totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
-        // Phase 15 M4: when the band cannot host the columns' contract widths, tile them
-        // proportionally INSIDE the band — never below the 0.85 m sliver floor, and never
-        // spilling past the band edge. If even 0.85 m per column does not fit, the band
-        // cannot hold its assigned program: no geometry is painted (the rejection is
-        // reported through the program/placement gates as an honest infeasibility).
         let fallbackImpossible = false;
+        // Phase 15 M6: a band that cannot host its columns at CONTRACT widths must not
+        // scale rooms down into ribbon slivers — that is a quality defect, not a
+        // partial success. Try single-loaded full-width ROWS first (every cluster
+        // gets a band the size of the full band width, stacked along its depth);
+        // if even contractual row minima overflow the band, return the infeasibility
+        // honestly with the capacity evidence — geometry is never painted sub-min.
+        let singleLoadedRows: { spec: PlacedSpec; minH: number; capH: number }[][] | null = null;
         if (totalMinW > privateRect.w + 1e-6) {
-          const scaleW = privateRect.w / totalMinW;
-          for (let i = 0; i < clusterMinWs.length; i++) clusterMinWs[i] = Math.max(0.85, clusterMinWs[i] * scaleW);
-          totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
-          if (totalMinW > privateRect.w + 1e-6) fallbackImpossible = true;
+          const rows = genericClusters.map(cl => {
+            // Largest room first: it takes the corridor-facing row so nothing is ever
+            // reached THROUGH its accessory (a bathroom row behind a bedroom is the
+            // ensuite arrangement M5 sanctions; in front of it would strand the room).
+            const ordered = [...cl.rooms].sort((a, b) => Math.max(b.minArea, b.targetArea) - Math.max(a.minArea, a.targetArea));
+            return ordered.map(r => ({
+              spec: r,
+              minH: Math.max(mainPref(r, privateRect.w), r.minLength ?? r.minWidth ?? 1.5),
+              capH: Math.max((r.minArea ?? 0) * 1.1, Math.max(r.targetArea ?? 0, r.minArea ?? 0) * 1.75) / Math.max(privateRect.w, 0.5),
+            }));
+          });
+          const flat = rows.flat();
+          const totalRowMinH = flat.reduce((s, r) => s + r.minH, 0);
+          const widestMinW = Math.max(...flat.map(r => Math.max(r.spec.minWidth ?? 2.0, 1.0)));
+          if (widestMinW <= privateRect.w + 1e-6 && totalRowMinH <= privateRect.h + 1e-6) {
+            singleLoadedRows = rows;
+            explanation.push(`Phase15 M6 single-loaded rows: ${flat.length} rows × ${privateRect.w.toFixed(2)} m band width (Σmin h=${totalRowMinH.toFixed(2)} ≤ ${privateRect.h.toFixed(2)}) — columns needed Σw=${totalMinW.toFixed(2)} > ${privateRect.w.toFixed(2)}`);
+          } else {
+            fallbackImpossible = true;
+            explanation.push(`Phase15 M6 CAPACITY_INFEASIBLE_BAND: columns ΣminW=${totalMinW.toFixed(2)} > band w=${privateRect.w.toFixed(2)} and single-loaded rows ΣminH=${totalRowMinH.toFixed(2)} vs band h=${privateRect.h.toFixed(2)} (widest room needs w=${widestMinW.toFixed(2)}) — this band cannot host its assigned program at contract dimensions. code=HARD_CONSTRAINT_INFEASIBLE_DIMENSION`);
+          }
+        }
+        if (singleLoadedRows) {
+          // Grow each row toward its cap with the leftover; slack beyond caps stays
+          // intentional void at the far end of the band (M4 convention).
+          const flat = singleLoadedRows.flat();
+          const totalMin = flat.reduce((s, r) => s + r.minH, 0);
+          const slack = Math.max(0, privateRect.h - totalMin);
+          const growSum = flat.reduce((s, r) => s + Math.max(0, r.capH - r.minH), 0);
+          let y = privateRect.y;
+          for (const clRows of singleLoadedRows) {
+            for (const row of clRows) {
+              const growCap = growSum > 1e-9 ? Math.max(0, row.capH - row.minH) / growSum : 1 / flat.length;
+              const hRow = row.minH + (growSum > 1e-9 ? slack * growCap : slack / flat.length);
+              placed.push(mkSpace(row.spec.type, { x: privateRect.x, y, w: privateRect.w, h: hRow }, row.spec.placedLabel, row.spec.placedId, 'private'));
+              y += hRow;
+            }
+          }
+          explanation.push(`Phase15 M6 single-loaded rows painted: ${flat.length} full-width rooms, remaining ${(privateRect.h - (y - privateRect.y)).toFixed(2)} m kept as explicit void`);
+          fallbackImpossible = true; // rows handled it — the legacy column pass below must not double-paint
         }
         const totalArea = genericClusters.reduce((sum, cl) => sum + cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0), 0);
         const totalExtra = Math.max(0, privateRect.w - totalMinW);
@@ -639,7 +677,7 @@ export function placeSpaces(
           }
         }
         explanation.push(`Phase13 fallback generic: placed ${genericClusters.length} clusters as columns, min preserved totalMinW=${totalMinW.toFixed(2)} ≤ ${privateRect.w.toFixed(2)}, bottom touches corridor, top may violate direct access — explicit HARD code=HARD_CONSTRAINT_INFEASIBLE_DIMENSION`);
-      } else {
+      } else if (feasibleSideBySide) {
         // Phase 13 bounded search: try up to MAX_CONSTRAINT_PLACEMENT_ATTEMPTS allocations
         // Each attempt varies width distribution slightly, evaluates hard separation, picks first feasible
         let bestPlacement: { spaces: Space[], valid: boolean, attempts: number } | null = null;
@@ -1474,6 +1512,58 @@ export function placeSpaces(
     if (r === layout.entrancePatch) continue;
     if (r.w > 0.05 && r.h > 0.05) {
       corridors.push(mkSpace('corridor', r, i === 0 ? 'Corridor' : 'Spur', `corridor-${i}`, 'circulation'));
+    }
+  }
+
+  // Phase 15 M6: DROP → FULL-ROW RETILE. When the banded composition could not place
+  // every requested room of this band, but the band as a whole CAN host all cells as
+  // one side-by-side row (solveRow verdict on the full list), abandon the partial band
+  // plan and paint the complete row — silent room loss is never the answer, and a
+  // shallow full-width band row is exactly how real plans solve narrow base strips
+  // (U/T legs, 3.5 m gallery bands). The band's own geometry decides; no dimensions
+  // are special-cased. If even the row cannot host the list, the partial plan stands
+  // and the program-completeness gate reports the shortfall honestly.
+  {
+    const missing = specs.filter(sp =>
+      !placed.some(s => s.id === sp.placedId) && !corridors.some(s => s.id === sp.placedId));
+    // Fire only where banding is STRUCTURALLY impossible for this list in this rect
+    /// (column stacking cannot host either) and the majority of rooms were lost —
+    /// a shallow full-width band. Normal rects keep their banded composition.
+    const columnViable = solveCol(footprint.w, footprint.h, specs.map(sp => ({
+      type: sp.type,
+      minWidth: sp.minWidth ?? 2.0,
+      minHeight: sp.minLength ?? sp.minWidth ?? 1.5,
+      minArea: Math.max(sp.minArea ?? 2, 0.25),
+      target: Math.max(sp.targetArea ?? 0, sp.minArea ?? 2, 0.25),
+    }))) !== null;
+    if (missing.length >= 2 && missing.length > placed.length && !columnViable) {
+      const rowCells: BandCellDemand[] = specs.map(sp => ({
+        type: sp.type,
+        minWidth: sp.minWidth ?? 2.0,
+        minHeight: sp.minLength ?? sp.minWidth ?? 1.5,
+        minArea: Math.max(sp.minArea ?? 2, 0.25),
+        target: Math.max(sp.targetArea ?? 0, sp.minArea ?? 2, 0.25),
+      }));
+      const rowSol = solveRow(footprint.w, footprint.h, rowCells);
+      if (rowSol) {
+        placed.length = 0;
+        corridors.length = 0;
+        let rx = footprint.x;
+        for (let i = 0; i < specs.length; i++) {
+          const sp = specs[i];
+          const c = rowSol.cells[i];
+          const r: Rect = { x: rx, y: footprint.y, w: Math.max(0.9, c.flow), h: Math.min(c.cross, footprint.h) };
+          rx += r.w;
+          if (sp.type === 'corridor' || sp.type === 'stair-hall' || sp.type === 'elevator-hall') {
+            corridors.push(mkSpace(sp.type as any, r, sp.placedLabel, sp.placedId, 'circulation'));
+          } else {
+            placed.push(mkSpace(sp.type as any, r, sp.placedLabel, sp.placedId, sp.zone ?? 'public'));
+          }
+        }
+        explanation.push(`Phase15 M6 full-row retile: ${specs.length} cells side by side across ${footprint.w.toFixed(1)} m (band could not place ${missing.length} of them as bands)`);
+      } else {
+        explanation.push(`Phase15 M6: band dropped ${missing.length} room(s) [${missing.map(m => m.type).join(',')}] and full-row tiling cannot host the list either — reported via program completeness gate`);
+      }
     }
   }
 

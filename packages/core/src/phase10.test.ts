@@ -163,7 +163,10 @@ describe('Phase 10 B — L-shape valid/invalid area/buildable/containment/DXF', 
     if (tightRes.infeasible) {
       expect(tightRes.bestCandidate).toBeNull();
       expect(tightRes.candidates).toEqual([]);
-      expect(tightRes.infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      // Phase15 M6: region-planned bands may reach a geometry-valid but hard-dirty attempt,
+      // so the explicit INFEASIBLE code may be DIM or RULE (M4 precedent) — in both cases the
+      // result is a fully explained, non-usable INFEASIBLE with zero usable candidates.
+      expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(tightRes.infeasible.code);
     }
     const input = baseInput();
     (input.site as any).shape = 'l-shape';

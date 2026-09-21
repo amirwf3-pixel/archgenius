@@ -26,6 +26,8 @@ import { placeOpenings } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
 import { validateLayout } from '../validation/validator.js';
 import { placeSpaces, type PlacedSpec } from '../layout/placer.js';
+import { rectPartitions, contactConnected, contactLen } from '../layout/regions.js';
+import { solveRow, solveCol, type BandCellDemand } from '../layout/topology.js';
 import { sortCandidates } from '../layout/ranking.js';
 import { DEFAULT_RESIDENTIAL_CONSTRAINTS } from '../layout/constraints.js';
 import { placeFurniture } from './furniture.js';
@@ -482,9 +484,6 @@ function placeSpacesAcrossRects(
   mkSpace: (type: Space['type'], r: Rect, label: string, id: string, zone: string) => Space
 ): { spaces: Space[]; corridors: Space[]; explanation: string[] } {
   const explanation: string[] = [];
-  const sortedRects = [...buildableRects].sort((a, b) => rArea(b) - rArea(a) || a.y - b.y || a.x - b.x);
-  explanation.push(`Site-aware placement across ${sortedRects.length} buildable rect(s) — areas ${sortedRects.map(r => rArea(r).toFixed(1)).join(', ')} m² — strategy ${strategy}`);
-
   const byZone: Record<string, PlacedSpec[]> = { public: [], 'semi-private': [], private: [], service: [], circulation: [] };
   for (const s of specs) {
     let zone: string;
@@ -504,56 +503,258 @@ function placeSpacesAcrossRects(
     }
     byZone[zone].push(s);
   }
+  const corridors = byZone.circulation.filter(s => s.type === 'corridor');
+  const frontSpecs = [...byZone.public, ...byZone['semi-private'], ...byZone.service.filter(s => s.type !== 'stair-hall'), ...corridors.slice(0, Math.ceil(corridors.length / 2))];
+  const rearSpecs = [...byZone.private, ...byZone.circulation.filter(s => s.type !== 'corridor'), ...corridors.slice(Math.ceil(corridors.length / 2))];
 
-  const rectsByY = [...sortedRects].sort((a, b) => a.y - b.y);
-  const southRect = rectsByY[0];
-  const northRect = rectsByY[rectsByY.length - 1];
-
-  const spaces: Space[] = [];
-  const corridors: Space[] = [];
-
-  if (sortedRects.length === 2) {
-    const southSpecs = [...byZone.public, ...byZone['semi-private'], ...byZone.service.filter(s => s.type !== 'stair-hall'), ...byZone.circulation.filter(s => s.type === 'corridor').slice(0,1)];
-    const northSpecs = [...byZone.private, ...byZone.service.filter(s => s.type === 'stair-hall')];
-
-    if (southSpecs.length > 0) {
-      const resSouth = placeSpaces(southRect, southSpecs, strategy, access, mkSpace);
-      spaces.push(...resSouth.spaces);
-      corridors.push(...resSouth.corridors);
-      explanation.push(...resSouth.explanation.map(e => `[South rect] ${e}`));
+  // Phase 15 M6 — REGION PLANNER for L-shape / orthogonal-polygon sites.
+  // The previous behavior guessed "public on min-y rect, private on the other"
+  // (wrong for side-by-side decompositions, capacity-blind everywhere) on ONE
+  // arbitrary scanline decomposition. The generalized rule treats the cut itself
+  // as a decision: enumerate the bounded set of guillotine rectangle partitions
+  // of the actual buildable polygon, order the rects along their contact graph
+  // from the street-facing rect, split them into a front (entry/public) prefix
+  // and a rear (private/stair) suffix, and accept only splits where the REAL M4
+  // band model (solveRow/solveCol — the same capacity math the rectangle path
+  // runs) can host each group at contract dimensions. Cross-rect spine contact
+  // falls out of the placer's corridor convention plus M5's hall-bridge pass on
+  // the welded cut line. No valid partition ⇒ the program genuinely cannot live
+  // across these regions: proportional tiling runs and the honest gates report.
+  const cellsFor = (list: PlacedSpec[]): BandCellDemand[] =>
+    list.map(s => ({
+      type: s.type,
+      minWidth: s.minWidth ?? 2.0,
+      minHeight: s.minLength ?? s.minWidth ?? 2.0,
+      minArea: Math.max(s.minArea ?? 6, 0.25),
+      target: Math.max(s.targetArea ?? 0, s.minArea ?? 6, 0.25),
+    }));
+  const HABIT_TYPES = new Set(['living', 'dining', 'bedroom', 'master-bedroom', 'guest-room', 'family-room', 'kitchen', 'study', 'storage', 'utility', 'bathroom', 'master-bathroom', 'guest-wc', 'walk-in', 'laundry', 'entrance', 'foyer']);
+  const hostFit = (r: Rect, list: PlacedSpec[]): { slack: number; worstAspect: number } | null => {
+    if (list.length === 0) return { slack: 0.6, worstAspect: 1 };
+    // Prefer the mode whose cells keep the better proportions — a band can be
+    // "hostable" in both modes yet produce 1:4 ribbons in one of them. The aspect
+    // is measured over ROOM cells only (circulation bands are legitimately 1:4).
+    let bestFit: { slack: number; worstAspect: number } | null = null;
+    for (const mode of ['row', 'col'] as const) {
+      const sol = mode === 'row' ? solveRow(r.w, r.h, cellsFor(list)) : solveCol(r.w, r.h, cellsFor(list));
+      if (!sol) continue;
+      let worst = 1;
+      for (let ci = 0; ci < sol.cells.length && ci < list.length; ci++) {
+        if (!HABIT_TYPES.has(list[ci].type)) continue;
+        const c = sol.cells[ci];
+        const a = Math.max(c.flow, c.cross) / Math.max(0.5, Math.min(c.flow, c.cross));
+        if (a > worst) worst = a;
+      }
+      const fit = { slack: (rArea(r) - sol.usedArea) / Math.max(rArea(r), 1), worstAspect: worst };
+      if (!bestFit || fit.worstAspect < bestFit.worstAspect - 1e-9
+        || (Math.abs(fit.worstAspect - bestFit.worstAspect) < 1e-9 && fit.slack > bestFit.slack)) bestFit = fit;
     }
-    if (northSpecs.length > 0) {
-      const resNorth = placeSpaces(northRect, northSpecs, strategy, access, mkSpace);
-      spaces.push(...resNorth.spaces);
-      corridors.push(...resNorth.corridors);
-      explanation.push(...resNorth.explanation.map(e => `[North rect] ${e}`));
+    return bestFit;
+  };
+  const hostSlack = (r: Rect, list: PlacedSpec[]): number => hostFit(r, list)?.slack ?? -1;
+  const faceDist = (r: Rect): number => {
+    switch (access) {
+      case 'south': return r.y;
+      case 'north': return -(r.y + r.h);
+      case 'west': return r.x;
+      case 'east': return -(r.x + r.w);
     }
-  } else {
-    const totalArea = sortedRects.reduce((sum, r) => sum + rArea(r), 0);
-    let specIdx = 0;
-    const allSpecs = [...specs].sort((a, b) => (b.priority - a.priority) || (Math.max(b.minArea,b.targetArea) - Math.max(a.minArea,a.targetArea)));
-    for (const rect of sortedRects) {
-      const fraction = rArea(rect) / totalArea;
-      const count = Math.max(1, Math.round(allSpecs.length * fraction));
-      const slice = allSpecs.slice(specIdx, specIdx + count);
-      specIdx += slice.length;
-      if (slice.length === 0) continue;
-      const res = placeSpaces(rect, slice, strategy, access, mkSpace);
-      spaces.push(...res.spaces);
-      corridors.push(...res.corridors);
-      explanation.push(...res.explanation.map(e => `[Rect ${rect.x.toFixed(1)},${rect.y.toFixed(1)}] ${e}`));
-      if (specIdx >= allSpecs.length) break;
+  };
+  const orderContact = (rects: Rect[]): Rect[] => {
+    const pool = [...rects].sort((a, b) => faceDist(a) - faceDist(b) || rArea(b) - rArea(a) || a.x - b.x);
+    const ordered: Rect[] = [];
+    const inList = new Set<Rect>();
+    const frontier: Rect[] = [pool.shift()!];
+    ordered.push(frontier[0]); inList.add(frontier[0]);
+    while (frontier.length) {
+      const cur = frontier.shift()!;
+      const nbrs = pool.filter(r => !inList.has(r) && contactLen(cur, r) >= 1.2)
+        .sort((a, b) => faceDist(a) - faceDist(b) || rArea(b) - rArea(a));
+      for (const n of nbrs) { inList.add(n); ordered.push(n); frontier.push(n); }
     }
-    if (specIdx < allSpecs.length) {
-      const remaining = allSpecs.slice(specIdx);
-      const largest = sortedRects[0];
-      const res = placeSpaces(largest, remaining, strategy, access, mkSpace);
-      spaces.push(...res.spaces);
-      corridors.push(...res.corridors);
+    for (const r of pool) if (!inList.has(r)) ordered.push(r);
+    return ordered;
+  };
+  const greedyChunks = (rects: Rect[], list: PlacedSpec[]): PlacedSpec[][] | null => {
+    // Contiguous chunks: feed each rect in contact order while its band model hosts
+    // the accumulated rooms; overflow continues into the next rect of the group.
+    const chunks: PlacedSpec[][] = rects.map(() => []);
+    let ri = 0;
+    for (const spec of list) {
+      if (ri >= rects.length) return null;
+      const tryWith = [...chunks[ri], spec];
+      if (hostSlack(rects[ri], tryWith) >= -0.02) { chunks[ri] = tryWith; continue; }
+      ri++;
+      if (ri >= rects.length) return null;
+      if (hostSlack(rects[ri], [spec]) < -0.02) return null;
+      chunks[ri] = [spec];
+    }
+    return chunks;
+  };
+
+  const partitions: Rect[][] = [];
+  if (buildableBoundary.length > 4) partitions.push(...rectPartitions(buildableBoundary));
+  if (buildableRects.length >= 2) partitions.push(buildableRects);
+
+  const rectOf = (r: Rect) => r;
+  const dedup2 = (rs: Rect[]): string => rs.map(r => `${r.x.toFixed(2)},${r.y.toFixed(2)}x${r.w.toFixed(2)}x${r.h.toFixed(2)}`).join('|');
+  type Candidate = { rects: Rect[]; groups: PlacedSpec[][]; frontCount: number; score: number; note: string };
+  const candidates: Candidate[] = [];
+  {
+    const seenCuts = new Set<string>();
+    for (const part of partitions) {
+      if (part.length < 2) continue;
+      if (!contactConnected(part, 1.0)) continue;
+      const ordered = orderContact(part.map(rectOf));
+      for (let cut = 1; cut < ordered.length; cut++) {
+        const prefix = ordered.slice(0, cut);
+        const suffix = ordered.slice(cut);
+        const frontChunks = greedyChunks(prefix, frontSpecs);
+        const rearChunks = greedyChunks(suffix, rearSpecs);
+        if (!frontChunks || !rearChunks) continue;
+        const groups = [...frontChunks, ...rearChunks];
+        let minSlack = Infinity;
+        let maxAspect = 0;
+        for (let i = 0; i < ordered.length; i++) {
+          const fit = hostFit(ordered[i], groups[i]);
+          if (!fit || fit.slack < -0.02) { minSlack = -1; break; }
+          minSlack = Math.min(minSlack, fit.slack);
+          maxAspect = Math.max(maxAspect, fit.worstAspect);
+        }
+        if (!isFinite(minSlack) || minSlack < 0) continue;
+        const key = dedup2(ordered) + '@' + cut;
+        if (seenCuts.has(key)) continue;
+        seenCuts.add(key);
+        // Rank on model quality (habitable proportions + host slack) to decide which
+        // candidate to TRY first — never as the acceptance criterion itself.
+        const score = -maxAspect + 0.15 * minSlack;
+        candidates.push({ rects: ordered, groups, frontCount: prefix.length, score, note: `${prefix.length}+${suffix.length} cut of ${part.length}-rect partition (model aspect ${maxAspect.toFixed(2)}, slack ${(minSlack * 100).toFixed(0)}%)` });
+      }
     }
   }
+  candidates.sort((a, b) => b.score - a.score || a.rects.length - b.rects.length || dedup2(a.rects).localeCompare(dedup2(b.rects)));
 
-  return { spaces, corridors, explanation };
+  const rectCovers = (outer: Rect, inner: Rect): boolean =>
+    inner.x >= outer.x - 0.02 && inner.y >= outer.y - 0.02 &&
+    inner.x + inner.w <= outer.x + outer.w + 0.02 && inner.y + inner.h <= outer.y + outer.h + 0.02;
+
+  // Phase 15 M6: the band model decides candidate ORDER; acceptance is the placer's
+  // own verdict. A rectangle "hosts" the rooms it can actually paint in full,
+  // containing every result inside itself — entry galleries, band composition and
+  // all. Chunking therefore walks the placer directly: give the region its maximum
+  // prefix that fully places, overflow the rest to the next region of the group.
+  // Bounded and deterministic: per region at most |list| placer runs with early
+  // accept, candidates tried in model-quality order.
+  const placeFull = (rect: Rect, list: PlacedSpec[]) => {
+    if (list.length === 0) return { ok: true as const, res: null as null | ReturnType<typeof placeSpaces> };
+    const res = placeSpaces(rect, list, strategy, access, mkSpace);
+    // Circulation specs (corridor/stair-hall/elevator-hall) are satisfied type-wise by
+    // generated flow corridors — the band synthesizes a spine, and the M6 row re-tile
+    // emits corridor cells into corridors[] (circulation coverage is a TYPE property of
+    // the floor plan, exactly like the program-completeness gate checks it).
+    const got = new Set(res.spaces.map(s => s.id));
+    const typeCovered = (t: string) =>
+      res.corridors.some(cs => cs.type === t) || res.spaces.some(s => s.type === t);
+    const CIRC_TYPES = new Set(['corridor', 'stair-hall', 'elevator-hall']);
+    if (list.some(spec => !got.has(spec.placedId) && !(CIRC_TYPES.has(spec.type) && typeCovered(spec.type)))) {
+      return { ok: false as const, res };
+    }
+    if (res.spaces.some(s => !rectCovers(rect, s.rect))) return { ok: false as const, res };
+    return { ok: true as const, res };
+  };
+  type PlaceRes = ReturnType<typeof placeSpaces>;
+  const chunkByPlacer = (rects: Rect[], list: PlacedSpec[]): { chunks: PlacedSpec[][]; results: (PlaceRes | null)[]; why?: string } | null => {
+    const chunks: PlacedSpec[][] = rects.map(() => []);
+    const results: (ReturnType<typeof placeSpaces> | null)[] = rects.map(() => null);
+    let rest = list;
+    const fails: string[] = [];
+    for (let ri = 0; ri < rects.length; ri++) {
+      if (rest.length === 0) break;
+      let acc: ReturnType<typeof placeSpaces> | null = null;
+      let took = 0;
+      for (let k = rest.length; k >= 1; k--) {
+        const r = placeFull(rects[ri], rest.slice(0, k));
+        if (r.ok && r.res) { acc = r.res; took = k; break; }
+        if (r.res && k === rest.length) fails.push(...r.res.explanation.filter(e => /INFEASIBLE|dropped|no |cannot|fallback/i.test(e)).slice(0, 2));
+      }
+      if (!acc) continue; // region takes nothing this candidate — next rect tries
+      chunks[ri] = rest.slice(0, took);
+      results[ri] = acc;
+      rest = rest.slice(took);
+    }
+    // A leftover corridor spec is satisfied by any generated flow corridor (circulation is a
+    // layout artifact, like the M5 single-rect path's own corridor handling).
+    return rest.length === 0 ? { chunks, results } : { chunks: [], results: [], why: `unplaced [${rest.map(s => s.type).join(',')}] — ${fails.slice(0, 3).join(' | ').slice(0, 240)}` };
+  };
+
+  const spaces: Space[] = [];
+  const corridorSpaces: Space[] = [];
+
+  for (let ci = 0; ci < candidates.length; ci++) {
+    const candPlan = candidates[ci];
+    const frontTry = chunkByPlacer(candPlan.rects.slice(0, candPlan.frontCount), frontSpecs);
+    if (!frontTry || frontTry.why) { explanation.push(`Phase15 M6 region candidate ${ci + 1}/${candidates.length} rejected (${candPlan.note}) — front: ${frontTry?.why ?? 'no prefix fits'}`); continue; }
+    const rearTry = chunkByPlacer(candPlan.rects.slice(candPlan.frontCount), rearSpecs);
+    if (!rearTry || rearTry.why) { explanation.push(`Phase15 M6 region candidate ${ci + 1}/${candidates.length} rejected (${candPlan.note}) — rear: ${rearTry?.why ?? 'no prefix fits'}`); continue; }
+    const results = [...frontTry.results, ...rearTry.results];
+    explanation.push(`Phase15 M6 region plan ACCEPTED: ${candPlan.note} — ${frontSpecs.length} front + ${rearSpecs.length} rear rooms all placed and contained (placer verdict)`);
+    for (const res of results) {
+      if (!res) continue;
+      spaces.push(...res.spaces);
+      corridorSpaces.push(...res.corridors);
+    }
+    if (spaces.length === 0) continue;
+    return { spaces, corridors: corridorSpaces, explanation };
+  }
+  if (candidates.length > 0) explanation.push(`Phase15 M6 region planner: all ${candidates.length} split candidate(s) failed the placer-actual check — trying unsplit flow`);
+  // Unsplittable polygon families (U/T: public row across the base, bedrooms down
+  // the legs interleave the two groups per rect): the entire program flows through
+  // ALL contact-ordered rects in one greedy pass. Acceptance stays placer-actual,
+  // so this can only ADD layouts that fully place and stay contained.
+  {
+    const flowRects = orderContact([...buildableRects].sort((a, b) => rArea(b) - rArea(a) || a.y - b.y || a.x - b.x));
+    const flowPlan = rectPartitions(buildableBoundary).sort((a, b) => a.length - b.length)[0];
+    const rects = (flowPlan && flowPlan.length >= 2 ? orderContact(flowPlan) : flowRects);
+    const tryFlow = chunkByPlacer(rects, [...frontSpecs, ...rearSpecs]);
+    if (tryFlow && !tryFlow.why && tryFlow.results.some(Boolean)) {
+      explanation.push(`Phase15 M6 region plan ACCEPTED (unsplit flow): ${rects.length} rects ${rects.map(r => `${r.w.toFixed(1)}x${r.h.toFixed(1)}`).join(' + ')} — all ${frontSpecs.length + rearSpecs.length} rooms placed by placer verdict`);
+      for (const res of tryFlow.results) {
+        if (!res) continue;
+        spaces.push(...res.spaces);
+        corridorSpaces.push(...res.corridors);
+      }
+      return { spaces, corridors: corridorSpaces, explanation };
+    }
+    if (tryFlow?.why) explanation.push(`Phase15 M6 unsplit flow rejected: ${tryFlow.why.slice(0, 220)}`);
+  }
+
+  explanation.push(`Phase15 M6 region planner: no capacity-valid front/rear split across ${buildableRects.length} decomposition rect(s) — proportional tiling fallback; capacity gates will report honestly`);
+  const ordered = orderContact([...buildableRects].sort((a, b) => rArea(b) - rArea(a) || a.y - b.y || a.x - b.x));
+  const totalArea = ordered.reduce((sum, r) => sum + rArea(r), 0);
+  let specIdx = 0;
+  const allSpecs = [...specs].sort((a, b) => (b.priority - a.priority) || (Math.max(b.minArea, b.targetArea) - Math.max(a.minArea, a.targetArea)));
+  let fallbackIdx = 0;
+  for (const rect of ordered) {
+    const fraction = rArea(rect) / totalArea;
+    const count = Math.max(1, Math.round(allSpecs.length * fraction));
+    const slice = allSpecs.slice(specIdx, specIdx + count);
+    specIdx += slice.length;
+    if (slice.length === 0) continue;
+    const res = placeSpaces(rect, slice, strategy, access, mkSpace);
+    spaces.push(...res.spaces);
+    corridorSpaces.push(...res.corridors);
+    explanation.push(...res.explanation.map(e => `[Rect ${ordered[fallbackIdx].x.toFixed(1)},${ordered[fallbackIdx].y.toFixed(1)}] ${e}`));
+    fallbackIdx++;
+    if (specIdx >= allSpecs.length) break;
+  }
+  if (specIdx < allSpecs.length) {
+    const remaining = allSpecs.slice(specIdx);
+    const largest = ordered[0];
+    const res = placeSpaces(largest, remaining, strategy, access, mkSpace);
+    spaces.push(...res.spaces);
+    corridorSpaces.push(...res.corridors);
+  }
+  return { spaces, corridors: corridorSpaces, explanation };
 }
 
 function findPositionForRect(
@@ -623,14 +824,6 @@ function snapCorridorsToRoomsSiteAware(
   buildableRect: Rect,
   buildableRects: Rect[]
 ) {
-  for (const s of spaces) {
-    s.rect.x = Math.round(s.rect.x * 100) / 100;
-    s.rect.y = Math.round(s.rect.y * 100) / 100;
-    s.rect.w = Math.round(s.rect.w * 100) / 100;
-    s.rect.h = Math.round(s.rect.h * 100) / 100;
-    s.polygon = createRectangleRoomPolygon(s.rect);
-    s.area = polygonArea(s.polygon);
-  }
   const eps = 0.02;
   const corridors = spaces.filter(s => s.type === 'corridor');
   for (const c of corridors) {
@@ -674,12 +867,6 @@ function snapCorridorsToRoomsSiteAware(
       const maxH = fy1 - s.rect.y;
       if (maxH >= minH - 1e-6) s.rect.h = Math.max(0.01, maxH);
     }
-    s.rect.x = Math.round(s.rect.x * 100) / 100;
-    s.rect.y = Math.round(s.rect.y * 100) / 100;
-    s.rect.w = Math.round(s.rect.w * 100) / 100;
-    s.rect.h = Math.round(s.rect.h * 100) / 100;
-    s.polygon = createRectangleRoomPolygon(s.rect);
-    s.area = polygonArea(s.polygon);
   }
   for (const s of spaces) {
     if (!rectInsidePolygon(s.rect, buildableBoundary, 1e-3)) {
@@ -691,6 +878,48 @@ function snapCorridorsToRoomsSiteAware(
         s.area = polygonArea(s.polygon);
       }
     }
+  }
+  // Phase 15 M6: WELDED GRID SNAP. Rounding each rect's four fields independently
+  // created 0.01 m seams between stacked band rooms (living top 7.80 vs dining
+  // bottom 7.81). The wall scanline then saw two one-sided exterior walls instead
+  // of ONE interior partition — and M5's hall-bridge pass had no pair-wall to
+  // bridge on, isolating entire rear wings of narrow plans. Cluster all vertical
+  // and horizontal edges within the weld epsilon and snap a touching pair to one
+  // canonical coordinate, so shared edges become exact and wall continuity holds
+  // for any band or region layout.
+  snapSpacesToWeldedGrid(spaces);
+}
+
+/** Snap rect edges to clustered canonical coordinates (weld within weldEps). */
+export function snapSpacesToWeldedGrid(spaces: Space[], weldEps = 0.03): void {
+  const canonical = (vals: number[]): Map<number, number> => {
+    const sorted = [...vals].sort((a, b) => a - b);
+    const map = new Map<number, number>();
+    for (let i = 0; i < sorted.length; i++) {
+      const v = sorted[i];
+      if (map.has(v)) continue;
+      let j = i;
+      let sum = 0;
+      let n = 0;
+      while (j < sorted.length && sorted[j] - v <= weldEps) { sum += sorted[j]; n++; j++; }
+      const c = Math.round((sum / n) * 100) / 100;
+      for (let k = i; k < j; k++) map.set(sorted[k], c);
+    }
+    return map;
+  };
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const s of spaces) { xs.push(s.rect.x, s.rect.x + s.rect.w); ys.push(s.rect.y, s.rect.y + s.rect.h); }
+  const cx = canonical(xs);
+  const cy = canonical(ys);
+  for (const s of spaces) {
+    const x0 = cx.get(s.rect.x) ?? Math.round(s.rect.x * 100) / 100;
+    const x1 = cx.get(s.rect.x + s.rect.w) ?? Math.round((s.rect.x + s.rect.w) * 100) / 100;
+    const y0 = cy.get(s.rect.y) ?? Math.round(s.rect.y * 100) / 100;
+    const y1 = cy.get(s.rect.y + s.rect.h) ?? Math.round((s.rect.y + s.rect.h) * 100) / 100;
+    s.rect = { x: x0, y: y0, w: Math.max(0.01, x1 - x0), h: Math.max(0.01, y1 - y0) };
+    s.polygon = createRectangleRoomPolygon(s.rect);
+    s.area = polygonArea(s.polygon);
   }
 }
 

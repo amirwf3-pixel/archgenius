@@ -75,14 +75,16 @@ describe('Phase 15 M2 A: usable candidates are HARD-clean by construction', () =
   });
 
   it('hard-dirty but geometry-valid strategy is demoted out of the exposed usable set', () => {
-    const prj = createProject(mixedCase());
-    const res = generate(prj, { allStrategies: true });
-    expect(res.candidates.some(c => c.metadata.strategy === 'functional-circulation')).toBe(false);
-    // The demoted candidate is not silently dropped — it remains as a diagnostic with its findings.
-    const all = generate(createProject(mixedCase()));
-    expect(all.bestCandidate).not.toBeNull(); // usable exists → NOT infeasible overall
-    // Usable never contains a candidate whose fresh validation has hard findings.
-    for (const c of prj.candidates ?? []) {
+    // Phase15 M6: the fixture's strategies may ALL become hard-clean as topology improves;
+    // the M2 invariant is property-level — every hard-dirty diagnostic strategy must be
+    // absent from the exposed usable set — not tied to one pinned strategy name.
+    const raw = createProject(mixedCase());
+    generate(raw);
+    const dirty = new Set((raw.candidates ?? []).filter(c => validateLayout(c).hard.length > 0).map(c => c.metadata.strategy));
+    const res = generate(createProject(mixedCase()), { allStrategies: true });
+    expect(res.bestCandidate).not.toBeNull(); // usable exists → NOT infeasible overall
+    for (const c of res.candidates) {
+      expect(dirty.has(c.metadata.strategy)).toBe(false);
       expect(validateLayout(c).hard.length).toBe(0);
     }
   });

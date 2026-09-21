@@ -165,7 +165,8 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
     } else {
       // Phase 13.2: below-minimum L-shape → explicit INFEASIBLE with no usable candidate;
       // the Phase 13.1 positivity guarantee still holds for diagnostic candidates.
-      expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      // Phase15 M6: region plans can also fail as geometry-valid hard-dirty (M4: DIM or RULE).
+      expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
       expect(infeasible!.diagnosticCandidates.length).toBeGreaterThan(0);
       for (const d of infeasible!.diagnosticCandidates) checkNoInvalidGeom(d);
     }

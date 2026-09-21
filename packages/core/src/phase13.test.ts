@@ -227,7 +227,9 @@ describe('Phase13 E: Bounds actually enforced', () => {
     const { bestCandidate: bestMany, infeasible } = generate(prjMany) as any;
     if (!bestMany) {
       expect(infeasible).toBeDefined();
-      expect(infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      // Phase15 M6: with band-aware region planning, an over-capacity program can also fail as
+      // a geometry-valid hard-dirty candidate (M4 precedent: either explicit code is correct).
+      expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible.code);
       return;
     }
     // Should still be ≤12 candidates
