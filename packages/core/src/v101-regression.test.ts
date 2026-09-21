@@ -314,7 +314,10 @@ describe('AGX-02: multi-floor buildings always get vertical circulation', () => 
     if (!bestCandidate) {
       // After quality fixes, L-shaped tight may be genuinely infeasible (below-min) — that's honest HARD, check diagnostic still has no invalid geometry
       expect(infeasible).not.toBeNull();
-      expect(infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      // Phase15 M4: bands that cannot host their program are now rejected at the capacity
+// gate (never painted sub-min), so the explicit code may be DIM or RULE — either way the
+// result is a fully explained, non-usable INFEASIBLE.
+      expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible.code);
       return;
     }
     // CASE-B semantics: candidate may remain usable/exportable…
@@ -455,7 +458,10 @@ describe('AGX-05: stair placement safety (10×14 / 15×20 / L-shape, 2 and 3 flo
       const res = generate(createProject(input)) as any;
       const { bestCandidate, infeasible } = res;
       if (infeasible) {
-        expect(infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+        // Phase15 M4: bands that cannot host their program are now rejected at the capacity
+        // gate (never painted sub-min), so the explicit code may be DIM or RULE — either way the
+        // result is a fully explained, non-usable INFEASIBLE.
+                expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible.code);
         continue;
       }
       expect(bestCandidate).toBeTruthy();

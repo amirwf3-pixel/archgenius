@@ -23,6 +23,7 @@ import type { Space, SpaceSpec, Zone, SpaceType } from '../model/space.js';
 import type { CandidateStrategy } from '../model/layout.js';
 import { buildHardConstraintGraph, placementOrderForTypes, classifyFeasibility, MAX_CONSTRAINT_PLACEMENT_ATTEMPTS, MAX_LOCAL_REPAIR_ITERATIONS, MAX_CANDIDATE_POSITIONS } from './constraint-graph.js';
 import { sharedWallEdges } from '../geometry/room-polygon.js';
+import { bandCanHost, chooseSpineFraction, type BandCellDemand } from './topology.js';
 
 const CORRIDOR_W = 1.5;
 const MIN_SIDE = 1.0;
@@ -80,7 +81,36 @@ function carveZones(
   needStair: boolean,
   hasKitchen: boolean,
   hasStorage: boolean = false,
+  specs: PlacedSpec[] = [],
 ): ZoneLayout {
+  // Phase 15 M4: demand-aware band partitioning. The two resident bands (public+semi
+  // vs private) must be able to HOST their assigned program at real minimums and sane
+  // proportions; the spine/corridor fraction is therefore re-picked from a fixed
+  // quantized ladder around the strategy default (closest feasible fraction wins —
+  // deterministic). If no fraction fits, the default stands and the existing honest
+  // gates (room contract minima + program completeness) report the shortfall.
+  const bandCells = (zonesIn: Zone[]): BandCellDemand[] => specs
+    .filter(s => zonesIn.includes(zoneOf(s as any)))
+    .map(s => ({
+      type: s.type,
+      minWidth: Math.max(s.minWidth ?? 1.1, 0.9),
+      minHeight: Math.max(s.minLength ?? s.minWidth ?? 2.0, 1.2),
+      minArea: Math.max(s.minArea ?? 0, 0.25),
+      target: Math.max(s.targetArea ?? 0, s.minArea ?? 0, 0.25),
+    }));
+  // Planning preference (mirrors MBH4 §7-1-1-8's main-habitable minimum): on units large
+  // enough for it to apply, the generator AIMs for 12 m² main rooms before their program
+  // minimums — a sizing preference for partitioning only; the rule itself still decides
+  // validity in the regulation pack (this never suppresses or reclassifies anything).
+  const MAIN_TYPES = new Set(['living', 'dining', 'bedroom', 'master-bedroom', 'family-room', 'guest-room']);
+  const MAIN_PREF_MIN = 12;
+  const unitIsLarge = footprint.w * footprint.h >= 60;
+  const pubCellsR = bandCells(['public', 'semi-private']);
+  const privCellsR = bandCells(['private']);
+  const strictify = (cells: BandCellDemand[]) => !unitIsLarge ? cells : cells.map(c =>
+    MAIN_TYPES.has(c.type) ? { ...c, minArea: Math.max(c.minArea, MAIN_PREF_MIN) } : c);
+  const pubCells = strictify(pubCellsR);
+  const privCells = strictify(privCellsR);
   const zones: Record<Zone, Rect[]> = {
     public: [], 'semi-private': [], private: [], service: [], circulation: [],
   };
@@ -88,7 +118,24 @@ function carveZones(
   let entrancePatch: Rect | undefined;
 
   if (cfg.spine === 'vertical') {
-    const vx = footprint.x + footprint.w * (cfg.verticalCorridorFraction ?? 0.5) - CORRIDOR_W / 2;
+    const vfTest = (f: number, pubCells: BandCellDemand[], privCells: BandCellDemand[]): boolean => {
+      const vxT = footprint.x + footprint.w * f - CORRIDOR_W / 2;
+      const pubW = vxT - footprint.x;
+      const privW = footprint.x + footprint.w - (vxT + CORRIDOR_W);
+      if (pubW < 1.2 || privW < 1.2) return false;
+      const kH = (hasKitchen && footprint.h > 6 && pubW > 2.5) ? Math.min(4.2, Math.max(3.0, footprint.h * 0.26)) : 0;
+      const pubOk = pubCells.length === 0
+        || (footprint.h - kH > 0 && bandCanHost(pubW, footprint.h - kH, pubCells));
+      const stairH = (needStair && footprint.h > 5.5) ? Math.min(2.9, Math.max(2.6, footprint.h * 0.20)) : 0;
+      const storH = (hasStorage && !needStair && footprint.h > 6 && privW > 2.0) ? Math.min(1.8, Math.max(1.4, footprint.h * 0.10)) : 0;
+      const privOk = privCells.length === 0
+        || (footprint.h - stairH - storH > 0 && bandCanHost(privW, footprint.h - stairH - storH, privCells));
+      return pubOk && privOk;
+    };
+    let vf = chooseSpineFraction(cfg.verticalCorridorFraction ?? 0.5, (f) => vfTest(f, pubCells, privCells), { lo: 0.30, hi: 0.70, step: 0.01 });
+    if (!vfTest(vf, pubCells, privCells))
+      vf = chooseSpineFraction(cfg.verticalCorridorFraction ?? 0.5, (f) => vfTest(f, pubCellsR, privCellsR), { lo: 0.30, hi: 0.70, step: 0.01 });
+    const vx = footprint.x + footprint.w * vf - CORRIDOR_W / 2;
     corridors.push({ x: vx, y: footprint.y, w: CORRIDOR_W, h: footprint.h });
     let publicRect: Rect = { x: footprint.x, y: footprint.y, w: vx - footprint.x, h: footprint.h };
     // Kitchen pocket at NORTH end of public band for vertical spine — keeps living/dining
@@ -131,7 +178,26 @@ function carveZones(
   }
 
   // Horizontal (+ L-spur)
-  const cy = footprint.y + footprint.h * cfg.corridorOffsetFraction - CORRIDOR_W / 2;
+  const hfTest = (f: number, pubCells: BandCellDemand[], privCells: BandCellDemand[]): boolean => {
+    const cyT = footprint.y + footprint.h * f - CORRIDOR_W / 2;
+    const pubH = cyT - footprint.y;
+    const privH = footprint.y + footprint.h - (cyT + CORRIDOR_W);
+    if (pubH < 1.2 || privH < 1.2) return false;
+    const spurW = (cfg.spurWidthFraction > 0 && footprint.w > 4.5)
+      ? Math.max(1.4, Math.min(1.9, footprint.w * cfg.spurWidthFraction)) : 0;
+    const pubWorkW = footprint.w - spurW;
+    const kw = hasKitchen ? Math.max(1.5, Math.min(KITCHEN_W, Math.max(2.0, pubWorkW * 0.25))) : 0;
+    const pubMainW = pubWorkW > kw + 2.0 ? pubWorkW - kw : pubWorkW;
+    const pubOk = pubCells.length === 0 || bandCanHost(pubMainW, pubH, pubCells);
+    const pocketW = (needStair && footprint.w > 5.5) ? Math.min(2.9, Math.max(2.6, footprint.w * 0.20)) : 0;
+    const privMainW = footprint.w - pocketW;
+    const privOk = privCells.length === 0 || (privMainW > 1.2 && bandCanHost(privMainW, privH, privCells));
+    return pubOk && privOk;
+  };
+    let hf = chooseSpineFraction(cfg.corridorOffsetFraction, (f) => hfTest(f, pubCells, privCells), { lo: 0.30, hi: 0.70, step: 0.01 });
+  if (!hfTest(hf, pubCells, privCells))
+    hf = chooseSpineFraction(cfg.corridorOffsetFraction, (f) => hfTest(f, pubCellsR, privCellsR), { lo: 0.30, hi: 0.70, step: 0.01 });
+  const cy = footprint.y + footprint.h * hf - CORRIDOR_W / 2;
   corridors.push({ x: footprint.x, y: cy, w: footprint.w, h: CORRIDOR_W });
   const publicBand: Rect = { x: footprint.x, y: footprint.y, w: footprint.w, h: cy - footprint.y };
   const privateBand: Rect = { x: footprint.x, y: cy + CORRIDOR_W, w: footprint.w, h: footprint.y + footprint.h - (cy + CORRIDOR_W) };
@@ -188,8 +254,24 @@ export function placeSpaces(
   const cfg = strategyConfig(strategy);
   const needStair = specs.some(s => s.type === 'stair-hall');
   const hasKitchen = specs.some(s => s.type === 'kitchen');
+  // Phase 15 M4: main-habitable sizing preference (mirrors MBH4 §7-1-1-8's 12 m² main
+  // rooms on large units) used ONLY to aim room heights/widths; validity is still decided
+  // by the regulation rule itself. Small units (<60 m² footprint) keep program minimums.
+  const isMainHabitable = (t: string): boolean =>
+    ['living', 'dining', 'bedroom', 'master-bedroom', 'family-room', 'guest-room'].includes(t);
+  const mainPrefH = (spec: PlacedSpec, bandCross: number): number => {
+    const floor = (isMainHabitable(spec.type) && footprint.w * footprint.h >= 60)
+      ? Math.max(spec.minArea ?? 0, 12) : Math.max(spec.minArea ?? 0, 0.25);
+    return Math.max(spec.minLength ?? spec.minWidth ?? 1.2, floor / Math.max(bandCross, 0.5));
+  };
+  const mainPrefW = (spec: PlacedSpec, bandH: number): number => {
+    const floor = (isMainHabitable(spec.type) && footprint.w * footprint.h >= 60)
+      ? Math.max(spec.minArea ?? 0, 12) : Math.max(spec.minArea ?? 0, 0.25);
+    return Math.max(spec.minWidth ?? 1.2, floor / Math.max(bandH, 0.5));
+  };
+  const mainPref = mainPrefH;
   const hasStorage = specs.some(s => s.type === 'storage');
-  const layout = carveZones(footprint, cfg, needStair, hasKitchen, hasStorage);
+  const layout = carveZones(footprint, cfg, needStair, hasKitchen, hasStorage, specs);
   const explanation: string[] = [
     `Strategy ${strategy}: ${cfg.spine} spine, corridor @ ${Math.round(cfg.corridorOffsetFraction*100)}% depth.`,
     `Phase13 generic graph: ${graph.hardEdges.length} hard edges, ${graph.clusters.length} hard clusters, ${graph.nodes.size} types — canonical source DEFAULT_RESIDENTIAL_CONSTRAINTS`,
@@ -424,6 +506,32 @@ export function placeSpaces(
       }
     }
 
+    // Phase 15 M4: on a vertical spine with no dedicated storage pocket, storage joins the
+    // private band as a real row so it is sized by the same capacity/containment machinery
+    // instead of being squeezed into a leftover sliver past the band end after the fact.
+    {
+      const storSpec = byType.get('storage')?.[0];
+      if (storSpec && cfg.spine === 'vertical') {
+        const hasStoragePocket = layout.zones.service.some(r =>
+          r.y <= footprint.y + 0.1 && r.w >= 1.4 && r.w <= 2.2 && r.h >= 1.4 && r.h <= 2.2 &&
+          r.x > footprint.x + footprint.w * 0.4
+        );
+        if (!hasStoragePocket) {
+          genericClusters.push({
+            id: `cluster-storage-band-${storSpec.placedId}`,
+            rooms: [storSpec],
+            types: ['storage'],
+            mustTouchCorridor: false,
+            separationConstraints: [],
+          });
+          paired.add(storSpec.placedId);
+          const arr = byType.get('storage');
+          if (arr) { const idx = arr.findIndex(s => s.placedId === storSpec.placedId); if (idx >= 0) arr.splice(idx, 1); }
+          explanation.push(`Phase15 M4: storage joins the private band as a sized row (no dedicated pocket)`);
+        }
+      }
+    }
+
     // Sort generic clusters deterministically: mustTouchCorridor true first (hard adjacency > separation), then larger area, then ID
     genericClusters.sort((a, b) => {
       if (a.mustTouchCorridor && !b.mustTouchCorridor) return -1;
@@ -470,11 +578,23 @@ export function placeSpaces(
           if (cl.rooms.length === 2) return Math.max(...cl.rooms.map(r=>Math.max(r.minWidth ?? 2.0, 1.0)));
           return Math.max(cl.rooms[0].minWidth ?? 2.0, 1.0);
         });
-        const totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
+        let totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
+        // Phase 15 M4: when the band cannot host the columns' contract widths, tile them
+        // proportionally INSIDE the band — never below the 0.85 m sliver floor, and never
+        // spilling past the band edge. If even 0.85 m per column does not fit, the band
+        // cannot hold its assigned program: no geometry is painted (the rejection is
+        // reported through the program/placement gates as an honest infeasibility).
+        let fallbackImpossible = false;
+        if (totalMinW > privateRect.w + 1e-6) {
+          const scaleW = privateRect.w / totalMinW;
+          for (let i = 0; i < clusterMinWs.length; i++) clusterMinWs[i] = Math.max(0.85, clusterMinWs[i] * scaleW);
+          totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
+          if (totalMinW > privateRect.w + 1e-6) fallbackImpossible = true;
+        }
         const totalArea = genericClusters.reduce((sum, cl) => sum + cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0), 0);
         const totalExtra = Math.max(0, privateRect.w - totalMinW);
         let x = privateRect.x;
-        for (let ci = 0; ci < genericClusters.length; ci++) {
+        for (let ci = 0; ci < genericClusters.length && !fallbackImpossible; ci++) {
           const cl = genericClusters[ci];
           const minW = clusterMinWs[ci];
           const targetArea = cl.rooms.reduce((s,r)=>s+Math.max(r.minArea,r.targetArea),0);
@@ -531,11 +651,30 @@ export function placeSpaces(
           const isVerticalSpine = cfg.spine === 'vertical';
 
           if (isVerticalSpine) {
+            // Phase 15 M4: row minimum heights include each room's AREA need at the row
+            // width (and the 12 m² main-room preference on large units), so bedrooms are
+            // never stacked at min-height-then-stretched or left sub-regulation; growth is
+            // capped at 1.75×target and any genuine slack becomes intentional void at the
+            // free (far) end of the band instead of inflating the last room into a slab.
             const clusterMinHs = genericClusters.map(cl => {
-              if (cl.rooms.length === 2) return cl.rooms.reduce((s, r) => s + Math.max(r.minLength ?? r.minWidth ?? 2.0, 1.0), 0);
-              return Math.max(cl.rooms[0].minLength ?? cl.rooms[0].minWidth ?? 2.0, 1.0);
+              // 2% margin over the bare area need so rounding cannot land a room just below
+              // its contract threshold (e.g. master 11.9 < 12).
+              return cl.rooms.reduce((s, r) => s + mainPref(r, privateRect.w), 0) * 1.02;
             });
-            const totalMinH = clusterMinHs.reduce((a,b)=>a+b,0);
+            const clusterCapHs = genericClusters.map(cl => {
+              const capA = cl.rooms.reduce((s, r) => s + Math.max((r.minArea ?? 0) * 1.1, Math.max(r.targetArea ?? 0, r.minArea ?? 0) * 1.75), 0);
+              return capA / Math.max(privateRect.w, 0.5);
+            });
+            // The area/preference-aware row minimums only participate when the band can
+            // HOST them; otherwise the legacy share distribution runs untouched (it already
+            // tiles inside the band via per-row shares), so M4 never turns a feasible
+            // tight-band plan into an over-shrunk one. Containment is additionally guarded
+            // by the isLast clamp below.
+            const clusterRawMinHs = genericClusters.map(cl => cl.rooms.reduce((s, r) => s + Math.max(r.minLength ?? r.minWidth ?? 1.0, 1.0), 0));
+            const totalMinHRaw = clusterMinHs.reduce((a,b)=>a+b,0);
+            const needsFit = totalMinHRaw <= privateRect.h + 1e-6;
+            const clusterMinHsEff = needsFit ? clusterMinHs : clusterRawMinHs;
+            const totalMinH = clusterMinHsEff.reduce((a,b)=>a+b,0);
             const totalExtraAreaV = genericClusters.reduce((sum, cl) => {
               const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
               const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
@@ -544,14 +683,24 @@ export function placeSpaces(
             const remainingH = privateRect.h - totalMinH;
 
             let y = privateRect.y;
+            const rowHs: number[] = [];
             for (let ci = 0; ci < genericClusters.length; ci++) {
               const cl = genericClusters[ci];
               const isLast = ci === genericClusters.length - 1;
-              const minH = clusterMinHs[ci];
+              const minH = clusterMinHsEff[ci];
               let rowH: number;
               if (isLast) {
                 const remaining = privateRect.y + privateRect.h - y;
-                rowH = remaining >= minH - 1e-6 ? remaining : minH;
+                if (needsFit) {
+                  // capped growth; leftover stays an intentional void at the band's free end
+                  rowH = remaining >= minH - 1e-6
+                    ? Math.max(minH, Math.min(remaining, Math.max(minH, clusterCapHs[ci])))
+                    : minH;
+                } else {
+                  // legacy tile (M3-exact), clamped to the band so nothing protrudes
+                  const legacyH = remaining >= minH - 1e-6 ? remaining : minH;
+                  rowH = Math.max(minH, Math.min(legacyH, remaining));
+                }
                 if (rowH <= 0) rowH = minH;
               } else {
                 const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
@@ -559,9 +708,64 @@ export function placeSpaces(
                 const extra = Math.max(0, target - minArea);
                 const attemptFactor = 1 + (attempt * 0.05 - 0.1);
                 const extraShare = totalExtraAreaV > 1e-6 ? (extra / totalExtraAreaV) * remainingH * attemptFactor : remainingH / genericClusters.length;
-                rowH = minH + Math.max(0, extraShare);
-                if (rowH <= 0) rowH = minH;
+                rowH = needsFit
+                  ? Math.max(minH, Math.min(clusterCapHs[ci], minH + Math.max(0, extraShare)))
+                  : minH + Math.max(0, extraShare);
               }
+              rowHs.push(rowH);
+              y += rowH;
+            }
+            y = privateRect.y;
+            if (!needsFit && genericClusters.length > 1) {
+              // Bounded needs top-up: when the band cannot host every area need at once,
+              // raise the rows that are just short of their need using free slack first,
+              // then borrowing from the far (last) row down to — never below — its own
+              // contract floor. Deterministic; the band's total height is conserved.
+              const lastIdx = genericClusters.length - 1;
+              const lastFloor = clusterRawMinHs[lastIdx];
+              let used = 0;
+              for (const hh of rowHs) used += hh;
+              let slack = Math.max(0, privateRect.h - used);
+              for (let ci = 0; ci < lastIdx; ci++) {
+                // +0.01: rects snap to the 2 cm grid; a bare need height would round down
+                // and shave the room a hair below its contract area.
+                const deficit = clusterMinHs[ci] + 0.01 - rowHs[ci];
+                if (deficit <= 1e-6) continue;
+                const borrow = Math.min(deficit, slack + Math.max(0, rowHs[lastIdx] - lastFloor));
+                if (borrow <= 1e-6) break;
+                rowHs[ci] += borrow;
+                if (borrow > slack) {
+                  rowHs[lastIdx] -= (borrow - slack);
+                  slack = 0;
+                } else {
+                  slack -= borrow;
+                }
+              }
+            }
+            // Containment pass (always): row growth — needs floors, caps, top-ups, or the
+            // legacy tile — can never push the band total past its extent. Trim rows above
+            // their contract floors proportionally; if even the floors do not fit, leave
+            // them (the geometry gate reports genuine infeasibility instead of hiding it).
+            {
+              let totH = 0;
+              for (const hh of rowHs) totH += hh;
+              if (totH > privateRect.h + 1e-6) {
+                const floorsH = rowHs.map((hh, i) => Math.min(hh, Math.max(clusterRawMinHs[i], Math.min(clusterMinHs[i], hh))));
+                let excessH = totH - privateRect.h;
+                let headH = 0;
+                const headroomH = rowHs.map((hh, i) => { const v = Math.max(0, hh - floorsH[i]); headH += v; return v; });
+                if (headH > 1e-6) {
+                  for (let i = 0; i < rowHs.length && excessH > 1e-9; i++) {
+                    const cut = Math.min(headroomH[i], excessH * (headroomH[i] / headH));
+                    rowHs[i] -= cut;
+                    excessH -= cut;
+                  }
+                }
+              }
+            }
+            for (let ci = 0; ci < genericClusters.length; ci++) {
+              const cl = genericClusters[ci];
+              const rowH = rowHs[ci];
               // Phase 13: preserve min width for vertical spine — never shrink below max minWidth of cluster
               const clusterMaxMinW = Math.max(...cl.rooms.map(r=>Math.max(r.minWidth ?? 2.0, 1.0)));
               const rowW = Math.max(privateRect.w, clusterMaxMinW);
@@ -569,30 +773,47 @@ export function placeSpaces(
               y += rowH;
 
               if (cl.rooms.length === 2) {
-                const bedMinH = Math.max(cl.rooms[0].minLength ?? cl.rooms[0].minWidth ?? 2.2, 2.0);
-                const bathMinH = Math.max(cl.rooms[1].minLength ?? cl.rooms[1].minWidth ?? 1.2, 1.0);
+                // Phase 15 M4: a paired row's PRIMARY room (the bedroom when one is in the
+                // pair; cluster order varies by program) is sized to its area need first —
+                // including the 12 m² main-habitable preference — so it can never round just
+                // below its contract threshold. The secondary (usually wet) room absorbs the
+                // cut down to its own min, floor 0.5 m, keeping the row inside the band.
+                const primaryIdx = cl.rooms[0].type.includes('bedroom') ? 0
+                  : cl.rooms[1].type.includes('bedroom') ? 1
+                  : (cl.rooms[0].minArea ?? 0) >= (cl.rooms[1].minArea ?? 0) ? 0 : 1;
+                const roomA = cl.rooms[primaryIdx];
+                const roomB = cl.rooms[1 - primaryIdx];
+                const bedMinH = Math.max(roomA.minLength ?? roomA.minWidth ?? 2.2, 2.0);
+                const bathMinH = Math.max(roomB.minLength ?? roomB.minWidth ?? 1.2, 1.0);
                 const clusterMin = bedMinH + bathMinH;
+                // +0.01 pad: room rects snap to the 2 cm grid, and a floor height rounded
+                // down (e.g. 2.8236 -> 2.82) would shave a hair below the 12 m² threshold.
+                const bedNeedH = mainPref(roomA, rowW);
+                const bedMinEff = Math.min(Math.max(bedMinH, bedNeedH + 0.01), Math.max(bedMinH, rowH - bathMinH));
                 let bedH: number, bathH: number;
                 if (rowH < clusterMin - 1e-6) {
-                  bedH = bedMinH;
-                  bathH = bathMinH;
+                  bedH = Math.min(bedMinEff, Math.max(0.5, rowH - Math.min(bathMinH, rowH - 0.5)));
+                  bathH = Math.max(0.5, rowH - bedH);
                 } else {
-                  const bedTarget = Math.max(cl.rooms[0].minArea, cl.rooms[0].targetArea);
-                  const bathTarget = Math.max(cl.rooms[1].minArea, cl.rooms[1].targetArea);
+                  const bedTarget = Math.max(roomA.minArea ?? 0, roomA.targetArea ?? 0);
+                  const bathTarget = Math.max(roomB.minArea ?? 0, roomB.targetArea ?? 0);
                   const clusterExtra = Math.max(0, rowH - clusterMin);
                   const totalClusterTarget = bedTarget + bathTarget;
                   if (totalClusterTarget > 1e-6) {
                     bedH = bedMinH + clusterExtra * (bedTarget / totalClusterTarget);
                     bathH = rowH - bedH;
                     if (bathH < bathMinH) { bathH = bathMinH; bedH = rowH - bathH; }
+                    if (bedH < bedMinEff) { bedH = bedMinEff; bathH = rowH - bedH; }
+                    if (bathH < 0.5) { bathH = 0.5; bedH = rowH - bathH; }
                     if (bedH < bedMinH) { bedH = bedMinH; bathH = rowH - bedH; }
                   } else {
                     bedH = rowH * 0.6;
+                    if (bedH < bedMinEff) bedH = Math.min(bedMinEff, rowH - 0.5);
                     bathH = rowH - bedH;
                   }
                 }
-                const firstSpec = cl.rooms[0];
-                const secondSpec = cl.rooms[1];
+                const firstSpec = roomA;
+                const secondSpec = roomB;
                 const topRect: Rect = { x: rowRect.x, y: rowRect.y, w: rowRect.w, h: bedH };
                 const firstSpace = mkSpace(firstSpec.type, topRect, firstSpec.placedLabel, firstSpec.placedId, 'private');
                 firstSpace.rect.x = Math.round((firstSpace.rect.x+1e-9)*100)/100;
@@ -606,16 +827,25 @@ export function placeSpaces(
                 attemptPlaced.push(mkSpace(secondSpec.type, bottomRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
               } else {
                 const single = cl.rooms[0];
-                attemptPlaced.push(mkSpace(single.type, rowRect, single.placedLabel, single.placedId, 'private'));
+                attemptPlaced.push(mkSpace(single.type, rowRect, single.placedLabel, single.placedId, single.type === 'storage' ? 'service' : 'private'));
               }
             }
           } else {
-            // Horizontal spine generic
+            // Horizontal spine generic — Phase 15 M4: column minimums include each room's
+            // area need at the band height (with the main-room preference); growth capped
+            // at 1.75×target; slack becomes intentional void at the band's far end.
             const clusterMinWs = genericClusters.map(cl => {
-              if (cl.rooms.length === 2) return cl.rooms.reduce((s, r) => s + Math.max(r.minWidth ?? 2.0, 1.0), 0);
-              return Math.max(cl.rooms[0].minWidth ?? 2.0, 1.0);
+              return cl.rooms.reduce((s, r) => s + mainPrefW(r, privateRect.h), 0);
             });
-            const totalMinW = clusterMinWs.reduce((a,b)=>a+b,0);
+            const clusterCapWs = genericClusters.map(cl => {
+              const capA = cl.rooms.reduce((s, r) => s + Math.max((r.minArea ?? 0) * 1.1, Math.max(r.targetArea ?? 0, r.minArea ?? 0) * 1.75), 0);
+              return capA / Math.max(privateRect.h, 0.5);
+            });
+            const clusterRawMinWs = genericClusters.map(cl => cl.rooms.reduce((s, r) => s + Math.max(r.minWidth ?? 1.0, 1.0), 0));
+            const totalMinWRaw = clusterMinWs.reduce((a,b)=>a+b,0);
+            const needsFitW = totalMinWRaw <= privateRect.w + 1e-6;
+            const clusterMinWsEff = needsFitW ? clusterMinWs : clusterRawMinWs;
+            const totalMinW = clusterMinWsEff.reduce((a,b)=>a+b,0);
             const totalExtraArea = genericClusters.reduce((sum, cl) => {
               const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
               const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
@@ -624,15 +854,24 @@ export function placeSpaces(
             const remainingW = privateRect.w - totalMinW;
 
             let x = privateRect.x;
+            const colWs: number[] = [];
             for (let ci = 0; ci < genericClusters.length; ci++) {
               const cl = genericClusters[ci];
               const isLast = ci === genericClusters.length - 1;
-              const minW = clusterMinWs[ci];
+              const minW = clusterMinWsEff[ci];
               let colW: number;
               if (isLast) {
                 const remaining = privateRect.x + privateRect.w - x;
-                // Phase 13.1: never negative, preserve min
-                colW = remaining >= minW - 1e-6 ? remaining : minW;
+                // Phase 13.1: never negative, preserve min; Phase 15 M4: capped growth when
+                // the band can host it, legacy tile clamped inside the band otherwise.
+                if (needsFitW) {
+                  colW = remaining >= minW - 1e-6
+                    ? Math.max(minW, Math.min(remaining, Math.max(minW, clusterCapWs[ci])))
+                    : minW;
+                } else {
+                  const legacyW = remaining >= minW - 1e-6 ? remaining : minW;
+                  colW = Math.max(minW, Math.min(legacyW, remaining));
+                }
                 if (colW <= 0) colW = minW;
               } else {
                 const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
@@ -640,9 +879,59 @@ export function placeSpaces(
                 const extra = Math.max(0, target - minArea);
                 const attemptFactor = 1 + (attempt * 0.05 - 0.1);
                 const extraShare = totalExtraArea > 1e-6 ? (extra / totalExtraArea) * remainingW * attemptFactor : remainingW / genericClusters.length;
-                colW = minW + Math.max(0, extraShare);
+                colW = needsFitW
+                  ? Math.min(Math.max(minW, clusterCapWs[ci]), minW + Math.max(0, extraShare))
+                  : minW + Math.max(0, extraShare);
                 if (colW <= 0) colW = minW;
               }
+              colWs.push(colW);
+              x += colW;
+            }
+            x = privateRect.x;
+            if (!needsFitW && genericClusters.length > 1) {
+              // Bounded needs top-up (mirrors the row pass): rows short of their area need
+              // borrow from slack first, then from the far column above its contract floor.
+              const lastIdx = genericClusters.length - 1;
+              const lastFloor = clusterRawMinWs[lastIdx];
+              let used = 0;
+              for (const ww of colWs) used += ww;
+              let slack = Math.max(0, privateRect.w - used);
+              for (let ci = 0; ci < lastIdx; ci++) {
+                const deficit = clusterMinWs[ci] + 0.01 - colWs[ci];
+                if (deficit <= 1e-6) continue;
+                const borrow = Math.min(deficit, slack + Math.max(0, colWs[lastIdx] - lastFloor));
+                if (borrow <= 1e-6) break;
+                colWs[ci] += borrow;
+                if (borrow > slack) {
+                  colWs[lastIdx] -= (borrow - slack);
+                  slack = 0;
+                } else {
+                  slack -= borrow;
+                }
+              }
+            }
+            // Containment pass (always, mirrors the rows): trim over-grown columns toward
+            // their contract floors so the band total never exceeds the band extent.
+            {
+              let totW = 0;
+              for (const ww of colWs) totW += ww;
+              if (totW > privateRect.w + 1e-6) {
+                const floorsW = colWs.map((ww, i) => Math.min(ww, Math.max(clusterRawMinWs[i], Math.min(clusterMinWs[i], ww))));
+                let excessW = totW - privateRect.w;
+                let headW = 0;
+                const headroomW = colWs.map((ww, i) => { const v = Math.max(0, ww - floorsW[i]); headW += v; return v; });
+                if (headW > 1e-6) {
+                  for (let i = 0; i < colWs.length && excessW > 1e-9; i++) {
+                    const cut = Math.min(headroomW[i], excessW * (headroomW[i] / headW));
+                    colWs[i] -= cut;
+                    excessW -= cut;
+                  }
+                }
+              }
+            }
+            for (let ci = 0; ci < genericClusters.length; ci++) {
+              const cl = genericClusters[ci];
+              const colW = colWs[ci];
               const colRect: Rect = { x, y: privateRect.y, w: colW, h: privateRect.h };
               x += colW;
 
@@ -781,6 +1070,40 @@ export function placeSpaces(
       }
     }
   }
+  // Phase 15 M4: a storage tail hanging past the floor end is a band-capacity residual,
+  // not a licence to spill outside the envelope. The topmost private space sharing the
+  // tail's column may donate height down to (never below) its contract floor; the storage
+  // then tiles the donated strip exactly. Fully deterministic; returns false when nothing
+  // can be donated so the caller keeps its existing fallbacks.
+  const borrowForStorageTail = (storRect: Rect, spec: PlacedSpec): boolean => {
+    const over = storRect.y + storRect.h - (footprint.y + footprint.h);
+    if (over <= 1e-6 || storRect.h < 1.4) return false;
+    let donor: Space | null = null;
+    for (const p of placed) {
+      if (p.zone !== 'private') continue;
+      const xOverlap = Math.min(p.rect.x + p.rect.w, storRect.x + storRect.w) - Math.max(p.rect.x, storRect.x);
+      if (xOverlap <= 0.5) continue;
+      if (!donor || p.rect.y + p.rect.h > donor.rect.y + donor.rect.h) donor = p;
+    }
+    if (!donor) return false;
+    const donorType = donor.type;
+    const minArea = donorType === 'master-bedroom' ? 12 : donorType === 'bedroom' ? 9 : 2.4;
+    const donorFloorH = Math.max(2.0, minArea / Math.max(donor.rect.w, 0.5));
+    const spare = donor.rect.h - donorFloorH;
+    if (spare < 1e-6) return false;
+    const cut = Math.min(spare, over + 0.02);
+    donor.rect.h -= cut;
+    donor.area = rArea(donor.rect);
+    donor.polygon = rCorners(donor.rect);
+    const newY = Math.round((donor.rect.y + donor.rect.h + 1e-9) * 100) / 100;
+    const newH = Math.round((storRect.y + storRect.h - newY + 1e-9) * 100) / 100;
+    if (newH < 1.4 || newY + newH > footprint.y + footprint.h + 1e-6) {
+      donor.rect.h += cut; donor.area = rArea(donor.rect); donor.polygon = rCorners(donor.rect);
+      return false;
+    }
+    placed.push(mkSpace('storage', { x: storRect.x, y: newY, w: storRect.w, h: newH }, spec.placedLabel, spec.placedId, 'service'));
+    return true;
+  };
   const stor = take('storage');
   if (stor) {
     if (cfg.spine === 'vertical') {
@@ -802,6 +1125,9 @@ export function placeSpaces(
         const storRect: Rect = { x: sx, y: sy, w: stairPocket.w, h: finalH > 0 ? finalH : sh };
         if (storRect.y + storRect.h <= footprint.y + footprint.h + 1e-6 && storRect.h >= 1.4) {
           placed.push(mkSpace('storage', storRect, stor.placedLabel, stor.placedId, 'service'));
+        } else if (borrowForStorageTail(storRect, stor)) {
+          // handled inside: the last private row on this column gave up exactly the
+          // overflow headroom it could spare above its own contract floor.
         } else {
           const ex = footprint.x + footprint.w * 0.5 + CORRIDOR_W/2;
           const ew = Math.min(2.0, Math.max(1.4, layout.zones.private[0].w * 0.35));
@@ -854,6 +1180,7 @@ export function placeSpaces(
     const living = take('living');
     const dining = take('dining');
     let guestWc = take('guest-wc');
+    let bandCarvedByGallery = false;
     const publicUnplaced: PlacedSpec[] = [];
     let g; while ((g = take('guest-room'))) publicUnplaced.push(g);
     let f; while ((f = take('family-room'))) publicUnplaced.push(f);
@@ -1006,6 +1333,7 @@ export function placeSpaces(
           }
         }
         if (galleryPlaced) {
+          bandCarvedByGallery = true;
           publicUnplaced.length = 0;
           guestWc = undefined;
           const backY = galleryBottom;
@@ -1029,7 +1357,21 @@ export function placeSpaces(
         if (publicRect.w < requiredMinW - 1e-6) {
           // Not enough width side-by-side — check if we can stack vertically (tall publicRect)
           if (publicRect.h >= livingMinH + diningMinH - 1e-6) {
-            let livingH = Math.max(livingMinH, publicRect.h * 0.55);
+            // Phase 15 M4: aim both main rooms at (preference-aware) area needs FIRST, then
+            // share any genuine surplus by target — instead of the fixed 0.55 split which
+            // left dining below 12 m² on tall narrow bands (12×18 family) and giant rooms
+            // elsewhere. Falls back to the legacy split whenever the needs cannot tile.
+            const livNeedH = mainPref(living, publicRect.w);
+            const dinNeedH = mainPref(dining, publicRect.w);
+            const stackNeeds = livNeedH + dinNeedH;
+            let livingH: number;
+            if (publicRect.h >= stackNeeds - 1e-6) {
+              const livT = Math.max(living.minArea, living.targetArea);
+              const dinT = Math.max(dining.minArea, dining.targetArea);
+              livingH = Math.round((livNeedH + (publicRect.h - stackNeeds) * (livT / (livT + dinT))) * 100) / 100;
+            } else {
+              livingH = Math.max(livingMinH, publicRect.h * 0.55);
+            }
             // Round to 2 decimals and make next rect exactly fill publicRect to avoid 0.01 overlap with north kitchen pocket
             livingH = Math.round(livingH * 100) / 100;
             const diningY = Math.round((publicRect.y + livingH) * 100) / 100;
@@ -1066,8 +1408,15 @@ export function placeSpaces(
           }
         } else {
           livingW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, livingW));
+          // Phase 15 M4: cap the shared row height at the cells' program-driven maximum
+          // (1.75×target, never below their own needs) — a huge band stops force-feeding
+          // the living field 100+ m². Any slack becomes intentional void UNDER the row
+          // (facade/contact edges stay tiled; band bottom keeps its adjacency by tiling
+          // up from it when the cap is not binding).
+          const rowH = publicH;
+          const rowY = publicRect.y;
           placed.push(mkSpace('living',
-            { x: publicRect.x, y: publicRect.y, w: livingW, h: publicH },
+            { x: publicRect.x, y: rowY, w: livingW, h: rowH },
             living.placedLabel, living.placedId, 'public'));
           const eastX = publicRect.x + livingW;
           const eastW = publicRect.w - livingW;
@@ -1082,12 +1431,12 @@ export function placeSpaces(
               { x: eastX + diningW, y: publicRect.y + publicRect.h - gwcH, w: gwcW, h: gwcH },
               guestWc.placedLabel, guestWc.placedId, 'public'));
             placed.push(mkSpace('dining',
-              { x: eastX, y: publicRect.y, w: diningW, h: publicH },
+              { x: eastX, y: publicRect.y, w: diningW, h: rowH },
               dining.placedLabel, dining.placedId, 'public'));
           } else {
             const finalDiningW = Math.max(DINING_MIN_W, finalEastW);
             placed.push(mkSpace('dining',
-              { x: eastX, y: publicRect.y, w: finalDiningW, h: publicH },
+              { x: eastX, y: publicRect.y, w: finalDiningW, h: rowH },
               dining.placedLabel, dining.placedId, 'public'));
           }
         }

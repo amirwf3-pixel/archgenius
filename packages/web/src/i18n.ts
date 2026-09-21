@@ -347,6 +347,7 @@ export function spaceTypeFromLabel(s: { type: string }): string {
 // ---------------------------------------------------------------------------
 
 export const FINDING_CODE_FA: Record<string, string> = {
+  ARCH_PROGRAM_UNPLACED: 'جایدهی‌نشدن فضای برنامه',
   // Geometric
   GEO_OVERLAPPING_ROOMS: 'هم‌پوشانی فضاها',
   GEO_OVERLAPPING_WALLS: 'هم‌پوشانی دیوارها',
@@ -735,6 +736,10 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
   SITE_GEOM_INVALID: [{ re: /^Site\/buildable geometry invalid: (.*)$/, fa: 'هندسهٔ سایت/سطح قابل‌ساخت نامعتبر است: {1}' }],
   HARD_CONSTRAINT_INFEASIBLE_DIMENSION: [{ re: /^Phase13\.2 infeasible dimension: (.*) — candidate excluded from usable candidates \(diagnostic only\); when no valid candidate exists the result is INFEASIBLE with bestCandidate=null$/, fa: 'ابعاد غیرقابل‌حل (Phase13.2): {1} — گزینه از گزینه‌های قابل‌استفاده کنار گذاشته شد (صرفاً تشخیصی)؛ در نبودِ گزینهٔ معتبر، نتیجه INFEASIBLE با bestCandidate=null است' }],
   HARD_RULE_VIOLATION: [{ re: /^Phase15 M2 rule violation: (.*) — candidate excluded from usable candidates \(diagnostic only\); when no hard-clean candidate exists the result is INFEASIBLE with bestCandidate=null$/, fa: 'تخلف از قواعد صریح (Phase15 M2): {1} — گزینه از گزینه‌های قابل‌استفاده کنار گذاشته شد (صرفاً تشخیصی)؛ در نبودِ گزینهٔ بدون خطای hard، نتیجه INFEASIBLE با bestCandidate=null است' }],
+
+  // --- validation/program-completeness.ts (Phase15 M3 no-silent-drop; surfaces on
+  //     diagnostic candidates whenever a topology fails to host the requested program) ---
+  ARCH_PROGRAM_UNPLACED: [{ re: /^Floor (\d+): requested program room '([^']+)' not placed \(required x(\d+), placed x(\d+)\) — requested rooms are never silently dropped$/, fa: 'طبقهٔ {1}: فضای درخواستی «{2}» جایدهی نشد (تعداد خواسته {3}، جایدهی‌شده {4}) — فضاهای درخواستی هرگز به‌صورت خاموش حذف نمی‌شوند', labels: [2] }],
 
   // --- validation/site.ts ---
   SITE_INVALID_POLYGON: [{ re: /^Site polygon invalid: (.*) — shape (\S+)$/, fa: 'چندضلعی سایت نامعتبر است: {1} — شکل {2}', maps: { 2: SITE_SHAPE_FA } }],

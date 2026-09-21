@@ -139,7 +139,10 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
     for (const cand of candidates) checkNoInvalidGeom(cand);
     if (!bestCandidate) {
       expect(infeasible).toBeDefined();
-      expect(infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      // Phase15 M4: bands that cannot host their program are now rejected at the capacity
+// gate (never painted sub-min), so the explicit code may be DIM or RULE — either way the
+// result is a fully explained, non-usable INFEASIBLE.
+      expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible.code);
       for (const d of infeasible.diagnosticCandidates) checkNoInvalidGeom(d);
       return;
     }

@@ -295,7 +295,10 @@ describe('Phase 13.2 E: 8x12 CASE B — HARD site findings do not become a null 
     if (!res.bestCandidate) {
       // After quality improvements, 8x12 may be genuinely infeasible due to below-min (e.g., living 2.1<3) — that's honest HARD via infeasible, not a regression
       expect(res.infeasible).not.toBeNull();
-      expect(res.infeasible.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      // Phase15 M4: bands that cannot host their program are now rejected at the capacity
+// gate (never painted sub-min), so the explicit code may be DIM or RULE — either way the
+// result is a fully explained, non-usable INFEASIBLE.
+      expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(res.infeasible.code);
       for (const d of res.infeasible.diagnosticCandidates) {
         expect(hasStrictInvalidGeometry(d)).toBe(false);
       }

@@ -714,7 +714,11 @@ describe('Phase 8 Hardening — E2E cases A-F', () => {
     if (!bestCandidate) {
       // Phase 13.2 CASE A: 8x12 cannot satisfy minimum geometry for this program — explicit
       // INFEASIBLE result; nothing to evaluate and no usable candidate is exposed.
-      expect(infeasible!.code).toBe('HARD_CONSTRAINT_INFEASIBLE_DIMENSION');
+      // Phase 15 M4: topologies whose band cannot host its program are now rejected at the
+      // capacity gate (never painted outside the envelope), so the representative code may be
+      // the dimension pre-check or the stronger program/geometry rejection. Either way the
+      // outcome is an explicit, explained INFEASIBLE — that invariant is what this test pins.
+      expect(['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION']).toContain(infeasible!.code);
       expect(infeasible!.explanation).toBeTruthy();
     } else {
       const evalResult = evaluateCandidate(bestCandidate);

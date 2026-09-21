@@ -31,11 +31,17 @@ function proj(input: { site: any; building: any; seed?: number; name?: string })
 
 // 18x25 2F 3BD: every strategy yields a geometrically valid candidate but ALL carry
 // residual HARD findings (measured at M1 baseline) → the gate must return HARD_RULE_VIOLATION.
+// Phase 15 M4 re-derivation: the original fixture (18×25 2F parking2+storage — M2/M3's
+// all-hard regression case) became genuinely FEASIBLE once the demand-aware band ladder
+// replaced the fixed-ratio carve, so the all-hard role moves to 12×18 1F s1: every
+// strategy there still carries residual HARD findings (e.g. an MBH4 main-room shortfall
+// on dayl) and none may be exposed. The gate mechanics asserted here are unchanged.
 function ruleVariantCase() {
   return proj({
-    name: 'P15.2-rule-18x25-2F',
-    site: { shape: 'rectangle', width: 18, length: 25, accessSide: 'south', streetWidth: 8 },
-    building: { type: 'villa', floors: 2, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true, hasStorage: true },
+    name: 'P15.2-rule-12x18-1F',
+    site: { shape: 'rectangle', width: 12, length: 18, accessSide: 'south', streetWidth: 8 },
+    building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1 },
+    seed: 1,
   });
 }
 // 15x20 2BD: hard-clean candidates exist (3 of 4 strategies at M2); functional-circulation
