@@ -370,6 +370,11 @@ export const FINDING_CODE_FA: Record<string, string> = {
   CIRC_DISCONNECTED: 'قطع سیرکولاسیون',
   CIRC_CORRIDOR_TOO_NARROW: 'عرض ناکافی راهرو',
   CIRC_STAIR_OBSTRUCTED: 'انسداد مسیر راه‌پله',
+  CIRC_ROOM_THROUGH_ROOM: 'استفاده از اتاق به‌عنوان راهرو',
+  CIRC_REDUNDANT_DOOR: 'درهای اضافی بین دو فضا',
+  CIRC_INVALID_ENTRY: 'مبدأ نامناسب ورودی ساختمان',
+  CIRC_EXCESSIVE_PATH: 'مسیر طولانی سیرکولاسیون',
+  CIRC_VERTICAL_DISCONNECTED: 'نبود ارتباط عمودی طبقه',
   // Program
   PROG_MISSING_SPACE: 'فضای لازم در برنامه وجود ندارد',
   PROG_ROOM_TOO_SMALL: 'اتاق کوچک‌تر از حد مجاز',
@@ -633,6 +638,14 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
   CIRC_DISCONNECTED: [{ re: /^No circulation seed \(entrance\/foyer\/corridor\) found on floor\.$/, fa: 'هیچ نقطهٔ آغاز سیرکولاسیون (ورودی/لابی/راهرو) در این طبقه یافت نشد.' }],
   CIRC_INACCESSIBLE_SPACE: [{ re: /^Space "(.+)" is not reachable from the entrance\/circulation\.$/, fa: 'فضای «{1}» از ورودی/سیرکولاسیون قابل دسترس نیست.', labels: [1] }],
   OPENING_DOOR_SWING_BLOCKED: [{ re: /^Door of (.+) may swing into obstruction\.$/, fa: 'درِ {1} ممکن است هنگام بازشدن به مانع برخورد کند.', labels: [1] }],
+  CIRC_INVALID_ENTRY: [
+    { re: /^Street entrance opens directly into "(.+)" — the front door must lead into the entry hall, foyer or living area\.$/, fa: 'در ورودی ساختمان مستقیماً به «{1}» باز می‌شود — ورودی باید به فضای ورودی، لابی یا نشیمن راه یابد.', labels: [1] },
+    { re: /^Street entrance opens directly into "(.+)" — an entry hall or living room is the conventional front sequence\.$/, fa: 'در ورودی ساختمان مستقیماً به «{1}» باز می‌شود — توالی متعارف، فضای ورودی/لابی یا نشیمن است.', labels: [1] },
+  ],
+  CIRC_ROOM_THROUGH_ROOM: [{ re: /^"(.+)" is used as a corridor: (.+) (?:are|is) only reachable by passing through it\.$/, fa: '«{1}» به‌عنوان راهرو استفاده شده — {2} تنها با عبور از آن قابل دسترس است.', labels: [1, 2] }],
+  CIRC_REDUNDANT_DOOR: [{ re: /^(\d+) doors between "(.+)" and "(.+)" — one intentional link is enough\.$/, fa: '{1} در بین «{2}» و «{3}» وجود دارد — یک ارتباط عمدی کافی است.', labels: [2, 3] }],
+  CIRC_EXCESSIVE_PATH: [{ re: /^"(.+)" is (\d+) door-hops from the entry — circulation takes an unnecessarily long detour\.$/, fa: '«{1}» در فاصلهٔ {2} در از ورودی است — مسیر سیرکولاسیون بیش از حد طولانی شده.', labels: [1] }],
+  CIRC_VERTICAL_DISCONNECTED: [{ re: /^Level (\d+) has habitable spaces but no stair or elevator hall connecting it to the rest of the house\.$/, fa: 'طبقهٔ {1} فضای قابل سکونت دارد اما هیچ راه‌پله یا لابی آسانسوری آن را به بقیهٔ خانه متصل نمی‌کند.' }],
 
   // --- validation/furniture.ts ---
   FURN_OUTSIDE_ROOM: [

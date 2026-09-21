@@ -229,10 +229,23 @@ describe('Phase 7 — Reports', () => {
   it('heuristic/code distinction preserved', () => {
     const prj = createProject(baseInput());
     const { bestCandidate } = generate(prj);
-    const doc = buildDocumentation(prj, bestCandidate!);
-    const heuristic = doc.qaFindings.filter(f => f.isHeuristic);
-    expect(heuristic.length).toBeGreaterThan(0);
-    for (const h of heuristic) {
+    // Phase 15 M5: a clean generator output may legitimately contain zero heuristic
+    // findings, so the DISTINCTION is asserted on an augmented candidate as well:
+    // design-heuristic codes map to isHeuristic=true, regulation codes to false.
+    const augmented = {
+      ...bestCandidate!,
+      findings: [
+        ...bestCandidate!.findings,
+        { code: 'CIRC_REDUNDANT_DOOR', severity: 'soft' as const, message: 'synthetic heuristic', entityIds: [] },
+        { code: 'REG_FAKE_TEST', severity: 'hard' as const, message: 'synthetic regulation', entityIds: [] },
+      ],
+    };
+    const doc = buildDocumentation(prj, augmented as unknown as typeof bestCandidate);
+    const red = doc.qaFindings.find(x => x.code === 'CIRC_REDUNDANT_DOOR');
+    const reg = doc.qaFindings.find(x => x.code === 'REG_FAKE_TEST');
+    expect(red?.isHeuristic).toBe(true);
+    expect(reg?.isHeuristic).toBe(false);
+    for (const h of doc.qaFindings.filter(x => x.isHeuristic)) {
       expect(h.code.startsWith('REG_')).toBe(false);
     }
   });

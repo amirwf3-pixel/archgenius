@@ -141,9 +141,13 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
       .map(w => {
         const insideId = w.spaceIds[0] ?? w.spaceIds[1];
         const inside = insideId ? floor.spaces.find(s => s.id === insideId) : undefined;
-        // Strongly prefer a wall whose interior space is circulation.
-        // Between same-type walls prefer the longest (more comfortable entry).
-        const score = (inside && circTypes.has(inside.type) ? 10000 : 0) + wallLength(w);
+        // Rank the interior side of the street door by ENTRY QUALITY, then length:
+        // a proper entrance hall beats a foyer, foyer beats the back corridor, corridor
+        // beats a stair hall — and none of them tolerate a private/wet landing.
+        const entryRank = (tt?: string): number =>
+          tt === 'entrance' ? 40000 : tt === 'foyer' ? 30000 : tt === 'corridor' ? 20000 :
+          tt === 'stair-hall' ? 10000 : (tt && circTypes.has(tt)) ? 5000 : 0;
+        const score = entryRank(inside?.type) + wallLength(w);
         return { w, inside, score };
       })
       .sort((a, b) => b.score - a.score);
@@ -213,156 +217,253 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
     wall.openingIds.push(id);
   }
 
-  // Iterate interior walls; place doors where circulation is involved.
+  // Span check against a specific wall including current occupancy (M5 solver helpers).
+  function findFreeSpanOn(wall: Wall, width: number, preferred: { offset: number; width: number }): { offset: number; width: number } | null {
+    const L = wallLength(wall);
+    const margin = L < width + 0.45 ? Math.max(0.02, (L - width) / 2 - 0.01) : 0.2;
+    const span = findFreeSpan(wall, width, 'middle', margin);
+    return span ?? null;
+  }
+  function placeDoorOnWallSelected(wall: Wall, intoSpaceId: string, width: number, span: { offset: number; width: number }) {
+    const id = mkId('door');
+    const center = pointAtOffset(wall, span.offset + span.width / 2);
+    const wallDir = wallDirection(wall);
+    const normal = normalIntoSpace(wall, intoSpaceId);
+    const swing: 'left' | 'right' = wall.id.charCodeAt(wall.id.length - 1) % 2 === 0 ? 'left' : 'right';
+    const leaf = computeDoorLeaf(center, wallDir, normal, width, swing);
+    const op: Opening = {
+      id, type: 'door', wallId: wall.id, center,
+      wallDir, normal,
+      width, height: DOOR_INT_HEIGHT, sill: 0,
+      swing, hinge: leaf.hinge, leafEnd: leaf.leafEnd, openEnd: leaf.openEnd, swingAngle: 90, leafThickness: 0.04,
+      floor: floor.level,
+      spaceA: wall.spaceIds[0] ?? undefined, spaceB: wall.spaceIds[1] ?? undefined,
+    };
+    openings.push(op);
+    addOcc(wall.id, span.offset, span.offset + span.width);
+    wall.openingIds.push(id);
+  }
+
+  // ---- Phase 15 M5: intentional circulation topology (replaces the pre-M5
+  // "door on every circulation-adjacent wall" rule plus six ad-hoc patch loops) ----
+  // Model: entrance -> foyer/hall -> primary circulation spine (corridor / stair-hall)
+  //          -> branching single primary access per room; public / service / private all
+  // attach to the spine directly. A room never reaches the spine THROUGH another room
+  // unless the topology genuinely cannot host a spine-adjacent wall for it, in which case
+  // an INTENTIONAL suite/service link is created (ensuite bath, service store) and nothing
+  // else. Redundant shortcuts (bedroom<->bedroom, dining<->kitchen when both already
+  // attach to the spine) are not doors the plan needs, so they are not generated.
   const interiorWalls = floor.walls.filter(w => w.kind !== 'exterior' && w.spaceIds[0] && w.spaceIds[1]);
-  // Order so we place corridor doors first (they take priority on wall
-  // occupancy), then entrance/foyer, then stair-hall, then ensuite / other.
-  // We prefer placing a door from a circulation space onto a SMALL room
-  // (WC/bath) before placing onto larger rooms, since small-room walls are
-  // shorter and more likely to become "occupied" by a larger-room door.
-  const SMALL = new Set(['guest-wc', 'bathroom', 'master-bathroom', 'storage', 'utility']);
-  function wallPri(w: Wall): [number, number] {
-    const a = spacesById.get(w.spaceIds[0]!); const b = spacesById.get(w.spaceIds[1]!);
-    const types = new Set([a?.type, b?.type]);
-    let tier = 3;
-    if (types.has('corridor')) tier = 0;
-    else if (types.has('entrance') || types.has('foyer')) tier = 1;
-    else if (types.has('stair-hall')) tier = 2;
-    const smallSide = (a && SMALL.has(a.type)) || (b && SMALL.has(b.type)) ? 0 : 1;
-    return [tier, smallSide];
+  const WET = new Set(['bathroom', 'master-bathroom', 'guest-wc']);
+  const SUITE_HOST = new Set(['master-bedroom', 'bedroom']);
+  const SERVICE_STORE = new Set(['storage', 'utility']);
+
+  // Shared-wall segments between a pair of spaces. Walls are already merged
+  // per-overlap segment by generateWalls; a pair may share several collinear
+  // segments (split by intermediate neighbors) — they are treated as one
+  // logical adjacency and the longest usable segment carries the door.
+  const pairWalls = new Map<string, Wall[]>();
+  for (const w of interiorWalls) {
+    const a = w.spaceIds[0]!, b = w.spaceIds[1]!;
+    if (a === b) continue;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    let arr = pairWalls.get(key);
+    if (!arr) { arr = []; pairWalls.set(key, arr); }
+    arr.push(w);
   }
-  const sortedWalls = [...interiorWalls].sort((a, b) => {
-    const [ta, sa] = wallPri(a); const [tb, sb] = wallPri(b);
-    return ta - tb || sa - sb;
-  });
-  for (const w of sortedWalls) {
-    const a = spacesById.get(w.spaceIds[0]!);
-    const b = spacesById.get(w.spaceIds[1]!);
-    if (!a || !b) continue;
-    if (a.type === 'parking' || b.type === 'parking') continue;
-    if (a.type === 'yard' || b.type === 'yard') continue;
-    if (a.type === 'balcony' || b.type === 'balcony') continue;
-    const aCirc = circTypes.has(a.type);
-    const bCirc = circTypes.has(b.type);
-    if (aCirc || bCirc) {
-      // Door opens INTO the non-circulation side. For circulation-to-
-      // circulation, direction is arbitrary (foyer→corridor etc).
-      const into = aCirc && bCirc ? b.id : aCirc ? b.id : a.id;
-      const isBathDoor = (a.type === 'bathroom' || a.type === 'master-bathroom' || a.type === 'guest-wc'
-                      || b.type === 'bathroom' || b.type === 'master-bathroom' || b.type === 'guest-wc');
-      // Place door as close as possible to the circulation side's
-      // "corner" with the main corridor/entrance spine? For corridor walls
-      // in a north/south-aligned column, we want the door near the corridor
-      // (for south-band column walls which are VERTICAL, 'start' = bottom
-      // = corridor side; for north-band column 'end' = bottom = corridor
-      // side). Without complicating too much we just pass middle (default).
-      placeDoorOnWall(w, into, isBathDoor ? DOOR_BATH_WIDTH : DOOR_INT_WIDTH);
+  function bestFreeWall(walls: Wall[], width: number): { wall: Wall; span: { offset: number; width: number } } | null {
+    let best: { wall: Wall; span: { offset: number; width: number } } | null = null;
+    for (const w of walls) {
+      // Same adaptive margin as placeDoorOnWall so short shared segments
+      // (e.g. a slim foyer-corridor link) still qualify for a door.
+      const L = wallLength(w);
+      const margin = L < width + 0.45 ? Math.max(0.02, (L - width) / 2 - 0.01) : 0.2;
+      const span = findFreeSpan(w, width, 'middle', margin);
+      if (!span) continue;
+      if (!best || L > wallLength(best.wall) || (Math.abs(L - wallLength(best.wall)) < 1e-9 && w.id < best.wall.id)) best = { wall: w, span };
+    }
+    return best;
+  }
+
+  // Score how intentional a door between `room` and `other` is as PRIMARY access.
+  // Higher = better. Type-driven only — no geometry-specific constants.
+  function primaryAccessScore(roomType: string, otherType: string): number {
+    const circ = (t2: string) => otherType === t2 ? 1 : 0;
+    switch (roomType) {
+      case 'guest-wc':        return circ('foyer') * 96 + circ('entrance') * 94 + circ('corridor') * 90 + circ('stair-hall') * 60 + circ('elevator-hall') * 58;
+      case 'bathroom':        return circ('corridor') * 100 + circ('stair-hall') * 70 + circ('elevator-hall') * 68 + circ('foyer') * 60;
+      case 'master-bathroom': return circ('corridor') * 90 + circ('stair-hall') * 70 + circ('foyer') * 60 + (otherType === 'master-bedroom' ? 82 : 0);
+      case 'bedroom':         return circ('corridor') * 100 + circ('stair-hall') * 75 + circ('elevator-hall') * 73 + circ('foyer') * 50;
+      case 'master-bedroom':  return circ('corridor') * 100 + circ('stair-hall') * 75 + circ('foyer') * 45;
+      case 'living':          return circ('foyer') * 96 + circ('corridor') * 92 + circ('entrance') * 88 + circ('stair-hall') * 55;
+      case 'dining':          return circ('corridor') * 94 + circ('foyer') * 90 + circ('entrance') * 70 + circ('stair-hall') * 55;
+      case 'kitchen':         return circ('corridor') * 92 + circ('foyer') * 88 + circ('entrance') * 60;
+      case 'family-room': case 'guest-room': return circ('corridor') * 100 + circ('foyer') * 55;
+      case 'storage': case 'utility': return circ('kitchen') * 82 + circ('corridor') * 70 + circ('foyer') * 40;
+      default:                return circ('corridor') * 100 + circ('foyer') * 90 + circ('entrance') * 80;
     }
   }
-  // Additionally, connect master-bathroom to master-bedroom when they share a wall,
-  // and connect chained rooms (guest-WC opening off entrance/foyer; secondary
-  // bedrooms off master-bedroom when no corridor wall is adjacent).
-  function hasCircDoor(s: Space): boolean {
-    for (const wid of s.wallIds) {
-      const ww = floor.walls.find(www => www.id === wid);
-      if (!ww) continue;
-      if (ww.openingIds.length === 0) continue;
-      const other = ww.spaceIds.find(id => id && id !== s.id);
+
+  // 1) Spine links between circulation spaces (entrance -> foyer -> corridor ->
+  //    stair/elevator halls): exactly one door per adjacent circulation pair,
+  //    on the longest shared segment. These form the connected core the rooms
+  //    branch from; they are never duplicated.
+  const doorWidthFor = (typeA: string, typeB: string): number =>
+    (WET.has(typeA) || WET.has(typeB)) ? DOOR_BATH_WIDTH : DOOR_INT_WIDTH;
+  const circLinked = new Set<string>();
+  for (const [key, walls] of [...pairWalls.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const [ida, idb] = key.split('|');
+    const a = spacesById.get(ida)!, b = spacesById.get(idb)!;
+    const aCirc = circTypes.has(a.type), bCirc = circTypes.has(b.type);
+    if (!aCirc || !bCirc) continue;
+    // entrance<->corridor only when the floor has no foyer between them
+    if ((a.type === 'entrance' && bCirc && b.type === 'corridor' && floor.spaces.some(s => s.type === 'foyer')) ||
+        (b.type === 'entrance' && a.type === 'corridor' && floor.spaces.some(s => s.type === 'foyer'))) continue;
+    const width = DOOR_INT_WIDTH;
+    const pick = bestFreeWall(walls, width);
+    if (!pick) continue;
+    // door opens INTO the non-entry side (toward rooms) for entries; otherwise into b
+    const into = a.type === 'entrance' ? b.id : b.type === 'entrance' ? a.id : b.id;
+    placeDoorOnWall(pick.wall, into, width);
+    circLinked.add(key);
+  }
+
+  // 2) One primary access door per required room, chosen by the score above.
+  const needsDoor = (t2: string): boolean =>
+    !circTypes.has(t2) && t2 !== 'parking' && t2 !== 'yard' && t2 !== 'balcony';
+  const roomByPrimary = new Map<string, { key: string; score: number; wall: Wall; span: { offset: number; width: number }; otherId: string }>();
+  for (const s of floor.spaces) {
+    if (!needsDoor(s.type)) continue;
+    let best: { key: string; score: number; wall: Wall; span: { offset: number; width: number }; otherId: string } | null = null;
+    for (const [key, walls] of pairWalls) {
+      if (!key.includes(s.id)) continue;
+      const [ida, idb] = key.split('|');
+      const other = spacesById.get(ida === s.id ? idb : ida)!;
+      if (!other || other.type === 'parking' || other.type === 'yard' || other.type === 'balcony') continue;
+      // primary access must attach to a circulation space (suite links come later)
+      if (!circTypes.has(other.type) && !(s.type === 'master-bathroom' && other.type === 'master-bedroom') && !(SERVICE_STORE.has(s.type) && other.type === 'kitchen')) continue;
+      const score = primaryAccessScore(s.type, other.type);
+      if (score <= 0) continue;
+      const width = doorWidthFor(s.type, other.type);
+      const pick = bestFreeWall(walls, width);
+      if (!pick) continue;
+      // prefer stronger score; tie-break by LONGER usable segment (more comfortable
+      // door wall), then by adjacency key for determinism
+      const spanScore = pick.span.width;
+      if (!best || score > best.score || (score === best.score && (spanScore > best.span.width || (spanScore === best.span.width && key < best.key)))) {
+        best = { key, score, wall: pick.wall, span: pick.span, otherId: other.id };
+      }
+    }
+    if (best) roomByPrimary.set(s.id, best);
+  }
+  for (const [roomId, sel] of [...roomByPrimary.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const width = doorWidthFor(spacesById.get(roomId)!.type, spacesById.get(sel.otherId)!.type);
+    const span = findFreeSpanOn(sel.wall, width, sel.span);
+    if (!span) continue;
+    placeDoorOnWallSelected(sel.wall, roomId, width, span);
+  }
+
+  // 2b) Hall-connectivity guarantee: the circulation nodes — entrance / foyer /
+  //     corridor / halls, plus living and dining which may act as INTENTIONAL hall
+  //     links — must form ONE connected door graph, so every room's primary reaches
+  //     the street entry. If geometry separates the foyer from the spine (e.g. a WC
+  //     wedged between them), bridge the components with one deliberate link door:
+  //     circulation<->circulation first, then circulation<->public, then public<->public.
+  //     Private/wet rooms are never used as bridges — that is exactly the through-room
+  //     defect this stage eliminates.
+  {
+    const isLink = (t2: string): boolean => circTypes.has(t2) || t2 === 'living' || t2 === 'dining';
+    const linkIds = new Set(floor.spaces.filter(s => isLink(s.type)).map(s => s.id));
+    if (linkIds.size > 1) {
+      const parent = new Map<string, string>();
+      for (const id of linkIds) parent.set(id, id);
+      const find = (id: string): string => { let r = id; while (parent.get(r) !== r) r = parent.get(r)!; let c = id; while (parent.get(c) !== r) { const n = parent.get(c)!; parent.set(c, r); c = n; } return r; };
+      const union = (a: string, b: string) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(rb, ra); };
+      for (const o of openings) {
+        if (o.type === 'window') continue;
+        if (o.spaceA && o.spaceB && linkIds.has(o.spaceA) && linkIds.has(o.spaceB)) union(o.spaceA, o.spaceB);
+      }
+      const comps = new Map<string, string[]>();
+      for (const id of linkIds) { const r = find(id); let a = comps.get(r); if (!a) { a = []; comps.set(r, a); } a.push(id); }
+      const entryComp = (() => {
+        for (const [r, ids] of comps) if (ids.some(id => { const s = spacesById.get(id); return s && (s.type === 'entrance' || s.type === 'foyer'); })) return r;
+        return comps.keys().next().value as string;
+      })();
+      let merged = true;
+      while (merged) {
+        merged = false;
+        const inComp = new Set<string>();
+        for (const id of comps.get(entryComp) ?? []) inComp.add(id);
+        let bestBridge: { score: number; spanW: number; key: string; outsideId: string } | null = null;
+        for (const [key, walls] of pairWalls) {
+          const [ida, idb] = key.split('|');
+          if (!linkIds.has(ida) || !linkIds.has(idb)) continue;
+          const aIn = inComp.has(ida), bIn = inComp.has(idb);
+          if (aIn === bIn) continue;
+          const a = spacesById.get(ida)!, b = spacesById.get(idb)!;
+          const score = (circTypes.has(a.type) && circTypes.has(b.type)) ? 3
+            : (circTypes.has(a.type) || circTypes.has(b.type)) ? 2 : 1;
+          const pick = bestFreeWall(walls, DOOR_INT_WIDTH);
+          if (!pick) continue;
+          if (!bestBridge || score > bestBridge.score
+            || (score === bestBridge.score && pick.span.width > bestBridge.spanW)
+            || (score === bestBridge.score && Math.abs(pick.span.width - bestBridge.spanW) < 1e-9 && key < bestBridge.key)) {
+            bestBridge = { score, spanW: pick.span.width, key, outsideId: aIn ? idb : ida };
+          }
+        }
+        if (!bestBridge) break;
+        const [ida, idb] = bestBridge.key.split('|');
+        const a = spacesById.get(ida)!, b = spacesById.get(idb)!;
+        const walls = pairWalls.get(bestBridge.key)!;
+        const pick = bestFreeWall(walls, DOOR_INT_WIDTH);
+        if (pick) {
+          const into = circTypes.has(a.type) && !circTypes.has(b.type) ? b.id : a.id;
+          placeDoorOnWall(pick.wall, into, DOOR_INT_WIDTH);
+          union(ida, idb);
+          comps.set(entryComp, [...(comps.get(entryComp) ?? []), ...(comps.get(find(ida)) ?? [])]);
+          merged = true;
+        }
+        // consume the outside component fully next round
+        for (const [r, ids] of [...comps.entries()]) if (r !== entryComp && ids.some(id => find(id) === entryComp)) comps.delete(r);
+      }
+    }
+  }
+
+  // 3) Intentional SECONDARY links — only for rooms that genuinely have no
+  //    spine access, and only in architecturally-intended configurations:
+  //      - master-bathroom through the master bedroom (suite),
+  //      - a shared bath / WC through an adjacent bedroom (last-resort suite bath),
+  //      - storage / utility through the kitchen (service).
+  //    These become the room's primary then. NEVER bedroom<->bedroom, NEVER a
+  //    room that already has spine access.
+  for (const s of floor.spaces) {
+    if (!needsDoor(s.type) || roomByPrimary.has(s.id)) continue;
+    const isWet = WET.has(s.type), isStore = SERVICE_STORE.has(s.type);
+    if (!isWet && !isStore) continue;
+    const wantedPartner = isStore ? 'kitchen' : isWet && s.type === 'master-bathroom' ? 'master-bedroom' : 'bedroom|master-bedroom';
+    let bestKey: string | null = null; let bestOther: Space | null = null;
+    for (const [key, walls] of pairWalls) {
+      if (!key.includes(s.id)) continue;
+      const [ida, idb] = key.split('|');
+      const other = spacesById.get(ida === s.id ? idb : ida)!;
       if (!other) continue;
-      const o = spacesById.get(other);
-      if (o && circTypes.has(o.type)) return true;
+      const ok = wantedPartner === 'kitchen' ? other.type === 'kitchen'
+        : wantedPartner.includes('|') ? (other.type === 'bedroom' || other.type === 'master-bedroom')
+        : other.type === wantedPartner;
+      if (!ok) continue;
+      if (!roomByPrimary.has(other.id) && circTypes.has(other.type) === false) {
+        // partner itself must reach the spine somehow; otherwise this chain is pointless
+        continue;
+      }
+      if (!bestKey || key < bestKey) { bestKey = key; bestOther = other; }
     }
-    return false;
-  }
-  // 1. Ensuite bathrooms.
-  for (const w of interiorWalls) {
-    const a = spacesById.get(w.spaceIds[0]!);
-    const b = spacesById.get(w.spaceIds[1]!);
-    if (!a || !b) continue;
-    const isEnsuite =
-      (a.type === 'master-bathroom' && b.type === 'master-bedroom') ||
-      (b.type === 'master-bathroom' && a.type === 'master-bedroom');
-    if (isEnsuite && w.openingIds.length === 0) {
-      placeDoorOnWall(w, b.type === 'master-bathroom' ? b.id : a.id, DOOR_BATH_WIDTH);
-    }
-  }
-  // 2. Guest-WC opens off entrance/foyer if it shares a wall with one and
-  //    does not already have a circulation door.
-  for (const w of interiorWalls) {
-    const a = spacesById.get(w.spaceIds[0]!);
-    const b = spacesById.get(w.spaceIds[1]!);
-    if (!a || !b || w.openingIds.length > 0) continue;
-    const isWc = (a.type === 'guest-wc') !== (b.type === 'guest-wc');
-    if (!isWc) continue;
-    const wc = a.type === 'guest-wc' ? a : b;
-    const other = a.type === 'guest-wc' ? b : a;
-    if (circTypes.has(other.type) && !hasCircDoor(wc)) {
-      placeDoorOnWall(w, wc.id, DOOR_BATH_WIDTH);
-    }
-  }
-  // 3. Bedrooms without a circulation door connect to adjacent bedroom
-  //    (e.g. secondary bedroom opens off master bedroom when no corridor
-  //    boundary exists on a tight/short north band).
-  for (const w of interiorWalls) {
-    const a = spacesById.get(w.spaceIds[0]!);
-    const b = spacesById.get(w.spaceIds[1]!);
-    if (!a || !b || w.openingIds.length > 0) continue;
-    const isBed = ['bedroom', 'master-bedroom'].includes(a.type) && ['bedroom', 'master-bedroom'].includes(b.type);
-    if (!isBed) continue;
-    // If one bedroom has no circulation door, add a connecting door
-    // between them (bedroom suite). This keeps circulation connected.
-    if (!hasCircDoor(a) || !hasCircDoor(b)) {
-      const into = !hasCircDoor(a) ? a.id : b.id;
-      placeDoorOnWall(w, into, DOOR_INT_WIDTH);
-    }
-  }
-  // 4. Storage / pantry / utility connects to kitchen (its only natural
-  //    adjacency) so storage is reachable via the kitchen's circulation door.
-  for (const w of interiorWalls) {
-    const a = spacesById.get(w.spaceIds[0]!);
-    const b = spacesById.get(w.spaceIds[1]!);
-    if (!a || !b || w.openingIds.length > 0) continue;
-    const isKitchenStorage =
-      ((a.type === 'kitchen' && b.type === 'storage') ||
-       (b.type === 'kitchen' && a.type === 'storage'));
-    if (!isKitchenStorage) continue;
-    const stor = a.type === 'storage' ? a : b;
-    if (!hasCircDoor(stor)) {
-      placeDoorOnWall(w, stor.id, DOOR_BATH_WIDTH);
-    }
-  }
-  // 5. Kitchen connects to dining if they share a wall (open-plan pass) and
-  //    kitchen doesn't have a direct circulation door (e.g. L-shaped layout
-  //    where kitchen is on the side facade and dining reaches corridor).
-  for (const w of interiorWalls) {
-    const a = spacesById.get(w.spaceIds[0]!);
-    const b = spacesById.get(w.spaceIds[1]!);
-    if (!a || !b || w.openingIds.length > 0) continue;
-    const isKitDin =
-      ((a.type === 'kitchen' && b.type === 'dining') ||
-       (b.type === 'kitchen' && a.type === 'dining'));
-    if (!isKitDin) continue;
-    const kit = a.type === 'kitchen' ? a : b;
-    if (!hasCircDoor(kit)) {
-      placeDoorOnWall(w, kit.id, DOOR_INT_WIDTH);
-    }
-  }
-  // 6. Second bathroom (bathroom type) opens off master bedroom or another
-  //    bedroom if it is not adjacent to circulation.
-  for (const w of interiorWalls) {
-    const a = spacesById.get(w.spaceIds[0]!);
-    const b = spacesById.get(w.spaceIds[1]!);
-    if (!a || !b || w.openingIds.length > 0) continue;
-    const isBathPair =
-      ((a.type === 'bathroom' || a.type === 'master-bathroom') &&
-       (b.type === 'bedroom' || b.type === 'master-bedroom')) ||
-      ((b.type === 'bathroom' || b.type === 'master-bathroom') &&
-       (a.type === 'bedroom' || a.type === 'master-bedroom'));
-    if (!isBathPair) continue;
-    const bath = (a.type === 'bathroom' || a.type === 'master-bathroom') ? a : b;
-    if (!hasCircDoor(bath)) {
-      placeDoorOnWall(w, bath.id, DOOR_BATH_WIDTH);
-    }
+    if (!bestKey || !bestOther) continue;
+    const walls = pairWalls.get(bestKey)!;
+    const width = doorWidthFor(s.type, bestOther.type);
+    const pick = bestFreeWall(walls, width);
+    if (!pick) continue;
+    placeDoorOnWall(pick.wall, s.id, width);
+    roomByPrimary.set(s.id, { key: bestKey, score: 1, wall: pick.wall, span: pick.span, otherId: bestOther.id });
   }
 
   // ---- Windows (professional) ----
