@@ -87,6 +87,26 @@ describe('Phase 15 M5 — CIRC_EXCESSIVE_PATH', () => {
   });
 });
 
+describe('Phase 15 M8 — upper-floor seeds come from the vertical hall', () => {
+  it('an upper-floor stair hall that opens into nothing strands the floor (hard)', () => {
+    // Hall shares the floor but has NO door to the corridor component — you can
+    // climb the stairs and still not enter the floor. Seeding the BFS from every
+    // circulation space (pre-M8) hid this; the hall must reach the rooms.
+    const floor = makeFloor(1,
+      [sp('sh', 'stair-hall', 0), sp('c', 'corridor', 3), sp('bd', 'bedroom', 6)],
+      [['c', 'bd']]);
+    const fs = validateCirculation(floor).filter(x => x.code === 'CIRC_INACCESSIBLE_SPACE' && x.severity === 'hard');
+    expect(fs.length).toBeGreaterThanOrEqual(2); // corridor and bedroom both stranded behind a door-less hall
+  });
+
+  it('the same floor is clean once the hall links the corridor', () => {
+    const floor = makeFloor(1,
+      [sp('sh', 'stair-hall', 0), sp('c', 'corridor', 3), sp('bd', 'bedroom', 6)],
+      [['sh', 'c'], ['c', 'bd']]);
+    expect(validateCirculation(floor).some(x => x.code === 'CIRC_INACCESSIBLE_SPACE')).toBe(false);
+  });
+});
+
 describe('Phase 15 M5 — CIRC_VERTICAL_DISCONNECTED', () => {
   it('an upper floor with rooms but no stair hall is hard-flagged', () => {
     const floor = makeFloor(1, [sp('sh', 'stair-hall', 0), sp('bd', 'bedroom', 3)], [['sh', 'bd']]);

@@ -52,7 +52,16 @@ export function validateCirculation(floor: Floor): Finding[] {
 
   // Find entrances as BFS seeds.
   const entrances = floor.spaces.filter(s => s.type === 'entrance' || s.type === 'foyer');
-  const seeds = entrances.length ? entrances : floor.spaces.filter(s => CIRC_TYPES.has(s.type));
+  // Phase 15 M8: on upper floors the vertical halls are the arrival point — seed
+  // there when no foyer exists, instead of every circulation space. Seeding from
+  // all CIRC nodes silently tolerated a stair hall that opens into nothing (a
+  // floor you can climb to but never enter); the hall now has to reach the rooms.
+  const verticalHalls = floor.spaces.filter(s => s.type === 'stair-hall' || s.type === 'elevator-hall');
+  const seeds = entrances.length
+    ? entrances
+    : floor.level > 0 && verticalHalls.length
+      ? verticalHalls
+      : floor.spaces.filter(s => CIRC_TYPES.has(s.type));
   if (seeds.length === 0) {
     findings.push(f('CIRC_DISCONNECTED', 'hard', 'No circulation seed (entrance/foyer/corridor) found on floor.'));
     return findings;

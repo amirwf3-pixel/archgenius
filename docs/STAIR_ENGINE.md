@@ -364,3 +364,28 @@ Test surface: `phase15_7.test.ts` (32 tests) — 9/12/13/18/19/24-riser
 families, straight/U/L/rotated/narrow/asymmetric geometry, all failure
 classes, anchor coherence, integration sites (12×18 … 18×25 3F, narrow,
 L-shape, decimal), double-run DXF byte determinism.
+
+---
+
+## 19. M8 — release audit of the vertical engine (2026-09-22)
+
+The M8 full-system audit re-exercised every vertical invariant across all 207
+feasible winners (135 stair floors): **0** flights over the 12-riser cap, **0**
+missing landings, **0** flight overlaps, **0** misaligned stacked cores, **0**
+stairs escaping their hall, **0** stair-validator hards, and **0** occurrences
+of the banned pre-M7 fake (`totalRisers ≥ 18` in a single flight; split
+families observed: 18→9+9, 19→10+9, 24→12+12, 25→9+8+8). DXF stair export:
+0 structural findings, per-floor labels intact, 207/207 byte-identical on
+re-run.
+
+The audit found and fixed **one validator defect with vertical consequences**:
+`validation/circulation.ts` seeded upper-floor reachability from *every*
+circulation space when no foyer existed, so a stair hall that opened into
+nothing (hall↔spine shared only a sub-door-length butt edge) still validated.
+Seeds on `level > 0` now come from the stair/elevator halls — arriving by stair
+must be able to enter the floor. Effect: `P7--U2-3f5bd` and probe `P7wideL-3F`
+moved from "feasible but sealed" to honest NC (`CIRC_INACCESSIBLE_SPACE`);
+global stress 208 → 207 feasible, 0 hard-winners maintained. Regression tests
+live in `validation/circulation.test.ts` (Phase 15 M8 describe). Headroom
+remains `NOT_IMPLEMENTED`/advisory; the refusal to fake a door into a 0.40 m
+edge is the intended gate behavior, not a bug to squeeze away.
