@@ -312,8 +312,55 @@ All have zero GEO_ROOM_OUTSIDE_FOOTPRINT after fix.
 ## 17. Known Limitations
 
 - Curved/spiral/winder stairs: not implemented.
-- L-stair reachable only for wells ≥~3.0×5.5 with current footprint thresholds; may be unreachable for some pocket sizes (documented, not a bug).
-- Straight stair requires height ≥5.88 for 18 risers (2 flights) due to max 12 per flight.
+- L-stair: reachable when a stacked straight run and parallel U columns both
+  fail the hall — the M7 rewrite fixed the over-set L footprint (it previously
+  added a spurious flight width to the travel axis, making L structurally
+  unreachable) and rebuilt all four corridor-side geometries from one verified
+  canonical (u,v) layout with consistent direction metadata.
+- Straight stair requires the hall travel axis to fit Σruns + landings; the
+  12-risers-per-flight cap (MBH4 §4-5-1-7-5) drives the flight count.
 - Handrails/balusters not modeled (0.10 m gap reserved).
-- Headroom 3D check remains NOT_IMPLEMENTED.
-- Vertical-spine strategy uses south corridorSide heuristic (rotation handles fit).
+- Headroom 3D check remains NOT_IMPLEMENTED: the engine emits a structured
+  `headroom: { status:'NOT_IMPLEMENTED', thresholdM: 2.05 }` advisory on every
+  solved stair (metadata only — never a compliance claim), citing the pack
+  rule MBH4-STAIR-003 that owns the verified threshold.
+
+## 18. Phase 15 M7 — Professional vertical-circulation engine
+
+M7 removed the last naive paths around the Phase 4 solver:
+
+1. **No fake stairs, ever.** The old generator painted a decorative
+   single-flight stair (all risers in one flight — the Phase 3 defect shape)
+   when the solver failed. That fallback is deleted. An unsolvable hall stays
+   unsolved: honest `NO_FEASIBLE_STAIR_CONFIGURATION` explanation +
+   `STAIR_MISSING` (hard) via the validator; M2 then rejects the candidate —
+   deterministic, diagnosed infeasibility, never a rectangle pretending to be
+   a stair.
+2. **Access-aware orientation search** (`generator/vertical-core.ts`).
+   Instead of the hardcoded south entry side, the engine measures real
+   circulation adjacency on all four hall sides (shared edge ≥ 0.8 m with
+   corridor/foyer/entrance), runs the solver through every side, and ranks
+   only by measurable geometry (feasibility → plan slack → fixed side order).
+3. **Cross-floor core coherence.** Level 0 establishes a building-level
+   `CoreAnchor` (hall rect + entry side + solved configuration). Upper floors
+   re-pin their stair-hall onto the anchor (bounded, deterministic relocation
+   of ≤2 blocking rooms; failure is logged, never faked) and re-solve on the
+   anchor inputs, so every floor gets byte-identical stair geometry that
+   stacks: measured over all 58 feasible multi-floor stress cases — 138 stair
+   floors, 0 misaligned cores, 0 flights > 12 risers, 0 landings missing.
+4. **Stair-specific validation strengthened** (`validation/stair.ts`):
+   `STAIR_INVALID_U_GEOMETRY` / `STAIR_INVALID_L_GEOMETRY` (type structure:
+   opposite/perpendicular flights, balanced splits), `STAIR_LANDING_DISCONNECTED`
+   (landing must touch both flights), `STAIR_INVALID_ENTRANCE` (entry nosing
+   inside the hall — no phantom entrance), `STAIR_DOOR_COLLISION` (a door must
+   not open through a flight body), and `STAIR_MISSING` when a hall carries no
+   stair. Existing codes are reused where they already applied — nothing
+   weakened, nothing reclassified.
+5. **DXF**: stair labels now carry level + configuration (`2F · 18R @ 178×280 ·
+   F0→F1 u-stair ent.south`), landing text carries the real depth. All geometry
+   stays vector LINE/POLYLINE entities on the existing A-STAIR* layers.
+
+Test surface: `phase15_7.test.ts` (32 tests) — 9/12/13/18/19/24-riser
+families, straight/U/L/rotated/narrow/asymmetric geometry, all failure
+classes, anchor coherence, integration sites (12×18 … 18×25 3F, narrow,
+L-shape, decimal), double-run DXF byte determinism.

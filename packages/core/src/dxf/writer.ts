@@ -695,7 +695,7 @@ function drawStair(
     const lr = l.footprint as Rect;
     const [a, b, c, d] = rCorners(lr);
     emitPolyline([a, b, c, d], 'A-STAIR', true);
-    emitText(lr.x + lr.w / 2, lr.y + lr.h / 2, 'LDNG', 0.18, 'A-STAIR', 1);
+    emitText(lr.x + lr.w / 2, lr.y + lr.h / 2, `LDNG ${l.depth?.toFixed(2) ?? Math.max(lr.w, lr.h).toFixed(2)}`, 0.18, 'A-STAIR', 1);
   }
 
   // Flights: draw parallel tread lines across each flight, perpendicular
@@ -746,7 +746,8 @@ function drawStair(
   // and riser), never a nominal value that differs from the drawn stair.
   const actRiser = flights[0]?.riserHeight ?? st.riserHeight ?? st.riser ?? 0;
   const actTread = Math.min(...flights.map((f: any) => f.treadDepth ?? st.tread ?? st.treadDepth ?? 0.28));
-  const label = `${flights.length}F · ${st.totalRisers}R @ ${(actRiser*100).toFixed(0)}×${(actTread*100).toFixed(0)}`;
+  const lvl = st.floor ?? 0;
+  const label = `${flights.length}F · ${st.totalRisers}R @ ${(actRiser*100).toFixed(0)}×${(actTread*100).toFixed(0)} · F${lvl}→F${lvl + 1} ${st.type}${st.entrySide ? ' ent.' + st.entrySide : ''}`;
   emitText(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, 'A-STAIR-DIR');
 }
 

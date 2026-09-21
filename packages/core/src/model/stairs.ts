@@ -97,6 +97,20 @@ export interface Stair {
   floor: number;
   /** Next-floor stair id (for core alignment across floors). */
   nextFloorId?: string;
+  /** Phase15 M7: which hall side the entry (bottom riser) faces — set by the
+   *  vertical-core orientation search; part of the coherent core contract. */
+  entrySide?: 'north' | 'south' | 'east' | 'west';
+  /** Phase15 M7 headroom ADVISORY. This is a 2D plan engine: no 3D volume model
+   *  exists, so the VERIFIED regulation threshold (MBH4 §4-5-1-7-6, 2.05 m —
+   *  enforced-metadata via pack rule MBH4-STAIR-003) CANNOT be geometrically
+   *  checked here. This field documents the limitation; it never claims
+   *  compliance and never suppresses the pack's own checks. */
+  headroom?: {
+    status: 'NOT_IMPLEMENTED';
+    thresholdM: number;
+    source: string;
+    note: string;
+  };
   /** Structured explanation entries for UI/logging. */
   explanation: string[];
   /** Validation metadata attached by stair validation. */

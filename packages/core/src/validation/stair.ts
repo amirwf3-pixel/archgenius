@@ -19,7 +19,137 @@ export function validateStairs(floor: Floor): Finding[] {
   for (const st of floor.stairs) {
     findings.push(...validateOneStair(st, floor));
   }
+  // Phase15 M7: a stair-hall that carries no stair geometry is a phantom core.
+  // The multi-floor STAIR_MISSING invariant below never fires on a top/only
+  // floor, so the hall itself must demand its stair. (Honest failure: the
+  // engine NEVER paints a fake stair to dodge this.)
+  const halls = floor.spaces.filter(s => s.type === 'stair-hall');
+  if (halls.length > 0 && floor.stairs.length === 0) {
+    findings.push(f('STAIR_MISSING', 'hard',
+      `Floor ${floor.level} places a stair-hall but no stair geometry exists for it — no code-compliant configuration fit the hall (see generator Vertical-core notes).`,
+      halls.map(h => h.id), bbox(halls[0].rect)));
+  }
+  findings.push(...validateStairStructural(floor));
   return findings;
+}
+
+/**
+ * Phase15 M7 structural rules: a stair must be REAL, coherent multi-flight
+ * geometry, not a rectangle with a label. Type-specific structure is checked
+ * against the actual footprints, and the access path is geometric — the
+ * bottom nosing must stand inside the hall, and the hall must share a
+ * walkable edge with circulation (door-carrying adjacency), with no flight
+ * sitting in the door's swing line.
+ */
+export function validateStairStructural(floor: Floor): Finding[] {
+  const out: Finding[] = [];
+  for (const st of floor.stairs) {
+    const flights = st.flights ?? [];
+    const landings = st.landings ?? [];
+    // --- Type structure ---
+    if (st.type === 'u-stair') {
+      if (flights.length !== 2) {
+        out.push(f('STAIR_INVALID_U_GEOMETRY', 'hard',
+          `U-stair ${st.id} must have exactly 2 parallel flights, found ${flights.length}.`, [st.id]));
+      } else {
+        const [a, b] = flights;
+        const opp = (a.direction === 'north' && b.direction === 'south') || (a.direction === 'south' && b.direction === 'north')
+          || (a.direction === 'east' && b.direction === 'west') || (a.direction === 'west' && b.direction === 'east');
+        if (!opp) {
+          out.push(f('STAIR_INVALID_U_GEOMETRY', 'hard',
+            `U-stair ${st.id}: flights run ${a.direction}/${b.direction} — U requires opposite plan directions.`, [st.id]));
+        }
+        const midFlight = Math.max(a.riserCount, b.riserCount);
+        if (Math.abs(a.riserCount - b.riserCount) > Math.ceil(st.totalRisers / 2) - Math.floor(st.totalRisers / 2)) {
+          out.push(f('STAIR_INVALID_U_GEOMETRY', 'hard',
+            `U-stair ${st.id}: flight split ${a.riserCount}+${b.riserCount} is not a balanced division of ${st.totalRisers}.`, [st.id]));
+        }
+        void midFlight;
+      }
+    } else if (st.type === 'l-stair') {
+      if (flights.length !== 2) {
+        out.push(f('STAIR_INVALID_L_GEOMETRY', 'hard',
+          `L-stair ${st.id} must have exactly 2 perpendicular flights, found ${flights.length}.`, [st.id]));
+      } else {
+        const [a, b] = flights;
+        const perp = (['north', 'south'].includes(a.direction) && ['east', 'west'].includes(b.direction))
+          || (['east', 'west'].includes(a.direction) && ['north', 'south'].includes(b.direction));
+        if (!perp) {
+          out.push(f('STAIR_INVALID_L_GEOMETRY', 'hard',
+            `L-stair ${st.id}: flights run ${a.direction}/${b.direction} — L requires perpendicular flights.`, [st.id]));
+        }
+      }
+    } else if (st.type === 'straight') {
+      if (flights.length > 1) {
+        const sameAxis = flights.every(fl => fl.direction === flights[0].direction);
+        if (!sameAxis) {
+          out.push(f('STAIR_INVALID_RUN', 'hard',
+            `Straight stair ${st.id}: flights change direction (${flights.map(fl => fl.direction).join('/')}).`, [st.id]));
+        }
+      }
+    }
+    // --- Landing connects its two flights (shared-edge contact, not area) ---
+    for (const l of landings) {
+      if (l.connectedFlightIds.length < 2) continue; // floor-entry pad
+      const fs = l.connectedFlightIds.map(id => flights.find(fl => fl.id === id)).filter(Boolean);
+      if (fs.length !== l.connectedFlightIds.length) {
+        out.push(f('STAIR_MISSING_LANDING', 'hard',
+          `Landing ${l.id} references flights that do not exist on stair ${st.id}.`, [st.id, l.id]));
+        continue;
+      }
+      for (const fl of fs) {
+        const lr = fl!.footprint;
+        const touches = Math.abs(lr.x + lr.w - l.footprint.x) < 0.06
+          || Math.abs(l.footprint.x + l.footprint.w - lr.x) < 0.06
+          || Math.abs(lr.y + lr.h - l.footprint.y) < 0.06
+          || Math.abs(l.footprint.y + l.footprint.h - lr.y) < 0.06;
+        const overlapsLanding = rOverlapArea(l.footprint, lr) > 0.02;
+        if (!touches && !overlapsLanding) {
+          out.push(f('STAIR_LANDING_DISCONNECTED', 'hard',
+            `Landing ${l.id} does not touch flight ${fl!.id} — flights must connect THROUGH the landing polygon.`,
+            [st.id, l.id, fl!.id]));
+        }
+      }
+    }
+    // --- Self-intersection of flight polygons (collinear box union check) ---
+    // flights must never cross without being parallel side-by-side (U) — covered
+    // by STAIR_FLIGHT_COLLISION overlap-area check in validateOneStair.
+    // --- Geometric access path (not BFS): bottom nosing inside the hall and
+    //     hall shares a walkable edge (≥ 0.8 m) with circulation. ---
+    const hall = floor.spaces.find(s => s.type === 'stair-hall');
+    const bottomStart = flights.length ? flights[0].startPoint : st.startPoint;
+    const inHall = hall
+      && bottomStart.x >= hall.rect.x - 0.06 && bottomStart.x <= hall.rect.x + hall.rect.w + 0.06
+      && bottomStart.y >= hall.rect.y - 0.06 && bottomStart.y <= hall.rect.y + hall.rect.h + 0.06;
+    if (hall && !inHall) {
+      out.push(f('STAIR_INVALID_ENTRANCE', 'hard',
+        `Stair ${st.id} entry nosing (${bottomStart.x.toFixed(2)},${bottomStart.y.toFixed(2)}) lies outside its stair-hall — invalid entrance.`,
+        [st.id]));
+    }
+    // Door collision: a door on the hall's boundary must not have a flight in
+    // its line (blocked access). Check opening segments vs flight footprints.
+    for (const op of floor.openings) {
+      if (op.type !== 'door') continue;
+      const half = op.width / 2;
+      const seg = { x0: op.center.x - op.wallDir.x * half, y0: op.center.y - op.wallDir.y * half,
+                    x1: op.center.x + op.wallDir.x * half, y1: op.center.y + op.wallDir.y * half };
+      for (const fl of flights) {
+        // A door collides with a flight when its OPENING SEGMENT passes through
+        // the flight body (not merely meeting it at the flush entry edge —
+        // meeting at the nosing line is exactly how stair access is designed).
+        const r = fl.footprint;
+        const inFlight = (x: number, y: number) =>
+          x > r.x + 0.06 && x < r.x + r.w - 0.06 && y > r.y + 0.06 && y < r.y + r.h - 0.06;
+        const mid = { x: (seg.x0 + seg.x1) / 2, y: (seg.y0 + seg.y1) / 2 };
+        if (inFlight(seg.x0, seg.y0) || inFlight(seg.x1, seg.y1) || inFlight(mid.x, mid.y)) {
+          out.push(f('STAIR_DOOR_COLLISION', 'hard',
+            `Door ${op.id} opens through the body of stair flight ${fl.id} — the stair entrance is blocked.`,
+            [st.id, fl.id, op.id]));
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /**

@@ -20,7 +20,11 @@ import { composePacks, computeBuildableArea, runPackRules, runPackRulesOnCandida
 import { placeParking, placeParkingSiteAware } from './parking.js';
 import { DEFAULT_FLOOR_HEIGHT } from './stairs.js';
 import { solveStair } from './stair-solver.js';
-import { DEFAULT_STAIR_CONFIG } from '../model/stairs.js';
+import {
+  makeCoreAnchor, solveStairOrientations, inspectAnchorPlacement, sameRect,
+  type CoreAnchor, type HallSide,
+} from './vertical-core.js';
+import { DEFAULT_STAIR_CONFIG, type Stair } from '../model/stairs.js';
 import { generateWalls } from './walls.js';
 import { placeOpenings } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
@@ -109,8 +113,11 @@ export function generateLayouts(
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
+    // Phase15 M7: building-level vertical-core anchors (stair/elevator halls).
+    // Level 0 establishes them; upper floors must reuse them for coherence.
+    const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level]));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -165,6 +172,7 @@ function buildFloorSiteAware(
   strategy: CandidateStrategy,
   explanations: string[],
   alloc: FloorProgramAllocation,
+  coreAnchors: Map<'stair-hall' | 'elevator-hall', CoreAnchor>,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -366,69 +374,133 @@ function buildFloorSiteAware(
       stairSpace = null;
     }
   }
+  // ---------- Phase 15 M7: cross-floor vertical-core coherence ----------
+  // Level 0 establishes a building-level anchor for each required core hall
+  // (stair-hall, and elevator-hall when the program requires one). Upper floors
+  // must place their hall on the SAME rect so the vertical core stacks. The
+  // relocation pass that frees an occupied anchor cell is BOUNDED (≤2
+  // blockers) and deterministic; when coherence cannot be preserved the
+  // engine records it and lets the stair validator flag the floor honestly —
+  // coherence is never faked by snapping footprints together.
+  const rePinHall = (sp: Space, r: Rect) => {
+    sp.rect = { ...r };
+    sp.polygon = createRectangleRoomPolygon(sp.rect);
+    sp.area = polygonArea(sp.polygon);
+  };
+  const alignHallToAnchor = (
+    hallType: 'stair-hall' | 'elevator-hall',
+    getHall: () => Space | null,
+    setHallMissing: (r: Rect) => boolean,
+  ): Space | null => {
+    const anchor = coreAnchors.get(hallType);
+    let hall = getHall();
+    if (!anchor || level <= anchor.originLevel) return hall;
+    const other = finalSpaces.filter(s => s.type !== hallType);
+    const insp = inspectAnchorPlacement(anchor, hall, other);
+    explanations.push(...insp.explanation.map(m => `Level ${level}: ${m}`));
+    if (insp.aligned) return hall;
+    if (insp.blockers.length <= 2) {
+      let freed = true;
+      for (const blk of insp.blockers) {
+        const moved = findPositionForRect(
+          blk.rect, buildableBoundary, buildableRects,
+          finalSpaces.filter(s => s !== blk && s.type !== hallType).map(s => s.rect),
+        );
+        if (!moved || !rectInsidePolygon(moved, buildableBoundary, 1e-3)) { freed = false; break; }
+        blk.rect = moved;
+        blk.polygon = createRectangleRoomPolygon(moved);
+        blk.area = polygonArea(blk.polygon);
+      }
+      if (freed) {
+        if (hall) {
+          rePinHall(hall, anchor.rect);
+          explanations.push(`Level ${level}: ${hallType} pinned to the ${anchor.originLevel}-floor core anchor for vertical coherence.`);
+        } else if (setHallMissing(anchor.rect)) {
+          hall = getHall();
+          explanations.push(`Level ${level}: ${hallType} re-created on the core anchor (placement had dropped it).`);
+        }
+      } else {
+        explanations.push(`Level ${level}: core anchor cell could not be freed within the bounded relocation pass — keeping this floor's placement; the stair validator will judge coherence honestly.`);
+      }
+    }
+    return hall;
+  };
+  stairSpace = alignHallToAnchor(
+    'stair-hall',
+    () => finalSpaces.find(s => s.type === 'stair-hall') ?? null,
+    (r) => {
+      if (!needStairForFloor(input, level)) return false;
+      const created = mkSpace('stair-hall', r, 'Stair Hall', nextId('stair-hall'), 'service');
+      finalSpaces.push(created);
+      return true;
+    },
+  );
+  // Elevator-hall: rect coherence only (no shaft geometry is generated by this
+  // engine — the hall is the contract the existing system already requires).
+  let elevatorHall = alignHallToAnchor(
+    'elevator-hall',
+    () => finalSpaces.find(s => s.type === 'elevator-hall') ?? null,
+    () => false,
+  );
+  void elevatorHall;
+  if (!coreAnchors.has('elevator-hall') && elevatorHall && level === 0) {
+    coreAnchors.set('elevator-hall', {
+      hallType: 'elevator-hall', rect: { ...elevatorHall.rect },
+      corridorSide: 'south', originLevel: 0,
+    });
+  }
+
   const stairRect = stairSpace ? stairSpace.rect : null;
 
   const walls: Wall[] = generateWalls(finalSpaces, level);
   const furniture = placeFurniture(finalSpaces);
 
-  const stairs: any[] = [];
-  if (stairRect && needStairForFloor(input, level)) {
-    const corridorSide: 'south'|'north'|'east'|'west' = 'south';
+  // ---------- Phase 15 M7: stair solving — real multi-flight geometry only ----------
+  // The old path hardcoded a 'south' entry side and, on failure, painted a FAKE
+  // single-flight stair (every riser in one flight — the Phase 3 defect shape).
+  // Both are gone. The vertical-core engine searches orientations bounded by
+  // measurable geometry (real circulation adjacency + plan slack), and an
+  // unsolvable hall stays UNSOLVED: no stair is emitted, and the floor is judged
+  // by STAIR_MISSING / the MBH4 pack — a deterministic, explained infeasibility.
+  const stairs: Stair[] = [];
+  if (stairSpace && needStairForFloor(input, level)) {
     const cfg = { ...DEFAULT_STAIR_CONFIG, floorHeight: DEFAULT_FLOOR_HEIGHT };
-    const sol = solveStair(stairSpace ? stairSpace.rect : stairRect!, cfg, corridorSide, 'core-main', level);
-    if (sol.ok && sol.stair) {
-      const stFoot = sol.stair.footprint ?? sol.stair.rect;
-      if (stFoot && !rectInsidePolygon(stFoot, buildableBoundary, 1e-3)) {
-        explanations.push(`Stair footprint outside buildable — level ${level} — marking invalid`);
-        sol.stair.valid = false;
+    const anchor = coreAnchors.get('stair-hall');
+    let stair: Stair | null = null;
+    let chosenSide: HallSide | null = null;
+    if (anchor && anchor.stairType && level > anchor.originLevel && sameRect(stairSpace.rect, anchor.rect)) {
+      // Coherent core: re-solve on the anchor's inputs (same hall rect, same
+      // entry side, same config) — determinism makes the result identical to
+      // the origin floor's stair: same type, flight split and well footprint.
+      const sol = solveStair(stairSpace.rect, cfg, anchor.corridorSide, 'core-main', level);
+      if (sol.ok && sol.stair) {
+        stair = sol.stair;
+        chosenSide = anchor.corridorSide;
+        explanations.push(`Level ${level}: stair re-solved from core anchor (${stair.type}, ${stair.flights.map(f => f.riserCount).join('+')} risers) — stacks with floor ${anchor.originLevel}.`);
+      } else {
+        explanations.push(`Level ${level}: anchor re-solve failed although the origin floor solved — configuration drift, trying orientation search.`);
       }
-      stairs.push(sol.stair);
-      explanations.push(...sol.stair.explanation.map(m => `Stair: ${m}`));
+    }
+    if (!stair) {
+      const res = solveStairOrientations(stairSpace.rect, cfg, finalSpaces, 'core-main', level);
+      stair = res.stair;
+      chosenSide = res.side;
+      explanations.push(...res.explanation.map(m => `Level ${level}: ${m}`));
+    }
+    if (stair) {
+      if (!rectInsidePolygon(stair.footprint, buildableBoundary, 1e-3)) {
+        explanations.push(`Stair footprint outside buildable — level ${level} — marking invalid`);
+        stair.valid = false;
+      }
+      if (!coreAnchors.has('stair-hall') && level === 0) {
+        coreAnchors.set('stair-hall', makeCoreAnchor('stair-hall', stairSpace.rect, chosenSide ?? 'south', stair, 0));
+      } else if (anchor && !sameRect(stairSpace.rect, anchor.rect)) {
+        explanations.push(`Level ${level}: stair hall sits off the core anchor — the stair validator will flag core misalignment (no fake coherence).`);
+      }
+      stairs.push(stair);
+      explanations.push(...stair.explanation.map(m => `Stair: ${m}`));
     } else {
-      const totalRisers = Math.max(3, Math.ceil(cfg.floorHeight / cfg.maxRiserHeight));
-      const riser = cfg.floorHeight / totalRisers;
-      const fallback: any = {
-        id: `stair-core-main-${level}`, type: 'straight' as const,
-        coreId: 'core-main',
-        totalRise: cfg.floorHeight,
-        totalRisers,
-        riserHeight: riser,
-        treadDepth: cfg.minTreadDepth,
-        width: cfg.minWidth,
-        flights: [{
-          id: `stair-core-main-${level}-f0`,
-          direction: 'north' as const,
-          riserCount: totalRisers,
-          treadCount: totalRisers - 1,
-          riserHeight: riser,
-          treadDepth: cfg.minTreadDepth,
-          width: cfg.minWidth,
-          runLength: (totalRisers - 1) * cfg.minTreadDepth,
-          startPoint: { x: stairRect!.x + stairRect!.w / 2, y: stairRect!.y },
-          endPoint: { x: stairRect!.x + stairRect!.w / 2, y: stairRect!.y + (totalRisers - 1) * cfg.minTreadDepth },
-          footprint: stairRect,
-          treadLines: [],
-        }],
-        landings: [],
-        footprint: stairRect,
-        startPoint: { x: stairRect!.x + stairRect!.w / 2, y: stairRect!.y },
-        endPoint: { x: stairRect!.x + stairRect!.w / 2, y: stairRect!.y + stairRect!.h },
-        floor: level,
-        explanation: [
-          `NO_FEASIBLE_STAIR_CONFIGURATION: available hall ${stairRect!.w.toFixed(2)}×${stairRect!.h.toFixed(2)} m cannot fit a code-compliant stair. Attempted:`,
-          ...sol.attempts.map(a => `  ${a.type}: ${a.requiredW.toFixed(2)}×${a.requiredH.toFixed(2)} m — ${a.reason}`),
-          'Falling back to single-flight representation; expect MBH4-STAIR-003 HARD violation.',
-        ],
-        valid: false,
-        rect: stairRect,
-        flightWidth: cfg.minWidth,
-        riser,
-        tread: cfg.minTreadDepth,
-        riserCount: totalRisers,
-        floorHeight: cfg.floorHeight,
-      };
-      stairs.push(fallback);
-      explanations.push(...fallback.explanation.map((m: string) => `Stair: ${m}`));
+      explanations.push(`Level ${level}: NO_FEASIBLE_STAIR_CONFIGURATION — stair-hall ${stairSpace.rect.w.toFixed(2)}\u00d7${stairSpace.rect.h.toFixed(2)} m cannot host a code-compliant multi-flight stair in any orientation. No stair is emitted (never a fake single-flight rectangle); the candidate fails via STAIR_MISSING / MBH4-STAIR-003 with the attempt diagnostics above.`);
     }
   }
 

@@ -28,6 +28,7 @@ import {
   type StairFlight,
   type StairLanding,
   type StairType,
+  type StairDirection,
 } from '../model/stairs.js';
 
 export interface StairSolveResult {
@@ -98,15 +99,21 @@ export function requiredFootprint(
       };
     }
     case 'l-stair': {
-      // Two perpendicular flights sharing a quarter-turn landing.
-      // Width = first flight run + landingDepth, Height = flight width +
-      // second flight run (or vice versa). Pick the longer flight along
-      // the long axis.
+      // Two perpendicular flights sharing a quarter-turn corner landing.
+      // Canonical layout (M7 rewrite): flight 1 runs along the travel axis
+      // for r1, the landing stacks BEYOND its top end (depth landingD, the
+      // flight width wide), flight 2 departs perpendicular along the landing
+      // edge for r2 with a strip as wide as the flight. Hence:
+      //   axis-along-flight1 = r1 + max(landingD, width)
+      //   perpendicular axis = width + r2
+      // (both plus stringer margins). This is a TRUE bounding box — the old
+      // formula over-counted by a flight width and made L structurally
+      // unselectable next to U.
       const r1 = runs[0] ?? 0;
       const r2 = runs[1] ?? 0;
       return {
-        w: width + r2 + landingD * 0.0 /*landing is in the corner*/ + 0.20,
-        h: width + r1 + landingD + 0.30,
+        w: width + r2 + 0.20,
+        h: r1 + Math.max(landingD, width) + 0.20,
       };
     }
   }
@@ -148,8 +155,21 @@ export function solveStair(
       if (!counts) continue;
       const req = requiredFootprint(type, counts, tread, width, landingDepth);
       // Check fit: allow rotation (swap w/h) for long-and-narrow wells.
-      const fitsNormally = req.w <= availableRect.w + EPS && req.h <= availableRect.h + EPS;
-      const fitsRotated = req.h <= availableRect.w + EPS && req.w <= availableRect.h + EPS;
+      // M7: for L-stairs the orientation freedom is the CORRIDOR SIDE itself
+      // (travel axis is fixed by it), so the fit test uses the oriented box:
+      // travel axis takes req.h, perpendicular axis takes req.w.
+      let fitsNormally: boolean;
+      let fitsRotated: boolean;
+      if (type === 'l-stair') {
+        const travelAlongX = corridorSide === 'east' || corridorSide === 'west';
+        fitsNormally = travelAlongX
+          ? req.h <= availableRect.w + EPS && req.w <= availableRect.h + EPS
+          : req.w <= availableRect.w + EPS && req.h <= availableRect.h + EPS;
+        fitsRotated = false;
+      } else {
+        fitsNormally = req.w <= availableRect.w + EPS && req.h <= availableRect.h + EPS;
+        fitsRotated = req.h <= availableRect.w + EPS && req.w <= availableRect.h + EPS;
+      }
       if (!fitsNormally && !fitsRotated) {
         attempts.push({
           type, requiredW: req.w, requiredH: req.h,
@@ -381,64 +401,58 @@ function buildStairGeometry(
       explanation.push(`U-stair (rotated well): ${n1}+${n2} risers, parallel flights with central gap ${gap.toFixed(2)} m, landing ${landW.toFixed(2)} m deep.`);
     }
   } else {
-    // L-stair: two perpendicular flights. Place flight 1 going upDir from
-    // corridor into the well, a quarter-turn landing in the corner, flight
-    // 2 going perpendicular (turn left when going up).
+    // ---------- L-stair (M7: travel-axis parametric construction) ----------
+    // Canonical layout in (u = perpendicular offset, v = travel distance):
+    //   flight 1 occupies u∈[margin, margin+width], v∈[0, run1] climbing from
+    //   the corridor edge; the quarter-turn landing stacks beyond its top end
+    //   (v∈[run1, run1+landingDepth]); flight 2 departs perpendicular from
+    //   the landing's far u-edge for run2 (strip of `width` along u... i.e.
+    //   u∈[margin+width, margin+width+run2]... as travel continues sideways).
+    // The (u,v)→(x,y) map is chosen by the corridor side, so every orientation
+    // gets the SAME verified geometry with direction metadata that agrees
+    // with footprint extents (the old per-side hand-copies were wrong).
     if (counts.length !== 2) return null;
     const n1 = counts[0], n2 = counts[1];
     const run1 = (n1 - 1) * tread;
     const run2 = (n2 - 1) * tread;
-    const dir2 = turnLeft(upDir);
-    // Corner coordinates.
-    // Flight 1 starts at corridor edge, goes upDir for run1 to landing.
-    // Landing is a square of width × landingDepth at the corner.
-    // Flight 2 starts from the landing and goes dir2.
-    // Place flight 1 against the dir2-ward side of the well (so flight 2
-    // continues along the opposite wall).
-    let f1Rect: Rect, f2Rect: Rect, landRect: Rect;
     const margin = 0.10;
-    if (upDir === 'north') {
-      // flight 1 along west wall going north, landing in NW corner,
-      // flight 2 going east along the top.
-      const f1x = well.x + margin;
-      const f1y = well.y; // south = corridor side
-      const landW = width; // eastward
-      const landH = landingDepth;
-      const landY = well.y + well.h - landH - run2;
-      f1Rect = { x: f1x, y: f1y, w: width, h: run1 };
-      landRect = { x: f1x, y: f1y + run1, w: landW, h: landH };
-      // flight 2 runs east along top
-      f2Rect = { x: landRect.x + landRect.w, y: landRect.y, w: run2, h: width };
-      // Ensure fits
-      if (f2Rect.x + f2Rect.w > well.x + well.w - margin + EPS) return null;
-      if (landRect.y + landRect.h > well.y + well.h - margin + EPS) return null;
-    } else if (upDir === 'south') {
-      const f1x = well.x + margin;
-      const f1y = well.y + well.h - width;
-      f1Rect = { x: f1x, y: f1y - run1, w: width, h: run1 };
-      landRect = { x: f1x, y: f1y - landingDepth, w: width, h: landingDepth };
-      f2Rect = { x: landRect.x + width, y: landRect.y, w: run2, h: width };
-    } else if (upDir === 'east') {
-      const f1x = well.x;
-      const f1y = well.y + margin;
-      f1Rect = { x: f1x, y: f1y, w: run1, h: width };
-      landRect = { x: f1x + run1, y: f1y, w: landingDepth, h: width };
-      f2Rect = { x: landRect.x, y: landRect.y + width, w: landingDepth, h: run2 };
-      f2Rect.w = width; f2Rect.h = run2;
-    } else {
-      const f1x = well.x + well.w - width;
-      const f1y = well.y + margin;
-      f1Rect = { x: f1x - run1, y: f1y, w: run1, h: width };
-      landRect = { x: f1x - landingDepth, y: f1y, w: landingDepth, h: width };
-      f2Rect = { x: landRect.x, y: landRect.y + width, w: width, h: run2 };
-    }
-    flights.push(makeFlight(fid(0), n1, riser, tread, width, upDir, f1Rect, true));
-    flights.push(makeFlight(fid(1), n2, riser, tread, width, dir2, f2Rect, false));
+    const uDim = width + run2 + 2 * margin;         // perpendicular extent needed
+    const vDim = run1 + Math.max(landingDepth, width) + 2 * margin; // travel extent needed
+    const alongX = upDir === 'east' || upDir === 'west';
+    if (alongX ? (vDim > well.w + EPS || uDim > well.h + EPS)
+               : (vDim > well.h + EPS || uDim > well.w + EPS)) return null;
+    // (u,v) → Rect, axis-aligned under all four side maps.
+    const mapPoint = (u: number, v: number): Vec2 => {
+      switch (upDir) {
+        case 'north': return { x: well.x + u, y: well.y + v };
+        case 'south': return { x: well.x + u, y: well.y + well.h - v };
+        case 'east':  return { x: well.x + v, y: well.y + well.h - u };
+        default:      return { x: well.x + well.w - v, y: well.y + u };
+      }
+    };
+    const mapRect = (u0: number, v0: number, u1: number, v1: number): Rect => {
+      const a = mapPoint(Math.min(u0, u1), Math.min(v0, v1));
+      const b = mapPoint(Math.max(u0, u1), Math.max(v0, v1));
+      return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+    };
+    const f1Rect = mapRect(margin, 0, margin + width, run1);
+    const landRect = mapRect(margin, run1, margin + width, run1 + landingDepth);
+    const f2Rect = mapRect(margin + width, run1, margin + width + run2, run1 + width);
+    const insideWell = (r: Rect) =>
+      r.x >= well.x - EPS && r.y >= well.y - EPS &&
+      r.x + r.w <= well.x + well.w + EPS && r.y + r.h <= well.y + well.h + EPS;
+    if (!insideWell(f1Rect) || !insideWell(landRect) || !insideWell(f2Rect)) return null;
+    const perpDirs: Record<Stair['flights'][number]['direction'], StairDirection> = {
+      north: 'east', east: 'south', south: 'west', west: 'north',
+    };
+    const dir2 = perpDirs[upDir];
+    flights.push(makeFlight(fid(0), n1, riser, tread, width, upDir, f1Rect, upDir === 'north' || upDir === 'east'));
+    flights.push(makeFlight(fid(1), n2, riser, tread, width, dir2, f2Rect, dir2 === 'east' || dir2 === 'north'));
     landings.push({
       id: lid(0), footprint: landRect, width, depth: landingDepth,
       connectedFlightIds: [flights[0].id, flights[1].id],
     });
-    explanation.push(`L-stair: ${n1}+${n2} risers; flight 1 ${upDir}, flight 2 ${dir2}.`);
+    explanation.push(`L-stair: ${n1}+${n2} risers; flight 1 ${upDir}, corner landing, flight 2 ${dir2}.`);
   }
 
   const startPoint = flights[0].startPoint;
@@ -456,6 +470,13 @@ function buildStairGeometry(
     flights, landings, footprint: well,
     startPoint, endPoint,
     floor: level,
+    entrySide: corridorSide,
+    headroom: {
+      status: 'NOT_IMPLEMENTED',
+      thresholdM: 2.05,
+      source: 'MBH4 §4-5-1-7-6 (PDF p62) via pack rule MBH4-STAIR-003',
+      note: '2D engine: no 3D headroom evaluation exists; documented limitation, never asserted as compliant.',
+    },
     explanation,
     valid: true,
     // Legacy aliases

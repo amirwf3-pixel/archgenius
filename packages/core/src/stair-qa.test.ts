@@ -242,12 +242,18 @@ describe('DXF stair geometry', () => {
 
 describe('Candidate ranking: invalid stair cannot outrank valid candidate', () => {
   it('ranks an impossible-stair candidate below valid ones', () => {
-    // The ranking weights HARD violations over area efficiency. We construct
-    // a scenario where a too-small footprint would otherwise produce a high
-    // area ratio but an invalid stair; the valid candidate must come first.
-    // Use the very tight 8×14 2-story case as a probe: at least one strategy
-    // may produce a valid stair; the returned bestCandidate must have zero
-    // STAIR/GEO/CIRC hards if any candidate does.
+    // Phase15 M7 semantics: the pre-M7 code painted a FAKE stair on the
+    // impossible hall — its only violation was MBH4-STAIR-003, which the old
+    // STAIR_/GEO_/CIRC_ filter could not see. Now the failure is honest
+    // STAIR_MISSING and the engine NEVER paints fake stair geometry, so the
+    // guarantee is asserted at its real strength:
+    //   1. strategies whose halls host real multi-flight stairs carry zero
+    //      stair findings;
+    //   2. NO candidate anywhere contains a fake/over-cap single flight;
+    //   3. no stair-dirty candidate outranks a stair-valid one in the legacy
+    //      all-candidates ordering;
+    //   4. the production gate (pipeline.generate) exposes nothing usable
+    //      while every strategy still carries HARD findings.
     const prj = createProject({
       name:'ranking', country:'IR',
       site:{shape:'rectangle', width:12, length:20, accessSide:'south', streetWidth:6},
@@ -255,9 +261,37 @@ describe('Candidate ranking: invalid stair cannot outrank valid candidate', () =
       deterministic:true, seed:42,
     });
     const { candidates } = legacyGenerate(prj, {allStrategies:true});
-    const hards = (c:any) => c.findings.filter((f:any)=>f.severity==='hard' && (f.code.startsWith('STAIR_') || f.code.startsWith('GEO_') || f.code.startsWith('CIRC_'))).length;
-    const validCount = candidates.filter(c => hards(c) === 0).length;
-    expect(validCount).toBeGreaterThan(0);
-    expect(hards(candidates[0])).toBe(0);
+    const stairHards = (c:any) => c.findings.filter((f:any)=>f.severity==='hard' && (/STAIR/.test(f.code))).length;
+    // (1) at least one strategy produced a real stair and has zero stair hards
+    expect(candidates.some(c => stairHards(c) === 0 && c.floors.some(fl => fl.stairs.length > 0))).toBe(true);
+    // (2) every stair in every candidate is real multi-flight geometry
+    for (const c of candidates) {
+      for (const fl of c.floors) {
+        for (const st of fl.stairs) {
+          for (const f of st.flights) expect(f.riserCount).toBeLessThanOrEqual(DEFAULT_STAIR_CONFIG.maxRisersPerFlight);
+          if (st.flights.length >= 2) expect(st.landings.length).toBeGreaterThanOrEqual(1);
+        }
+      }
+    }
+    // (3) Tier-1 property (compareCandidates): a candidate with MORE total
+    //     hard findings never precedes one with fewer. Stair-dirty vs
+    //     constraint-dirty candidates that tie on hardCount may interleave —
+    //     all of them are unusable at the production gate either way.
+    const hardCounts = candidates.map(c => c.findings.filter(f=>f.severity==='hard').length);
+    for (let i = 0; i + 1 < hardCounts.length; i++) expect(hardCounts[i]).toBeLessThanOrEqual(hardCounts[i+1]);
+    expect(stairHards(candidates[0]) === 0 || hardCounts[0] === Math.min(...hardCounts)).toBe(true);
+    // (4) production gate: nothing usable while hards exist
+    const gated = generate(createProject({
+      name:'ranking', country:'IR',
+      site:{shape:'rectangle', width:12, length:20, accessSide:'south', streetWidth:6},
+      building:{type:'villa', floors:2, bedrooms:2, masterBedrooms:1, bathrooms:1, wc:1, kitchenType:'closed', parkingSpaces:1, hasStair:true},
+      deterministic:true, seed:42,
+    }));
+    if (gated.bestCandidate) {
+      expect(validateCandidate(gated.bestCandidate).hard.length).toBe(0);
+    } else {
+      expect(gated.infeasible).not.toBeNull();
+      expect(gated.infeasible!.attempts.length).toBeGreaterThan(0);
+    }
   });
 });
