@@ -673,7 +673,7 @@ describe('Phase 8 Hardening — E2E cases A-F', () => {
   });
 
   it('B: 3BR with master', () => {
-    const input: ProjectInput = { ...baseInput(), name: 'E2E-B', building: { ...baseInput().building, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, parkingSpaces: 2 } };
+    const input: ProjectInput = { ...baseInput(), name: 'E2E-B', site: { ...baseInput().site, width: 18, length: 28 } as any, building: { ...baseInput().building, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, parkingSpaces: 2 } };
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);
     const evalResult = evaluateCandidate(bestCandidate!);

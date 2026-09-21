@@ -123,6 +123,17 @@ export function validateArchitecturalQA(floor: Floor): Finding[] {
     }
   }
 
+  // ---- Phase 16 P16-A: parking program honesty ----
+  // A parking request the site cannot serve is a HARD program failure so the
+  // M2 gate refuses the candidate. Partial fills never publish (placement is
+  // all-or-nothing) and aisle-only placeholders are never exported.
+  const parkingRequested = (floor.parkingRequested as number | undefined) ?? 0;
+  if (floor.level === 0 && parkingRequested > 0 && floor.parkingStalls.length < parkingRequested) {
+    findings.push(f('PARKING_PROGRAM_UNPLACED', 'hard',
+      `Parking program requests ${parkingRequested} stall(s) but ${floor.parkingStalls.length} valid stall(s) were placed — an unfilled parking request must never publish (and never as an aisle-only drawing).`,
+      floor.parkingStalls.map(s => s.id)));
+  }
+
   // ---- Furniture blocks door ----
   for (const furn of floor.furniture ?? []) {
     for (const o of floor.openings) {

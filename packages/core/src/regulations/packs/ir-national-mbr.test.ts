@@ -416,7 +416,9 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
       const prj = createProject({
         name: '4F-elev', country: 'IR',
         site: { shape: 'rectangle', width: 15, length: 22, accessSide: 'south', streetWidth: 8 },
-        building: { type: 'villa', floors: 4, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true, hasStorage: true, hasElevator: true },
+        // P16-A: 15x22 with a 4-floor program hosts one real stall; the
+        // lift-code probe below is parking-agnostic, so demand exactly 1.
+        building: { type: 'villa', floors: 4, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1, hasStair: true, hasStorage: true, hasElevator: true },
         deterministic: true, seed: 42,
       });
       const c = generate(prj).candidates[0];

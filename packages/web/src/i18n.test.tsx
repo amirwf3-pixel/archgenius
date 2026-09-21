@@ -188,7 +188,7 @@ describe('end-to-end: Persian summary over a real generated candidate', () => {
     const input = {
       name: 'ویلای نمونه',
       site: {
-        shape: 'rectangle', width: 15, length: 20, accessSide: 'south', streetWidth: 8,
+        shape: 'rectangle', width: 18, length: 28, accessSide: 'south', streetWidth: 8,
         setbacks: { north: 2, south: 3, east: 2, west: 2 },
       },
       building: {
@@ -370,11 +370,11 @@ describe('engine edit-error translation (extended templates)', () => {
 });
 
 describe('end-to-end: real core findings translate to Persian', () => {
-  it('every finding message of the default 15×20 plan becomes Persian', () => {
+  it('every finding message of the default 18×28 plan becomes Persian', () => {
     const input = {
       name: 'ویلای نمونه',
       site: {
-        shape: 'rectangle', width: 15, length: 20, accessSide: 'south', streetWidth: 8,
+        shape: 'rectangle', width: 18, length: 28, accessSide: 'south', streetWidth: 8,
         setbacks: { north: 2, south: 3, east: 2, west: 2 },
       },
       building: {

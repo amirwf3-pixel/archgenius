@@ -53,8 +53,10 @@ interface FormState {
 const DEFAULT_STATE: FormState = {
   name: 'ویلای نمونه',
   siteShape: 'rectangle',
-  siteWidth: 15,
-  siteLength: 20,
+  // P16-A: 18x28 is the smallest stock default where the default 2-car
+  // parking band fits for real (stalls inside buildable + 3.5 m aisle).
+  siteWidth: 18,
+  siteLength: 28,
   accessSide: 'south',
   streetWidth: 8,
   lNotchWidth: 5,

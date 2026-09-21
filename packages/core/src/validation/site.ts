@@ -215,8 +215,14 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
           status: 'VERIFIED',
         });
       }
-      if (buildableRects && buildableRects.length > 0) {
-        for (const bf of buildableRects) {
+      {
+        // P16-A: the obstacle is the ACTUAL placed building footprint (space
+        // rects, wall-inflated) — a stall on open ground inside the buildable
+        // envelope is legal; only real building geometry may not be touched.
+        // Raw space rects: a stall sharing the building edge line is legal
+        // (stall row flush to the facade is the normal front-yard layout).
+        const obstacleRects = floor.spaces.map(s => s.rect);
+        for (const bf of obstacleRects) {
           if (rIntersects(stall.rect, bf, 1e-3)) {
             const ow = Math.min(stall.rect.x + stall.rect.w, bf.x + bf.w) - Math.max(stall.rect.x, bf.x);
             const oh = Math.min(stall.rect.y + stall.rect.h, bf.y + bf.h) - Math.max(stall.rect.y, bf.y);
@@ -232,19 +238,7 @@ export function validateSite(candidate: LayoutCandidate): Finding[] {
             }
           }
         }
-      } else {
-        const center = { x: stall.rect.x + stall.rect.w / 2, y: stall.rect.y + stall.rect.h / 2 };
-        if (pointInPolygon(center, buildableBoundary, 1e-3) || rectInsidePolygon(stall.rect, buildableBoundary, 1e-3)) {
-          findings.push({
-            code: 'SITE_PARKING_OVERLAPS_BUILDING',
-            severity: 'hard',
-            message: `Parking stall ${stall.index} overlaps building footprint (buildableBoundary) — site-aware check, buildableRects empty due to decomposition failure`,
-            ruleId: 'SITE_GEOM',
-            entityIds: [stall.id],
-            status: 'VERIFIED',
-          });
-        }
-      }
+            }
     }
   }
 

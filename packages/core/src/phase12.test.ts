@@ -328,6 +328,9 @@ describe('Phase12 M: Site compatibility', () => {
   it('tight setbacks', () => {
     const input = baseInput({
       site: { shape: 'rectangle', width: 10, length: 15, accessSide: 'south', streetWidth: 6, setbacks: { north: 0.5, south: 0.5, east: 0.5, west: 0.5 } } as any,
+      // P16-A: tight-setback semantics are the subject; no parking demand here
+      // (a 10x15 envelope cannot host a real stall band — honest refusal).
+      building: { ...baseInput().building, parkingSpaces: 0 } as any,
     });
     const prj = createProject(input);
     const { bestCandidate } = generate(prj);

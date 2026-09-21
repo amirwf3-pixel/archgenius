@@ -99,7 +99,7 @@ describe('Phase 15 M3 A: allocation invariants (parametric sweep)', () => {
 describe('Phase 15 M3 B: generated plans honor the allocation end-to-end', () => {
   const twoFloor = () => createProject({
     name: 'M3-2f', country: 'IR',
-    site: { shape: 'rectangle', width: 15, length: 20, accessSide: 'south', streetWidth: 8 },
+    site: { shape: 'rectangle', width: 18, length: 28, accessSide: 'south', streetWidth: 8 },
     building: { type: 'villa', floors: 2, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 2, hasStair: true },
     deterministic: true, seed: 42,
   } as any);

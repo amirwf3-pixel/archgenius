@@ -218,14 +218,14 @@ describe('DXF R12 compatibility — writer output (Phase-A hardening)', () => {
     expect(dxfSafeText('FLOOR 0 — Level 0 — 0.00m elev')).toBe('FLOOR 0 - Level 0 - 0.00m elev');
     expect(dxfSafeText('23.2 m² · 2F · 18×28')).toBe('23.2 m2 . 2F . 18x28');
     expect(dxfSafeText('۱۲۳')).toBe('123');
-    const res = generate(createProject(makeInput(15, 20, 3, 2)), { allStrategies: true });
+    const res = generate(createProject(makeInput(18, 28, 3, 2)), { allStrategies: true });
     const { dxf } = exportDXF(res.candidates[0], 'ویلای نمونه');
     expect(dxf).toContain('vylay nmvnh');
     for (const ch of dxf) expect(ch.charCodeAt(0)).toBeLessThanOrEqual(0x7e);
   });
 
   it('linetype tables contain no dash pattern elements (49/74) — W1 PASS without 49, W2 FAIL with 49 31.75', () => {
-    const res = generate(createProject(makeInput(15, 20, 3, 2)), { allStrategies: true });
+    const res = generate(createProject(makeInput(18, 28, 3, 2)), { allStrategies: true });
     const { dxf } = exportDXF(res.candidates[0], 'T');
     const a = analyze(dxf);
     // All LTYPEs must be solid (73 0, 40 0, no 49/74) — dash pattern caused AutoCAD empty (W1 PASS, W2 FAIL)

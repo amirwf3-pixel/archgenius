@@ -482,6 +482,7 @@ describe('Phase 10 E — adversarial', () => {
   it('parking orientation alternatives deterministic', () => {
     const input = baseInput();
     input.building.parkingSpaces = 2;
+    (input.site as any).length = 30; // P16-A: real stalls need a real band
     (input.site as any).parkingLayout = 'perpendicular';
     const prj1 = createProject(input);
     const { bestCandidate: c1 } = generate(prj1);

@@ -130,6 +130,18 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
   }
 
   // ---- Entrance door (ground floor only) ----
+  // P16-A: facade side classification uses the ACTUAL building bbox (union of
+  // placed spaces), not the buildable envelope — with a reserved parking band
+  // the building front is inset from the envelope edge and must still get its
+  // street door on the access side.
+  const bldgBox = (() => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const s of floor.spaces) {
+      x0 = Math.min(x0, s.rect.x); y0 = Math.min(y0, s.rect.y);
+      x1 = Math.max(x1, s.rect.x + s.rect.w); y1 = Math.max(y1, s.rect.y + s.rect.h);
+    }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  })();
   let entranceWallId: string | undefined;
   let entranceDoorId: string | undefined;
   if (floor.level === 0) {
@@ -137,7 +149,7 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
     // Prefer an exterior wall on the access side where the interior space
     // is an entrance/foyer/corridor circulation space.
     const candidates = floor.walls
-      .filter(w => w.kind === 'exterior' && wallSide(w, floor.footprint) === accessSide)
+      .filter(w => w.kind === 'exterior' && wallSide(w, bldgBox) === accessSide)
       .map(w => {
         const insideId = w.spaceIds[0] ?? w.spaceIds[1];
         const inside = insideId ? floor.spaces.find(s => s.id === insideId) : undefined;
@@ -470,7 +482,7 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
   // Orientation preference: living/master-bedroom prefers south, bedroom east/west,
   // kitchen east or north, bathroom any but smallest.
   function orientationScore(wall: Wall, roomType: string): number {
-    const side = wallSide(wall, floor.footprint);
+    const side = wallSide(wall, bldgBox);
     if (!side) return 0;
     switch (roomType) {
       case 'living':

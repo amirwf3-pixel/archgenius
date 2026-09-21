@@ -41,7 +41,7 @@ function webDefaultInput(): ProjectInput {
     name: 'ArchGenius Demo',
     country: 'IR',
     site: {
-      shape: 'rectangle', width: 15, length: 20, accessSide: 'south', streetWidth: 8,
+      shape: 'rectangle', width: 18, length: 28, accessSide: 'south', streetWidth: 8,
       setbacks: { north: 2, south: 3, east: 2, west: 2 },
     },
     building: {
@@ -206,21 +206,37 @@ describe('AGX-01: U-stair actual flight going (rotated well)', () => {
     while ((m = re.exec(dxf))) pts.push({ layer: m[1], x: +m[2], y: +m[3] });
     expect(pts.length).toBeGreaterThanOrEqual(10);
     // Measure spacing along the run axis (whichever varies) per perpendicular group.
-    const groups = new Map<string, number[]>();
+    const byLayer = new Map<string, Array<{ x: number; y: number }>>();
     for (const p of pts) {
-      // flights run east/west → tread lines vertical → constant y per flight, x varies
-      const key = `${p.layer}|y=${p.y.toFixed(0)}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(p.x);
+      if (!byLayer.has(p.layer)) byLayer.set(p.layer, []);
+      byLayer.get(p.layer)!.push(p);
     }
     const spacings: number[] = [];
-    for (const xs of groups.values()) {
-      if (xs.length < 2) continue;
-      xs.sort((a, b) => a - b);
-      for (let i = 1; i < xs.length; i++) spacings.push(+(xs[i] - xs[i - 1]).toFixed(1));
+    for (const ps of byLayer.values()) {
+      // E/W-running flights: tread lines vertical, constant y per flight, x varies.
+      // N/S-running: tread lines horizontal, constant x, y varies. The P16-A
+      // parking band can flip the demo stair's run axis — auto-detect it.
+      const uniqY = new Set(ps.map(q => q.y.toFixed(0))).size;
+      const uniqX = new Set(ps.map(q => q.x.toFixed(0))).size;
+      const horiz = uniqY <= uniqX;
+      const groups = new Map<string, number[]>();
+      for (const q of ps) {
+        const key = horiz ? `y=${q.y.toFixed(0)}` : `x=${q.x.toFixed(0)}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(horiz ? q.x : q.y);
+      }
+      for (const xs of groups.values()) {
+        if (xs.length < 2) continue;
+        xs.sort((a, b) => a - b);
+        for (let i = 1; i < xs.length; i++) spacings.push(+(xs[i] - xs[i - 1]).toFixed(1));
+      }
     }
-    expect(spacings.length).toBeGreaterThan(0);
-    for (const s of spacings) {
+    // P16-A: the parking band rotates/splits flights; rounded-y grouping can
+    // splice two flights together (gap = tread + intermediate landing ≈ 1180).
+    // Real tread pitch is 280 mm — measure within-flight pitches only.
+    const treadPitch = spacings.filter(s => s > 100 && s <= 400);
+    expect(treadPitch.length).toBeGreaterThanOrEqual(10);
+    for (const s of treadPitch) {
       // actual going is exactly 280 mm; the old clamp drew 220 mm
       expect(Math.abs(s - 280)).toBeLessThanOrEqual(2.0);
     }

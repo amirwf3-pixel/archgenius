@@ -23,7 +23,9 @@ function baseInput(): ProjectInput {
       bathrooms: 2,
       wc: 1,
       kitchenType: 'closed',
-      parkingSpaces: 2,
+      // P16-A: 15x20 hosts one real stall + aisle band; a second car honestly
+      // overflows the envelope, so the plumbing fixture asks for one.
+      parkingSpaces: 1,
       hasStair: false,
       hasElevator: false,
       hasBalcony: false,

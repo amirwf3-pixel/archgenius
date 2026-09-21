@@ -30,4 +30,7 @@ export interface Floor {
   /** Parking stalls (populated on ground floor when applicable). */
   parkingStalls: ParkingStall[];
   parkingArea?: ParkingArea;
+  /** P16-A: stalls the program requested on this floor (ground floor only);
+   *  the plan must place exactly this many or surface a HARD finding. */
+  parkingRequested?: number;
 }

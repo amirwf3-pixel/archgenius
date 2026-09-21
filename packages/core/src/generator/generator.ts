@@ -17,7 +17,7 @@ import type { Finding } from '../validation/types.js';
 import { programForFloor, allocateBuildingProgram, labelFor } from '../programming/program.js';
 import type { FloorProgramAllocation } from '../programming/program.js';
 import { composePacks, computeBuildableArea, runPackRules, runPackRulesOnCandidate } from '../regulations/engine.js';
-import { placeParking, placeParkingSiteAware } from './parking.js';
+import { placeParking, placeParkingSiteAware, reserveParkingBand } from './parking.js';
 import { DEFAULT_FLOOR_HEIGHT } from './stairs.js';
 import { solveStair } from './stair-solver.js';
 import {
@@ -179,31 +179,19 @@ function buildFloorSiteAware(
 
   const siteRect: Rect = buildableGeom.siteBoundingRect;
   const buildableRect: Rect = buildableGeom.buildableRect;
+  // P16-A: the rect fed to room slicing; shrinks when a parking band is
+  // reserved. floor.footprint keeps the original envelope (reconciliation
+  // semantics unchanged).
+  let sliceRect: Rect = buildableGeom.buildableRect;
   const buildableBoundary = buildableGeom.buildableBoundary;
   const siteBoundary = buildableGeom.siteBoundary;
-  const buildableRects = buildableGeom.buildableRects;
+  let buildableRects = buildableGeom.buildableRects;
 
   let parkingStalls: any[] = [];
   let parkingArea: any;
-  if (level === 0 && input.building.parkingSpaces > 0) {
-    const layoutPref = (input.site.parkingLayout ?? 'auto') as any;
-    const p = placeParkingSiteAware(
-      siteBoundary,
-      buildableBoundary,
-      buildableRects,
-      siteRect,
-      buildableRect,
-      input.site.accessSide,
-      input.building.parkingSpaces,
-      level,
-      layoutPref
-    );
-    parkingStalls = p.stalls;
-    parkingArea = { aisleRect: p.aisle, arrangement: p.layout ?? 'perpendicular' as const };
-    if (p.fits) explanations.push(`${p.stalls.length} parking stall(s) placed (${p.layout}) along the ${input.site.accessSide} frontage — site-aware fit checks.`);
-    else explanations.push(`Parking fit issue: only ${p.stalls.length}/${input.building.parkingSpaces} stalls fit — attempts: ${p.attempts?.slice(0,3).join('; ')}`);
-    if (p.attempts && p.attempts.length > 0) explanations.push(`Parking attempts: ${p.attempts.slice(0,5).join(' | ')}`);
-  }
+  // P16-A: parking is placed AFTER all space modifications (below), against
+  // the actual placed footprint — never as an aisle-only placeholder.
+  const parkingRequestedLevel0 = level === 0 ? (input.building.parkingSpaces ?? 0) : 0;
 
   const specs = programForFloor(input.building, level, isOnlyFloor, alloc);
   const placedSpecs: PlacedSpec[] = [];
@@ -267,18 +255,50 @@ function buildFloorSiteAware(
 
   const access = input.site.accessSide as 'north'|'south'|'east'|'west';
 
+  // ---------- Phase 16 P16-A: parking band reservation (guarded) ----------
+  // Reserve the access-side band (aisle + stall depth) BEFORE room slicing so
+  // the building never grows into the stalls' space — but only when the
+  // remaining envelope can still host the program's minimum areas (72%
+  // headroom rule). Otherwise the reservation is refused: the floor keeps its
+  // sane diagnostic geometry and parking surfaces honestly as
+  // PARKING_PROGRAM_UNPLACED instead of crushing rooms into slivers.
+  if ((input.building.parkingSpaces ?? 0) > 0) {
+    const reserve = reserveParkingBand(
+      siteRect, buildableGeom.buildableRects, input.site.accessSide,
+      (input.site.parkingLayout ?? 'auto') as any,
+      (input.building.parkingSpaces ?? 0),
+    );
+    if (reserve) {
+      const remainingArea = reserve.rects.reduce((a, r) => a + r.w * r.h, 0);
+      const minDemand = placedSpecs.reduce((a, s) => a + ((s as any).minArea ?? 6), 0);
+      if (minDemand > 0.72 * remainingArea) {
+        explanations.push(`Parking band reservation REJECTED for level ${level}: program minimums need ${minDemand.toFixed(0)} m², the reduced envelope offers ${remainingArea.toFixed(0)} m² — parking will be reported as unplaced (no sliver buildings for parking).`);
+      } else {
+        buildableRects = reserve.rects;
+        const rx0 = Math.min(...reserve.rects.map(r => r.x));
+        const ry0 = Math.min(...reserve.rects.map(r => r.y));
+        const rx1 = Math.max(...reserve.rects.map(r => r.x + r.w));
+        const ry1 = Math.max(...reserve.rects.map(r => r.y + r.h));
+        sliceRect = { x: rx0, y: ry0, w: rx1 - rx0, h: ry1 - ry0 };
+        explanations.push(`Parking band reserved along the ${input.site.accessSide} edge (${reserve.band.h.toFixed(1)}x${reserve.band.w.toFixed(1)}m, ${reserve.layout}) — building slices the remaining envelope.`);
+      }
+    } else {
+      explanations.push(`Parking band could not be reserved without starving the building — parking will be reported INFEASIBLE if no free band fits later.`);
+    }
+  }
+
   let placedRooms: Space[] = [];
   let corridors: Space[] = [];
   let placeExpl: string[] = [];
 
   if (buildableRects.length === 0) {
     explanations.push(`Decomposition failure for ${buildableBoundary.length}-vertex buildable polygon — cannot decompose safely into rectangles (bounded failure, no bbox fallback as canonical). Candidate will be marked SITE_GEOM_INVALID HARD.`);
-    const result = placeSpaces(buildableRect, placedSpecs, strategy, access, mkSpace);
+    const result = placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation.map(e => `[DECOMPOSITION-FAILURE-FALLBACK bounding] ${e}`);
   } else if (buildableRects.length === 1 || input.site.shape === 'rectangle') {
-    const result = placeSpaces(buildableRect, placedSpecs, strategy, access, mkSpace);
+    const result = placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation;
@@ -299,11 +319,13 @@ function buildFloorSiteAware(
   for (const [ci, corr] of corridors.entries()) corr.id = `corridor-${level}-${ci}`;
   spaces.push(...corridors);
 
-  const repaired = repairSpacesToBuildable(spaces, buildableBoundary, buildableRects, buildableRect);
+  // P16-A: repair/snapping/entrance-recovery use sliceRect — with a reserved
+  // parking band the building's front line is sliceRect.y, not the envelope.
+  const repaired = repairSpacesToBuildable(spaces, buildableBoundary, buildableRects, sliceRect);
   const movedCount = repaired.movedCount;
   if (movedCount > 0) explanations.push(`Site-aware repair: ${movedCount} room(s) moved to fit inside buildable polygon ${input.site.shape} — buildableArea ${buildableGeom.buildableArea.toFixed(1)} m²`);
 
-  snapCorridorsToRoomsSiteAware(repaired.spaces, buildableBoundary, buildableRect, buildableRects);
+  snapCorridorsToRoomsSiteAware(repaired.spaces, buildableBoundary, sliceRect, buildableRects);
 
   // Phase 15 M3: entrance recovery is a GROUND-floor program repair. A floor whose
   // allocation contains no entrance spec must never synthesize one — upper floors get
@@ -311,7 +333,7 @@ function buildFloorSiteAware(
   // "phantom upper-floor entrances" on multi-floor plans).
   const floorHasEntranceSpec = placedSpecs.some(s => s.type === 'entrance');
   if (!entrancePlaced && floorHasEntranceSpec) {
-    const foyer = repaired.spaces.find(s => (s.type === 'foyer' || s.type === 'corridor') && s.rect.y <= buildableRect.y + EPS);
+    const foyer = repaired.spaces.find(s => (s.type === 'foyer' || s.type === 'corridor') && s.rect.y <= sliceRect.y + EPS);
     if (foyer) {
       const spurH = Math.min(1.5, foyer.rect.h * 0.4);
       // Phase 13.1: feasibility-first — never create negative height
@@ -455,6 +477,41 @@ function buildFloorSiteAware(
   const walls: Wall[] = generateWalls(finalSpaces, level);
   const furniture = placeFurniture(finalSpaces);
 
+  // ---------- Phase 16 P16-A: real parking placement ----------
+  // Runs after every space mutation (rescue/re-pin) so the obstacle set is
+  // the ACTUAL building, and before floor assembly so findings gate it.
+  // All-or-nothing: an unfillable request yields NO parking geometry and a
+  // HARD PARKING_PROGRAM_UNPLACED finding (validator) — the plan then fails
+  // the M2 gate instead of publishing misleading aisle-only drawings.
+  const parkingRequested = parkingRequestedLevel0;
+  if (parkingRequested > 0) {
+    // Raw space rects: a stall touching the building edge (shared boundary)
+    // is legal — only real overlaps (>0.02 m both axes) are rejected. Walls
+    // nudge a few cm out of the room rect; that graphic adjacency is not a
+    // collision.
+    const obstacles = finalSpaces.map(s => s.rect);
+    const p = placeParkingSiteAware({
+      siteBoundary,
+      siteRect,
+      buildingRects: obstacles,
+      access: input.site.accessSide,
+      count: parkingRequested,
+      floorLevel: level,
+      layoutPref: (input.site.parkingLayout ?? 'auto') as any,
+      // P16-A: stalls are permanent slabs — keep them inside the buildable
+      // envelope; setbacks may only carry the drive aisle.
+      buildableRect,
+    });
+    if (p.fits) {
+      parkingStalls = p.stalls;
+      parkingArea = { aisleRect: p.aisle, arrangement: p.layout ?? ('perpendicular' as const) };
+      explanations.push(`${p.stalls.length}/${parkingRequested} parking stall(s) placed (${p.layout}); aisle ${p.aisle.w.toFixed(1)}x${p.aisle.h.toFixed(1)}m with street access.`);
+    } else {
+      explanations.push(`Parking INFEASIBLE: could not place ${parkingRequested} valid stall(s) with real geometry anywhere on the site (${p.attempts?.slice(-1)[0] ?? 'no fitting band'}) — no parking geometry exported; PARKING_PROGRAM_UNPLACED flags this candidate.`);
+    }
+  }
+
+
   // ---------- Phase 15 M7: stair solving — real multi-flight geometry only ----------
   // The old path hardcoded a 'south' entry side and, on failure, painted a FAKE
   // single-flight stair (every riser in one flight — the Phase 3 defect shape).
@@ -510,6 +567,7 @@ function buildFloorSiteAware(
     footprint: buildableRect,
     spaces: finalSpaces, walls, openings: [],
     stairs, elevators: [], furniture, parkingStalls, parkingArea,
+    parkingRequested: parkingRequested > 0 ? parkingRequested : undefined,
   };
   (floor as any).siteBoundary = siteBoundary;
   (floor as any).buildableBoundary = buildableBoundary;

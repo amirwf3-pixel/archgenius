@@ -319,7 +319,7 @@ describe('Phase 13.1 A-O Invalid Geometry Elimination', () => {
   // O: multi-floor 2F no invalid geometry
   it('O: multi-floor 2F no invalid geometry', () => {
     const prj = createProject(proj({
-      site: { shape: 'rectangle', width: 15, length: 20, accessSide: 'south', streetWidth: 8 },
+      site: { shape: 'rectangle', width: 15, length: 28, accessSide: 'south', streetWidth: 8 },
       building: { type: 'villa', floors: 2, bedrooms: 3, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 1, hasStair: true },
       seed: 42,
     }));

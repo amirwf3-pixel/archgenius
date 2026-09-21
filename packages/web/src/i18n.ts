@@ -753,6 +753,7 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
   // --- validation/program-completeness.ts (Phase15 M3 no-silent-drop; surfaces on
   //     diagnostic candidates whenever a topology fails to host the requested program) ---
   ARCH_PROGRAM_UNPLACED: [{ re: /^Floor (\d+): requested program room '([^']+)' not placed \(required x(\d+), placed x(\d+)\) — requested rooms are never silently dropped$/, fa: 'طبقهٔ {1}: فضای درخواستی «{2}» جایدهی نشد (تعداد خواسته {3}، جایدهی‌شده {4}) — فضاهای درخواستی هرگز به‌صورت خاموش حذف نمی‌شوند', labels: [2] }],
+  PARKING_PROGRAM_UNPLACED: [{ re: /^Parking program requests (\d+) stall\(s\) but (\d+) valid stall\(s\) were placed — an unfilled parking request must never publish \(and never as an aisle-only drawing\)\.$/, fa: 'برنامهٔ پارکینگ {1} نقطه خواسته بود اما {2} نقطهٔ معتبر جایدهی شد — درخواست پارکینگ جایدهی‌نشده هرگز منتشر نمی‌شود (و هرگز به‌صورت نقشهٔ تنها-راه‌رو).', labels: [] }],
 
   // --- validation/site.ts ---
   SITE_INVALID_POLYGON: [{ re: /^Site polygon invalid: (.*) — shape (\S+)$/, fa: 'چندضلعی سایت نامعتبر است: {1} — شکل {2}', maps: { 2: SITE_SHAPE_FA } }],
