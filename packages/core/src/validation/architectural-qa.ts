@@ -14,6 +14,7 @@
  * All findings are soft/advisory except where they make a space unusable (hard).
  * Deterministic, no AI scoring.
  */
+import { rectBlocksDoorSwing } from '../geometry/swing.js';
 import type { Floor } from '../model/floor.js';
 import type { Finding } from './types.js';
 import { ROOM_MIN_SIDE, ROOM_MIN_AREA, CORRIDOR_MIN_WIDTH } from '../units.js';
@@ -146,15 +147,14 @@ export function validateArchitecturalQA(floor: Floor): Finding[] {
   }
 
   // ---- Furniture blocks door ----
+  // Phase 18: exact test — the furniture footprint must genuinely enter the
+  // door's 90° swing sector (geometry/swing.ts) to be flagged. The former
+  // 0.8 m center-distance proxy also flagged furniture near a door that the
+  // leaf could never reach. Semantics unchanged: soft, "may block", same code.
   for (const furn of floor.furniture ?? []) {
     for (const o of floor.openings) {
       if (o.type !== 'door' && o.type !== 'entrance') continue;
-      const fx = furn.rect.x + furn.rect.w / 2;
-      const fy = furn.rect.y + furn.rect.h / 2;
-      const dx = fx - o.center.x;
-      const dy = fy - o.center.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist < 0.8) {
+      if (rectBlocksDoorSwing(furn.rect, o)) {
         findings.push(f('FURNITURE_BLOCKS_DOOR', 'soft', `Furniture ${furn.id} may block door ${o.id}.`, [furn.id, o.id]));
       }
     }

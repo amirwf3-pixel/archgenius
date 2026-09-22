@@ -1,28 +1,35 @@
 /**
- * Phase 11 — Minimal furniture placement with polygon canonical containment
+ * Phase 11 — Minimal furniture placement with polygon canonical containment.
+ * Phase 18 — door-aware: pieces whose footprint would enter a door's 90° swing
+ * sector (geometry/swing.ts, same exact sector the validators use) are skipped.
+ * One deterministic position per piece — a conflicting piece is simply not
+ * placed, which is architecturally better than a bed/wardrobe blocking a door.
  */
 
 import type { Space } from '../model/space.js';
 import type { Furniture, FurnitureType } from '../model/furniture.js';
 import { FURNITURE_SIZES } from '../model/furniture.js';
+import type { Opening } from '../model/opening.js';
 import type { Rect } from '../geometry/rect.js';
 import { rContains, rOverlapArea } from '../geometry/rect.js';
 import { pointInPolygon, rectInsidePolygon } from '../geometry/polygon-ops.js';
 import { roomPolygonCentroid } from '../geometry/room-polygon.js';
+import { rectBlocksDoorSwing } from '../geometry/swing.js';
 
 let idCounter = 0;
 const nextId = () => `f-${(idCounter++).toString(36)}`;
 
-export function placeFurniture(spaces: Space[]): Furniture[] {
+export function placeFurniture(spaces: Space[], openings: Opening[] = []): Furniture[] {
   idCounter = 0;
+  const doors = openings.filter(o => o.type === 'door' || o.type === 'entrance');
   const out: Furniture[] = [];
   for (const s of spaces) {
-    out.push(...placeInRoom(s, out));
+    out.push(...placeInRoom(s, doors, out));
   }
   return out;
 }
 
-function placeInRoom(s: Space, existing: Furniture[]): Furniture[] {
+function placeInRoom(s: Space, doors: Opening[], existing: Furniture[]): Furniture[] {
   const pieces: Array<{ type: FurnitureType; at: 'nw-corner'|'sw-corner'|'ne-corner'|'se-corner'|'north-wall'|'south-wall'|'east-wall'|'west-wall'|'center' }> = [];
   switch (s.type) {
     case 'bedroom':
@@ -58,13 +65,13 @@ function placeInRoom(s: Space, existing: Furniture[]): Furniture[] {
 
   const out: Furniture[] = [];
   for (const p of pieces) {
-    const f = makePiece(p.type, s, p.at, [...existing, ...out]);
+    const f = makePiece(p.type, s, p.at, [...existing, ...out], doors);
     if (f) out.push(f);
   }
   return out;
 }
 
-function makePiece(type: FurnitureType, s: Space, where: string, others: Furniture[]): Furniture | null {
+function makePiece(type: FurnitureType, s: Space, where: string, others: Furniture[], doors: Opening[] = []): Furniture | null {
   const size = FURNITURE_SIZES[type];
   const r = s.rect;
   const poly = s.polygon;
@@ -121,6 +128,12 @@ function makePiece(type: FurnitureType, s: Space, where: string, others: Furnitu
   for (const o of others) {
     if (o.spaceId !== s.id) continue;
     if (rOverlapArea(cand, o.rect) > 1e-3) return null;
+  }
+
+  // Phase 18: never place a piece into a door's swing sector (validators use
+  // the same exact sector — the producer and the check cannot disagree).
+  for (const d of doors) {
+    if (rectBlocksDoorSwing(cand, d)) return null;
   }
 
   return {

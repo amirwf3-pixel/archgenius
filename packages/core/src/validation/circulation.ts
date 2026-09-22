@@ -7,6 +7,7 @@
  * circulation space (corridor / stair-hall / foyer).
  */
 import type { Floor } from '../model/floor.js';
+import { segmentBlocksDoorSwing } from '../geometry/swing.js';
 import type { Opening } from '../model/opening.js';
 import type { Finding } from './types.js';
 import { wallSide } from '../generator/openings.js';
@@ -296,34 +297,20 @@ function labelOf(o: Opening, floor: Floor): string {
 }
 
 /**
- * Very conservative V1 heuristic: door swing is considered blocked if any
- * other wall crosses the 90° arc quadrant on the swing side within the
- * door radius. We check approximate bounding overlap only.
+ * Phase 18 — exact swing-sector obstruction: a door is flagged only when another
+ * wall's centerline genuinely crosses the door's 90° swing sector (using the
+ * leaf geometry the Opening model carries), beyond a 2 cm tangency tolerance.
+ * Replaces the former bounding-box/0.4 m proximity heuristic, which flagged every
+ * normal T-junction and vestibule side wall whether or not the leaf ever reached
+ * them. Semantics unchanged: soft finding, same code/message, sliding doors exempt.
  */
 function doorSwingBlocked(o: Opening, floor: Floor): boolean {
   if (!o.swing || o.swing === 'sliding') return false;
-  const r = o.width; // open-door radius
-  const cx = o.center.x, cy = o.center.y;
-  // compute arc bounding box
-  const minX = cx - r, maxX = cx + r, minY = cy - r, maxY = cy + r;
   for (const w of floor.walls) {
     if (w.id === o.wallId) continue;
-    // simple segment-aabb check
-    const seg = segAabb(w.start.x, w.start.y, w.end.x, w.end.y);
-    if (seg.maxX < minX || seg.minX > maxX || seg.maxY < minY || seg.minY > maxY) continue;
-    // not doing exact arc-segment intersection in V1; flag as advisory via soft if close
-    const dx = Math.max(0, Math.max(minX - Math.max(w.start.x, w.end.x), Math.min(w.start.x, w.end.x) - maxX));
-    const dy = Math.max(0, Math.max(minY - Math.max(w.start.y, w.end.y), Math.min(w.start.y, w.end.y) - maxY));
-    if (dx * dx + dy * dy < 0.4 * 0.4) return true;
+    if (segmentBlocksDoorSwing(w.start.x, w.start.y, w.end.x, w.end.y, o)) return true;
   }
   return false;
-}
-
-function segAabb(x1: number, y1: number, x2: number, y2: number) {
-  return {
-    minX: Math.min(x1, x2), maxX: Math.max(x1, x2),
-    minY: Math.min(y1, y2), maxY: Math.max(y1, y2),
-  };
 }
 
 function f(code: Finding['code'], severity: Finding['severity'], msg: string, entityIds?: string[], bbox?: Finding['bbox']): Finding {

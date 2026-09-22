@@ -12,6 +12,7 @@ import type { ProjectInput } from '../model/project.js';
 import type { Floor } from '../model/floor.js';
 import type { Space, SpaceSpec } from '../model/space.js';
 import type { Wall } from '../model/wall.js';
+import type { Furniture } from '../model/furniture.js';
 import type { LayoutCandidate, CandidateStrategy, LayoutMetadata } from '../model/layout.js';
 import type { Finding } from '../validation/types.js';
 import { programForFloor, allocateBuildingProgram, labelFor } from '../programming/program.js';
@@ -488,7 +489,6 @@ function buildFloorSiteAware(
   const stairRect = stairSpace ? stairSpace.rect : null;
 
   const walls: Wall[] = generateWalls(finalSpaces, level);
-  const furniture = placeFurniture(finalSpaces);
 
   // ---------- Phase 16 P16-A: real parking placement ----------
   // Runs after every space mutation (rescue/re-pin) so the obstacle set is
@@ -580,7 +580,7 @@ function buildFloorSiteAware(
     footprint: buildableRect,
     accessSide: input.site.accessSide,
     spaces: finalSpaces, walls, openings: [],
-    stairs, elevators: [], furniture, parkingStalls, parkingArea,
+    stairs, elevators: [], furniture: [] as Furniture[], parkingStalls, parkingArea,
     parkingRequested: parkingRequested > 0 ? parkingRequested : undefined,
   };
   (floor as any).siteBoundary = siteBoundary;
@@ -591,6 +591,11 @@ function buildFloorSiteAware(
 
   const { openings } = placeOpenings(floor, input.site.accessSide);
   floor.openings = openings;
+
+  // Phase 18: furniture is placed AFTER the openings exist so pieces can avoid
+  // door swing sectors (same exact sector geometry the validators check). The
+  // former order placed furniture blind, then flagged it blocking its own door.
+  floor.furniture = placeFurniture(finalSpaces, openings);
 
   for (const w of floor.walls) {
     for (const id of w.spaceIds) {
@@ -615,7 +620,7 @@ function buildFloorSiteAware(
   }
 
   if (level === 0) explanations.push(`Entrance placed on the ${access} facade — site shape ${input.site.shape}.`);
-  explanations.push(`Furniture footprints placed: ${furniture.length}. Phase 11 polygon canonical, rect compatibility, shapeType rectangle default, editing/locking foundation.`);
+  explanations.push(`Furniture footprints placed: ${floor.furniture.length}. Phase 11 polygon canonical, rect compatibility, shapeType rectangle default, editing/locking foundation.`);
   // P17-C: compact the declared floor envelope to the actually-placed geometry.
   // The footprint used to stay the full buildable rect, leaving program-sized
   // interiors counted as built (the P17-A residual-void defect). Rooms, cores,
