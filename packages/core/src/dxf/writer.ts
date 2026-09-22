@@ -852,7 +852,7 @@ function drawDoorOn(
 function drawStairOn(
   st: any,
   line: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
-  text: (x: number, y: number, txt: string, h: number, base: string, horiz?: number) => void,
+  text: (x: number, y: number, txt: string, h: number, base: string, horiz?: number, rotDeg?: number) => void,
   poly: (pts: Vec2[], base: string, closed?: boolean) => void,
 ) {
   const rect: Rect = st.footprint ?? st.rect;
@@ -923,7 +923,21 @@ function drawStairOn(
   const actTread = Math.min(...flights.map((f: any) => f.treadDepth ?? st.tread ?? st.treadDepth ?? 0.28));
   const lvl = st.floor ?? 0;
   const label = `${flights.length}F · ${st.totalRisers}R @ ${(actRiser*100).toFixed(0)}×${(actTread*100).toFixed(0)} · F${lvl}→F${lvl + 1} ${st.type}${st.entrySide ? ' ent.' + st.entrySide : ''}`;
-  text(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, 'A-TEXT');
+  // P16-D-D: the note must stay inside the stair well. The legacy fixed 0.15 m
+  // height produced ~4.5 m of text on a 2.7 m well (evidenced overflow into
+  // adjacent rooms). Fit the height to the well width (floor 0.09 m); when even
+  // the floor cannot fit horizontally, run the note vertically along the well's
+  // long axis. Labels that already fit keep the legacy height and anchor.
+  const fitNoteH = (avail: number) => Math.max(0.09, Math.min(0.15, (avail - 0.2) / (label.length * ROOM_TXT_CHAR_W)));
+  const nh = fitNoteH(rect.w);
+  const vh = rect.h > rect.w ? fitNoteH(rect.h) : 0;
+  if (nh >= 0.15) {
+    text(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, 'A-TEXT');
+  } else if (vh > nh) {
+    text(rect.x + 0.1 + vh, rect.y + 0.1, label, vh, 'A-TEXT', 0, 90);
+  } else {
+    text(rect.x + 0.1, rect.y + rect.h - 0.15, label, nh, 'A-TEXT');
+  }
 }
 
 /** Up/down direction arrow with open V head. */
@@ -1005,19 +1019,31 @@ function drawTitleBlockV2(
   emitLine(bx1, by1, bx0, by1, 'A-TITLE');
   emitLine(bx0, by1, bx0, by0, 'A-TITLE');
   // title box, bottom-right
-  const tw = Math.min(11, Math.max(6, fr.w)), th = 2.4;
+  // P16-D-D small-plan adaptation: on narrow footprints (fr.w < 9 m) the legacy
+  // fixed box width and fixed text heights overflow the box (evidenced: a 4 m
+  // footprint overflowed by up to 2.2 m). Small plans derive the box width from
+  // the footprint and fit each long line to the box; wider plans keep the exact
+  // legacy layout byte-for-byte.
+  const small = fr.w < 9;
+  const tw = small ? Math.max(5, fr.w * 0.62) : Math.min(11, Math.max(6, fr.w)), th = 2.4;
+  const fitTitleH = (txt: string, base: number): number =>
+    small ? Math.max(0.09, Math.min(base, (tw - 0.6) / (txt.length * ROOM_TXT_CHAR_W))) : base;
   const tx0 = bx1 - tw, ty0 = by0 + 0.15;
   emitLine(tx0, ty0, bx1 - 0.15, ty0, 'A-TITLE');
   emitLine(bx1 - 0.15, ty0, bx1 - 0.15, ty0 + th, 'A-TITLE');
   emitLine(bx1 - 0.15, ty0 + th, tx0, ty0 + th, 'A-TITLE');
   emitLine(tx0, ty0 + th, tx0, ty0, 'A-TITLE');
   emitLine(tx0 + 0.25, ty0 + th - 0.75, bx1 - 0.4, ty0 + th - 0.75, 'A-TITLE');
-  emitText(tx0 + 0.3, ty0 + th - 0.55, projectName, 0.32, 'A-TITLE');
-  emitText(tx0 + 0.3, ty0 + th - 1.1, `FLOOR PLANS — ${cand.floors.length} FLOOR(S) | STRATEGY ${cand.metadata.strategy}`, 0.18, 'A-TITLE');
-  emitText(tx0 + 0.3, ty0 + th - 1.5, 'UNITS: MILLIMETRES | MODEL SPACE 1:1 | PLOT SCALE 1:100 @ A1', 0.16, 'A-TITLE');
+  emitText(tx0 + 0.3, ty0 + th - 0.55, projectName, fitTitleH(projectName, 0.32), 'A-TITLE');
+  const floorLine = `FLOOR PLANS — ${cand.floors.length} FLOOR(S) | STRATEGY ${cand.metadata.strategy}`;
+  emitText(tx0 + 0.3, ty0 + th - 1.1, floorLine, fitTitleH(floorLine, 0.18), 'A-TITLE');
+  const unitsLine = 'UNITS: MILLIMETRES | MODEL SPACE 1:1 | PLOT SCALE 1:100 @ A1';
+  emitText(tx0 + 0.3, ty0 + th - 1.5, unitsLine, fitTitleH(unitsLine, 0.16), 'A-TITLE');
   const siteTxt = siteBox ? ` | SITE ${siteBox.w.toFixed(1)}x${siteBox.h.toFixed(1)} m` : '';
-  emitText(tx0 + 0.3, ty0 + th - 1.9, `NET FLOOR AREA (SUM OF ROOMS, ALL FLOORS): ${totalNetArea.toFixed(1)} m²${siteTxt}`, 0.16, 'A-TITLE');
-  emitText(tx0 + 0.3, ty0 + 0.12, 'ARCHGENIUS — AUTOMATED CAD DRAFT — PROFESSIONAL REVIEW REQUIRED', 0.14, 'A-TITLE');
+  const netLine = `NET FLOOR AREA (SUM OF ROOMS, ALL FLOORS): ${totalNetArea.toFixed(1)} m²${siteTxt}`;
+  emitText(tx0 + 0.3, ty0 + th - 1.9, netLine, fitTitleH(netLine, 0.16), 'A-TITLE');
+  const honestyLine = 'ARCHGENIUS — AUTOMATED CAD DRAFT — PROFESSIONAL REVIEW REQUIRED';
+  emitText(tx0 + 0.3, ty0 + 0.12, honestyLine, fitTitleH(honestyLine, 0.14), 'A-TITLE');
   // layer legend — swatch on the discipline layer + name on A-TITLE
   const LEG: Array<[string, string]> = [
     ['A-WALL-EXT', 'WALL, EXTERIOR'], ['A-WALL-INT', 'WALL, INTERIOR'], ['A-WALL-CORE', 'WALL, CORE'],
@@ -1025,15 +1051,39 @@ function drawTitleBlockV2(
     ['A-PARKING', 'PARKING STALL'],
     ['A-DIMS', 'DIMENSIONS (m)'], ['A-TEXT', 'GENERAL NOTES'], ['A-SITE', 'SITE BOUNDARY'], ['A-GRID', 'GRID / AXIS'],
   ];
-  const lx = tx0 - 3.6, lyTop = ty0 + 0.35;
-  emitText(lx, lyTop + 0.35, 'LEGEND', 0.2, 'A-TITLE');
+  // layer legend — swatch on the discipline layer + name on A-TITLE.
+  // P16-D-D: the fixed tx0 − 3.6 column landed OUTSIDE the drawing border on
+  // plans with footprint width ≤ ~11 m (evidenced). The column is now clamped
+  // to the border; when even the clamped column cannot host the widest row
+  // without crossing deep into the title box, the legend flows into the box
+  // under the honesty line (very small plans). Roomy plans keep the exact
+  // legacy geometry byte-for-byte.
+  const legRow = (i: number) => `${LEG[i][0]} — ${LEG[i][1]}`;
+  const maxLegLen = Math.max(...LEG.map((_, i) => legRow(i).length));
+  const lx = Math.max(bx0 + 0.3, tx0 - 3.6);
+  const legBeside = lx + 1.15 + maxLegLen * 0.14 * ROOM_TXT_CHAR_W <= tx0 + 0.3;
   const sw = swLine ?? emitLine;
-  for (let i = 0; i < LEG.length; i++) {
-    const y = lyTop + i * 0.3;
-    sw(lx, y, lx + 0.9, y, LEG[i][0]);
-    emitText(lx + 1.15, y - 0.06, `${LEG[i][0]} — ${LEG[i][1]}`, 0.14, 'A-TITLE');
+  if (legBeside) {
+    const lyTop = ty0 + 0.35;
+    emitText(lx, lyTop + 0.35, 'LEGEND', 0.2, 'A-TITLE');
+    for (let i = 0; i < LEG.length; i++) {
+      const y = lyTop + i * 0.3;
+      sw(lx, y, lx + 0.9, y, LEG[i][0]);
+      emitText(lx + 1.15, y - 0.06, legRow(i), 0.14, 'A-TITLE');
+    }
+    emitLine(lx - 0.2, ty0, lx - 0.2, ty0 + th + 1.3, 'A-TITLE');
+  } else {
+    // Inside-box grid, confined to the clear zone BELOW the project-name divider
+    // (ty0+th-0.75) and ABOVE the honesty line — rows never cross the divider.
+    const gh = 0.085;
+    const gx = tx0 + 0.25;
+    emitText(gx, ty0 + 1.47, 'LEGEND', 0.1, 'A-TITLE');
+    for (let i = 0; i < LEG.length; i++) {
+      const y = ty0 + 0.26 + i * 0.115;
+      sw(gx, y, gx + 0.9, y, LEG[i][0]);
+      emitText(gx + 1.05, y - 0.03, legRow(i), gh, 'A-TITLE');
+    }
   }
-  emitLine(lx - 0.2, ty0, lx - 0.2, ty0 + th + 1.3, 'A-TITLE');
 }
 
 function emitGrid(

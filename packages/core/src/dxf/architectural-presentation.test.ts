@@ -615,3 +615,116 @@ describe('P16-D-C furniture and sanitary footprint glyphs', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// P16-D-D — final presentation polish (title block, legend, stair notes)
+// ---------------------------------------------------------------------------
+
+describe('P16-D-D title block, legend and stair-note fitting', () => {
+  const small = (() => {
+    const prj = createProject({
+      name: 'P16D-D Small', country: 'IR',
+      site: { shape: 'rectangle', width: 8, length: 12, accessSide: 'south', streetWidth: 8 },
+      building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, kitchenType: 'closed', parkingSpaces: 1, hasStair: false, hasStorage: true },
+      deterministic: true, seed: 42,
+    });
+    const { bestCandidate } = legacyGenerate(prj);
+    if (!bestCandidate) throw new Error('no small-plan fixture');
+    return bestCandidate;
+  })();
+  const TITLE_LAYER = /^(A-TITLE|A-FLOOR-0-A-TITLE)$/;
+
+  it('every A-TITLE text fits inside the drawing border on a very small plan', () => {
+    const dxf = writeDXF(small, 'p16d-d');
+    const fr = small.floors[0].footprint;
+    const bx0 = fr.x - 1.5, bx1 = fr.x + fr.w + 1.5;
+    let seen = 0;
+    for (const e of entities(dxf)) {
+      if (e.type !== 'TEXT' || !TITLE_LAYER.test(e.codes[8] ?? '')) continue;
+      const x = Number(e.codes[10]) / 1000, h = Number(e.codes[40]) / 1000;
+      const right = x + (e.codes[1] ?? '').length * h * 0.72;
+      expect(x, `"${e.codes[1]}" starts outside the border`).toBeGreaterThanOrEqual(bx0 - 1e-6);
+      expect(right, `"${e.codes[1]}" overflows the border`).toBeLessThanOrEqual(bx1 + 1e-6);
+      seen++;
+    }
+    expect(seen).toBeGreaterThan(10);
+    expect(validateDXFStructure(dxf).ok).toBe(true);
+  });
+
+  it('title lines anchored inside the box fit the box on a very small plan', () => {
+    const dxf = writeDXF(small, 'p16d-d');
+    const fr = small.floors[0].footprint;
+    const tw = Math.max(5, fr.w * 0.62);
+    const tx0 = fr.x + fr.w + 1.5 - tw, by0 = fr.y - 1.5 - 4.6;
+    let seen = 0;
+    for (const e of entities(dxf)) {
+      if (e.type !== 'TEXT' || !TITLE_LAYER.test(e.codes[8] ?? '')) continue;
+      const x = Number(e.codes[10]) / 1000, y = Number(e.codes[20]) / 1000;
+      if (x < tx0 - 1e-6 || y < by0 || y > by0 + 2.6) continue;
+      const h = Number(e.codes[40]) / 1000;
+      seen++;
+      expect(x + (e.codes[1] ?? '').length * h * 0.72, `"${e.codes[1]}" overflows the title box`)
+        .toBeLessThanOrEqual(tx0 + tw + 1e-6);
+    }
+    expect(seen).toBeGreaterThan(5);
+  });
+
+  it('small plans relocate the legend into the box, below the divider', () => {
+    const dxf = writeDXF(small, 'p16d-d');
+    const fr = small.floors[0].footprint;
+    const tw = Math.max(5, fr.w * 0.62);
+    const tx0 = fr.x + fr.w + 1.5 - tw, ty0 = fr.y - 1.5 - 4.6 + 0.15;
+    const divider = ty0 + 2.4 - 0.75;
+    const rows = entities(dxf).filter(e =>
+      e.type === 'TEXT' && e.codes[8] === 'A-TITLE'
+      && Number(e.codes[10]) / 1000 >= tx0 - 1e-6
+      && /^A-[A-Z-]+ - /.test(e.codes[1] ?? ''));
+    expect(rows.length).toBe(11); // the full legend lives inside the box now
+    for (const r of rows) {
+      const y = Number(r.codes[20]) / 1000, h = Number(r.codes[40]) / 1000;
+      expect(h).toBeCloseTo(0.085, 6);
+      expect(y + h, `"${r.codes[1]}" crosses the divider`).toBeLessThanOrEqual(divider + 1e-6);
+    }
+  });
+
+  it('roomy plans keep the beside-box legend at the legacy geometry', () => {
+    const wide = fixture();
+    const dxf = writeDXF(wide, 'p16d-d');
+    const fr = wide.floors[0].footprint;
+    const tx0 = fr.x + fr.w + 1.5 - 11;
+    const leg = entities(dxf).find(e => e.type === 'TEXT' && e.codes[8] === 'A-TITLE' && e.codes[1] === 'LEGEND');
+    expect(leg).toBeDefined();
+    expect(Number(leg!.codes[10]) / 1000).toBeCloseTo(tx0 - 3.6, 2); // untouched legacy x
+    expect(Number(leg!.codes[40]) / 1000).toBeCloseTo(0.2, 6);       // untouched legacy height
+  });
+
+  it('stair build notes are fitted inside their stair wells', () => {
+    const wide = fixture();
+    const dxf = writeDXF(wide, 'p16d-d');
+    const notes = entities(dxf).filter(e => e.type === 'TEXT' && /\d+R @/.test(e.codes[1] ?? ''));
+    expect(notes.length).toBeGreaterThan(0);
+    const wells = wide.floors.flatMap(f => f.stairs).map(s => s.footprint ?? s.rect);
+    for (const n of notes) {
+      const h = Number(n.codes[40]) / 1000, rot = Number(n.codes[50] ?? 0);
+      expect(h).toBeLessThanOrEqual(0.15 + 1e-6);
+      const len = (n.codes[1] ?? '').length * h * 0.72;
+      const fits = wells.some(r => len <= (rot === 90 ? r.h : r.w) - 0.15 + 1e-3);
+      expect(fits, `note "${n.codes[1]}" (h=${h}, rot=${rot}) overflows its well`).toBe(true);
+    }
+  });
+
+  it('A-HATCH stays intentionally defined and unused (reserved layer)', () => {
+    for (const cand of [fixture(), small]) {
+      const dxf = writeDXF(cand, 'p16d-d');
+      expect(dxf).toContain('A-HATCH'); // defined in the LAYER table
+      for (const e of entities(dxf)) expect(e.codes[8]).not.toBe('A-HATCH');
+    }
+  });
+
+  it('output remains byte-deterministic after the polish pass', () => {
+    for (const cand of [fixture(), small]) {
+      expect(writeDXF(cand, 'p16d-d')).toBe(writeDXF(cand, 'p16d-d'));
+      expect(validateDXFStructure(writeDXF(cand, 'p16d-d')).ok).toBe(true);
+    }
+  });
+});
