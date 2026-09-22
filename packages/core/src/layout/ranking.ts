@@ -27,6 +27,10 @@
  */
 import type { LayoutCandidate } from '../model/layout.js';
 import type { Finding } from '../validation/types.js';
+import type { Floor } from '../model/floor.js';
+import type { Space } from '../model/space.js';
+import type { Rect } from '../geometry/rect.js';
+import { pointInPolygon } from '../geometry/polygon.js';
 
 export interface RankingVector {
   hardCount: number;
@@ -41,6 +45,119 @@ export interface RankingVector {
   wastedArea: number;
   circulationRatio: number;
   softPreferencePenalty: number;
+  /** P17-B: architectural-form quality penalty (contiguous floor voids, communal
+   *  oversizing, corridor proportion). Continuous, lower is better, deterministic. */
+  architecturalQualityPenalty: number;
+}
+
+// ---- P17-B architectural quality penalties (ranking ONLY — no geometry changes) ----
+
+/** Communal rooms eligible for the oversizing penalty (flexible rooms that absorb leftovers). */
+const P17_COMMUNAL_TYPES = new Set(['living', 'dining', 'family-room']);
+/** Oversizing up to this ratio of the requested target is normal modest oversizing — never penalized. */
+const P17_COMMUNAL_RATIO = 2.0;
+/** Penalty weight per unit of target-ratio beyond the threshold. */
+const P17_COMMUNAL_WEIGHT = 1.5;
+/** Corridor aspect ratio above this is penalized (corridors are exempt from room-proportion rules). */
+const P17_CORRIDOR_AR = 8.0;
+/** Corridor longer than this fraction of the floor's long side is penalized (single-loaded strips). */
+const P17_CORRIDOR_LEN_FRACTION = 0.75;
+/** Contiguous uncovered floor-envelope areas up to this size are intentional voids — never penalized. */
+const P17_VOID_ALLOWANCE_M2 = 8;
+/** Penalty weight per m² of contiguous void beyond the allowance. */
+const P17_VOID_WEIGHT = 0.15;
+/** Void scan grid step (m). Coarse by design: deterministic and cheap; wall thickness absorbs sub-cell noise. */
+const P17_VOID_CELL = 0.5;
+
+/** Sum of communal-room oversizing penalties: (area/target − 2)+ × 1.5 per living/dining/family room. */
+function communalOversizePenalty(spaces: Space[]): number {
+  let p = 0;
+  for (const s of spaces) {
+    if (!P17_COMMUNAL_TYPES.has(s.type as string)) continue;
+    const target = (s as any).targetArea;
+    const area = (s as any).area;
+    if (!(target > 0) || !(area >= 0)) continue; // sparse fixtures without metrics are not penalized
+    p += Math.max(0, area / target - P17_COMMUNAL_RATIO) * P17_COMMUNAL_WEIGHT;
+  }
+  return p;
+}
+
+/**
+ * Corridor proportion penalty: aspect ratio beyond 8 and length beyond 75% of the
+ * floor's long side. Continuous; never rejects a plan by itself.
+ */
+function corridorProportionPenalty(spaces: Space[], footprint: Rect | undefined): number {
+  const longSide = footprint ? Math.max(footprint.w, footprint.h) : 0;
+  let p = 0;
+  for (const s of spaces) {
+    if (s.type !== 'corridor') continue;
+    const r = s.rect;
+    if (!r || !(r.w > 0) || !(r.h > 0)) continue;
+    const ar = Math.max(r.w, r.h) / Math.min(r.w, r.h);
+    p += Math.max(0, ar - P17_CORRIDOR_AR) * 0.5;
+    if (longSide > 0) p += Math.max(0, Math.max(r.w, r.h) / longSide - P17_CORRIDOR_LEN_FRACTION) * 2;
+  }
+  return p;
+}
+
+/**
+ * Largest contiguous uncovered floor-envelope area (grid scan + BFS, deterministic),
+ * penalized only beyond the small-void allowance. Parking/yard/balcony spaces count
+ * as intentional open area and cover the grid like rooms do.
+ */
+function contiguousVoidPenalty(fl: Floor): number {
+  const fp = fl.footprint;
+  if (!fp || !(fp.w > 0) || !(fp.h > 0)) return 0;
+  const cols = Math.floor(fp.w / P17_VOID_CELL);
+  const rows = Math.floor(fp.h / P17_VOID_CELL);
+  if (cols < 1 || rows < 1 || cols * rows > 250000) return 0; // absurd footprint — skip scan
+  const covered = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = fp.x + (c + 0.5) * P17_VOID_CELL;
+      const y = fp.y + (r + 0.5) * P17_VOID_CELL;
+      let inside = false;
+      for (const s of fl.spaces) {
+        const rect = s.rect;
+        if (rect && x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h) { inside = true; break; }
+        const poly = (s as any).polygon;
+        if (Array.isArray(poly) && poly.length >= 3 && pointInPolygon({ x, y }, poly)) { inside = true; break; }
+      }
+      if (inside) covered[r * cols + c] = 1;
+    }
+  }
+  // BFS for the largest uncovered component (4-neighbourhood); size is order-independent.
+  const seen = new Uint8Array(cols * rows);
+  const queue = new Int32Array(cols * rows);
+  let largest = 0;
+  for (let start = 0; start < covered.length; start++) {
+    if (covered[start] || seen[start]) continue;
+    let head = 0, tail = 0, count = 0;
+    seen[start] = 1; queue[tail++] = start;
+    while (head < tail) {
+      const idx = queue[head++];
+      count++;
+      const r = Math.floor(idx / cols), c = idx % cols;
+      if (r > 0 && !covered[idx - cols] && !seen[idx - cols]) { seen[idx - cols] = 1; queue[tail++] = idx - cols; }
+      if (r + 1 < rows && !covered[idx + cols] && !seen[idx + cols]) { seen[idx + cols] = 1; queue[tail++] = idx + cols; }
+      if (c > 0 && !covered[idx - 1] && !seen[idx - 1]) { seen[idx - 1] = 1; queue[tail++] = idx - 1; }
+      if (c + 1 < cols && !covered[idx + 1] && !seen[idx + 1]) { seen[idx + 1] = 1; queue[tail++] = idx + 1; }
+    }
+    if (count > largest) largest = count;
+  }
+  const voidM2 = largest * P17_VOID_CELL * P17_VOID_CELL;
+  return Math.max(0, voidM2 - P17_VOID_ALLOWANCE_M2) * P17_VOID_WEIGHT;
+}
+
+/** Total P17-B quality penalty across all floors. Deterministic, geometry-derived. */
+function architecturalQualityPenalty(c: LayoutCandidate): number {
+  let p = 0;
+  for (const fl of c.floors ?? []) {
+    p += communalOversizePenalty(fl.spaces ?? []);
+    p += corridorProportionPenalty(fl.spaces ?? [], fl.footprint);
+    p += contiguousVoidPenalty(fl);
+  }
+  return p;
 }
 
 export function rankVector(c: LayoutCandidate): RankingVector {
@@ -149,6 +266,7 @@ export function rankVector(c: LayoutCandidate): RankingVector {
       serviceExposure * 2 +
       privacyWeak * 1.5 +
       windowColl * 1,
+    architecturalQualityPenalty: architecturalQualityPenalty(c),
   };
 }
 
@@ -172,6 +290,12 @@ export function compareCandidates(a: LayoutCandidate, b: LayoutCandidate): numbe
   if (va.circulationFailures !== vb.circulationFailures) return va.circulationFailures - vb.circulationFailures;
   // Tier 7: furniture clearance
   if (va.furnitureFailures !== vb.furnitureFailures) return va.furnitureFailures - vb.furnitureFailures;
+  // Tier 7b (P17-B): architectural-form quality — contiguous floor voids, communal
+  // oversizing, corridor proportion. Continuous geometry-derived penalties; a plan
+  // with a large walled-off void or an absorbing oversized living room ranks below
+  // a form-sound alternative. Never creates hard findings and never rejects alone.
+  if (Math.abs(va.architecturalQualityPenalty - vb.architecturalQualityPenalty) > 1e-6)
+    return va.architecturalQualityPenalty - vb.architecturalQualityPenalty;
   // Tier 8: architectural efficiency — area deviation, then waste, then circ ratio
   if (Math.abs(va.roomAreaDeviation - vb.roomAreaDeviation) > 1e-6) return va.roomAreaDeviation - vb.roomAreaDeviation;
   if (Math.abs(va.wastedArea - vb.wastedArea) > 1e-6) return va.wastedArea - vb.wastedArea;
