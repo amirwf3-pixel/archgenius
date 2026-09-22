@@ -148,8 +148,10 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   const perFloorLayerNames: string[] = [];
   const baseLayerNames = LAYERS.map(l => l.name);
   // For each floor and each base wall/room/opening/stair layer, create A-FLOOR-{n}-{base}
+  // P16-D-B: A-TEXT joins the floor namespace so general annotations (floor headers,
+  // stair build notes) keep per-floor routing in every layer scheme.
   const floorSpecificDefs: { name: string; color: number; linetype: string; lineweight: number; description: string }[] = [];
-  const baseForFloorLayers = ['A-WALL-EXT','A-WALL-INT','A-WALL-CORE','A-WALL-SERVICE','A-WALL-PART','A-DOOR','A-WINDOW','A-STAIR','A-STAIR-TREAD','A-STAIR-DIR','A-ROOM','A-DIMS','A-PARKING','A-BLDG-OUT','A-SITE','A-SETBACK'];
+  const baseForFloorLayers = ['A-WALL-EXT','A-WALL-INT','A-WALL-CORE','A-WALL-SERVICE','A-WALL-PART','A-DOOR','A-WINDOW','A-STAIR','A-STAIR-TREAD','A-STAIR-DIR','A-ROOM','A-TEXT','A-DIMS','A-PARKING','A-BLDG-OUT','A-SITE','A-SETBACK'];
   for (let fi = 0; fi < floorCount; fi++) {
     for (const baseName of baseForFloorLayers) {
       const baseDef = LAYERS.find(l => l.name === baseName);
@@ -348,10 +350,11 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
       }
     }
 
-    // Floor header — exactly one label per floor.
+    // Floor header — exactly one label per floor. Routed to A-TEXT (P16-D-B):
+    // it is a drawing-wide annotation, not a room label.
     {
       const fr = fl.footprint;
-      textB(fr.x, fr.y + fr.h + yOff + 0.5, `FLOOR ${fi} — ELEV ${fl.elevation.toFixed(2)} m`, 0.3, 'A-ROOM', 0);
+      textB(fr.x, fr.y + fr.h + yOff + 0.5, `FLOOR ${fi} — ELEV ${fl.elevation.toFixed(2)} m`, 0.3, 'A-TEXT', 0);
     }
 
     // Walls — double-line faces with opening gaps, on their discipline layer.
@@ -472,7 +475,7 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
       const cy0Bottom = r0.y + floorOffset(0);
       const cyTop = (candidate.floors[candidate.floors.length - 1].footprint.y + candidate.floors[candidate.floors.length - 1].footprint.h) + floorOffset(candidate.floors.length - 1);
       emitLine(cx0, cy0Bottom, cx0, cyTop, 'A-STAIR');
-      emitText(cx0 + 0.2, cyTop + 0.2, `STAIR STACK — ${candidate.floors.length} FLOORS — Whole-Building`, 0.25, 'A-STAIR-DIR', 0);
+      emitText(cx0 + 0.2, cyTop + 0.2, `STAIR STACK — ${candidate.floors.length} FLOORS — Whole-Building`, 0.25, 'A-TEXT', 0);
     }
   }
 
@@ -768,11 +771,12 @@ function drawStairOn(
   const bottom = flights.reduce((p: any, c: any) => (c.startPoint.y < p.startPoint.y ? c : p), flights[0]);
   text(bottom.startPoint.x - 0.25, bottom.startPoint.y - 0.05, 'UP', 0.18, 'A-STAIR-DIR');
   // Annotate the ACTUAL generated geometry (per-flight going and riser).
+  // Routed to A-TEXT (P16-D-B): a build note, kept off the direction-arrow layer.
   const actRiser = flights[0]?.riserHeight ?? st.riserHeight ?? st.riser ?? 0;
   const actTread = Math.min(...flights.map((f: any) => f.treadDepth ?? st.tread ?? st.treadDepth ?? 0.28));
   const lvl = st.floor ?? 0;
   const label = `${flights.length}F · ${st.totalRisers}R @ ${(actRiser*100).toFixed(0)}×${(actTread*100).toFixed(0)} · F${lvl}→F${lvl + 1} ${st.type}${st.entrySide ? ' ent.' + st.entrySide : ''}`;
-  text(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, 'A-STAIR-DIR');
+  text(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, 'A-TEXT');
 }
 
 /** Up/down direction arrow with open V head. */
@@ -872,7 +876,7 @@ function drawTitleBlockV2(
     ['A-WALL-EXT', 'WALL, EXTERIOR'], ['A-WALL-INT', 'WALL, INTERIOR'], ['A-WALL-CORE', 'WALL, CORE'],
     ['A-DOOR', 'DOOR + SWING'], ['A-WINDOW', 'WINDOW'], ['A-STAIR', 'STAIR / LANDING'],
     ['A-PARKING', 'PARKING STALL'],
-    ['A-DIMS', 'DIMENSIONS (m)'], ['A-SITE', 'SITE BOUNDARY'], ['A-GRID', 'GRID / AXIS'],
+    ['A-DIMS', 'DIMENSIONS (m)'], ['A-TEXT', 'GENERAL NOTES'], ['A-SITE', 'SITE BOUNDARY'], ['A-GRID', 'GRID / AXIS'],
   ];
   const lx = tx0 - 3.6, lyTop = ty0 + 0.35;
   emitText(lx, lyTop + 0.35, 'LEGEND', 0.2, 'A-TITLE');
@@ -1011,7 +1015,7 @@ export function validateDXFStructure(dxf: string): { ok: boolean; errors: string
   if (!lines.includes('ENTITIES')) errors.push('Missing ENTITIES section');
   if (!lines.includes('EOF')) errors.push('Missing EOF');
   if (!lines.includes('LAYER')) errors.push('Missing LAYER table');
-  for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR', 'A-GRID', 'A-AXIS', 'A-NORTH', 'A-TITLE', 'A-PARKING', 'A-SITE', 'A-SETBACK', 'A-BLDG-OUT']) {
+  for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-TEXT', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR', 'A-GRID', 'A-AXIS', 'A-AXIS-TEXT', 'A-NORTH', 'A-TITLE', 'A-PARKING', 'A-SITE', 'A-SETBACK', 'A-BLDG-OUT']) {
     if (!lines.includes(name)) errors.push(`Missing layer entry: ${name}`);
   }
   // Minimal R12: ONLY $ACADVER AC1009 is required. All other HEADER variables ($VIEWCTR,$VIEWSIZE,$EXTMIN,$EXTMAX,$LIMMIN,$LIMMAX,$VIEWDIR)

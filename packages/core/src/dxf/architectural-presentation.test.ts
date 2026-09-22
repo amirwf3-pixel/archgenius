@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { writeDXF, validateDXFStructure } from './writer.js';
+import { LAYERS } from './layers.js';
 import { createProject, exportDXF } from '../pipeline.js';
 import { legacyGenerate } from '../testutil/legacy-generate.js';
 
@@ -311,5 +312,153 @@ describe('P16-D emitter deduplication and hardened validator', () => {
       expect(validation.errors).toHaveLength(0);
       expect(dxf.trim().endsWith('EOF')).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P16-D-B — layer & lineweight presentation
+// ---------------------------------------------------------------------------
+
+/** Layer names defined in the TABLES/LAYER section (not entity references). */
+function layerTableNames(dxf: string): Set<string> {
+  const lines = dxf.split(CR);
+  const names = new Set<string>();
+  let inLayerTable = false;
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    const code = lines[i].trim();
+    const value = lines[i + 1];
+    if (code === '0' && value === 'TABLE') { inLayerTable = false; continue; }
+    if (code === '2' && !inLayerTable && names.size === 0 && value === 'LAYER') { inLayerTable = true; continue; }
+    if (code === '0' && value === 'ENDTAB') { inLayerTable = false; continue; }
+    if (inLayerTable && code === '0' && value === 'LAYER') {
+      // next pair is (2, name)
+      if (i + 3 < lines.length && lines[i + 2].trim() === '2') names.add(lines[i + 3]);
+    }
+  }
+  return names;
+}
+
+describe('P16-D-B architectural layer roster and separation', () => {
+  const cand = fixture();
+
+  it('every defined layer carries a coherent AIA-style name', () => {
+    const dxf = writeDXF(cand, 'p16d-b');
+    const names = layerTableNames(dxf);
+    expect(names.size).toBeGreaterThan(20);
+    for (const n of names) {
+      expect(n === '0' || /^A-/.test(n), `layer ${n} breaks the A- naming convention`).toBe(true);
+    }
+    for (const must of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-STAIR', 'A-DIMS', 'A-TEXT', 'A-SITE', 'A-PARKING', 'A-ROOM', 'A-TITLE']) {
+      expect(names.has(must), `missing discipline layer ${must}`).toBe(true);
+    }
+  });
+
+  it('presentation categories stay separated: walls / openings / dims / text / stairs / site / parking', () => {
+    const dxf = writeDXF(cand, 'p16d-b');
+    const used = [...layerSet(dxf)];
+    const family = (base: string) => used.filter(l => l === base || l.startsWith(`A-FLOOR-`) && l.endsWith(`-${base}`));
+    for (const base of ['A-WALL-EXT', 'A-DOOR', 'A-WINDOW', 'A-DIMS', 'A-STAIR', 'A-SITE', 'A-PARKING']) {
+      expect(family(base).length, `no entities on ${base} family`).toBeGreaterThan(0);
+    }
+    // Text annotation family exists and is disjoint from the geometry families.
+    const textLayers = new Set(family('A-TEXT'));
+    for (const base of ['A-WALL-EXT', 'A-DOOR', 'A-WINDOW', 'A-STAIR', 'A-SITE', 'A-PARKING']) {
+      for (const l of family(base)) expect(textLayers.has(l)).toBe(false);
+    }
+  });
+
+  it('floor headers and stair build notes are on A-TEXT, not room/stair-arrow layers', () => {
+    const dxf = writeDXF(cand, 'p16d-b');
+    const ents = entities(dxf);
+    const floorHeaders = ents.filter(e => e.type === 'TEXT' && /^FLOOR \d+ - ELEV /.test(e.codes[1] ?? ''));
+    expect(floorHeaders.length).toBeGreaterThanOrEqual(cand.floors.length);
+    for (const h of floorHeaders) expect(h.codes[8]).toMatch(/A-TEXT$/);
+    const stairNotes = ents.filter(e => e.type === 'TEXT' && /\d+R @ \d+x\d+/.test(e.codes[1] ?? ''));
+    expect(stairNotes.length).toBeGreaterThan(0);
+    for (const n of stairNotes) {
+      expect(n.codes[8]).toMatch(/A-TEXT$/);
+      expect(n.codes[8]).not.toMatch(/A-STAIR-DIR$/);
+    }
+    // Direction-arrow layer now carries only arrow labels ('UP', stack marker left A-TEXT above).
+    const dirTexts = ents.filter(e => e.type === 'TEXT' && /A-STAIR-DIR$/.test(e.codes[8] ?? ''));
+    expect(dirTexts.length).toBeGreaterThan(0);
+    for (const t of dirTexts) expect(t.codes[1]).toMatch(/^UP$/);
+    // Room labels + areas stay on A-ROOM.
+    const areaTexts = ents.filter(e => e.type === 'TEXT' && /^\d+\.\d m2$/.test(e.codes[1] ?? ''));
+    expect(areaTexts.length).toBeGreaterThan(0);
+    for (const a of areaTexts) expect(a.codes[8]).toMatch(/A-ROOM$/);
+    // Dimension values stay with the dimension lines on A-DIMS.
+    const dimTexts = ents.filter(e => e.type === 'TEXT' && /^\d+\.\d\d m( F\d+)?$/.test(e.codes[1] ?? ''));
+    expect(dimTexts.length).toBeGreaterThan(0);
+    for (const d of dimTexts) expect(d.codes[8]).toMatch(/A-DIMS$/);
+  });
+
+  it('A-TEXT is floor-namespaced in every scheme and validates clean', () => {
+    for (const layerScheme of ['both', 'none', 'generic'] as const) {
+      const dxf = writeDXF(cand, 'p16d-b', { layerScheme });
+      const v = validateDXFStructure(dxf);
+      expect(v.ok, `scheme ${layerScheme}: ${v.errors.join('; ')}`).toBe(true);
+      const used = layerSet(dxf);
+      const textLayers = [...used].filter(l => l === 'A-TEXT' || l.endsWith('-A-TEXT'));
+      expect(textLayers.length, `scheme ${layerScheme}: A-TEXT family present`).toBeGreaterThan(0);
+      if (layerScheme === 'none') {
+        // Floor headers/notes are per-floor named; the whole-building stair-stack
+        // label is cross-floor context and legitimately stays on the (always
+        // defined) base A-TEXT layer — same convention as its old A-STAIR-DIR home.
+        expect([...used].some(l => l === 'A-FLOOR-0-A-TEXT')).toBe(true);
+        expect([...used].some(l => l === 'A-FLOOR-1-A-TEXT')).toBe(true);
+      }
+      if (layerScheme === 'generic') {
+        expect([...used].some(l => l === 'A-TEXT')).toBe(true);
+      }
+    }
+  });
+
+  it('legend documents the annotation layer', () => {
+    const dxf = writeDXF(cand, 'p16d-b');
+    expect(textValues(dxf)).toContain('A-TEXT - GENERAL NOTES');
+  });
+});
+
+describe('P16-D-B lineweight pen ladder', () => {
+  it('all lineweights are valid ISO 128 / AutoCAD pen values', () => {
+    const PENS = new Set([0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211]);
+    for (const l of LAYERS) {
+      expect(PENS.has(l.lineweight), `${l.name} lineweight ${l.lineweight} is not a standard pen`).toBe(true);
+    }
+  });
+
+  it('weights descend monotonically: structure > walls > openings > partitions > annotation > helpers', () => {
+    const lw = (n: string) => LAYERS.find(l => l.name === n)!.lineweight;
+    // structure pen shared by exterior walls, core walls and columns
+    expect(lw('A-WALL-EXT')).toBe(50);
+    expect(lw('A-WALL-CORE')).toBe(50);
+    expect(lw('A-COLUMN')).toBe(50);
+    // enclosure ladder — opening symbols (pen 25) plot at/above partitions (pen 20)
+    expect(lw('A-WALL-EXT')).toBeGreaterThan(lw('A-WALL-INT'));
+    expect(lw('A-WALL-INT')).toBeGreaterThan(lw('A-WALL-PART'));
+    expect(lw('A-DOOR')).toBeGreaterThanOrEqual(lw('A-WALL-PART'));
+    expect(lw('A-WALL-PART')).toBeGreaterThan(lw('A-DIMS'));
+    // annotation sits below all wall linework
+    for (const wall of ['A-WALL-EXT', 'A-WALL-INT', 'A-WALL-CORE', 'A-WALL-SERVICE', 'A-WALL-PART']) {
+      for (const anno of ['A-DIMS', 'A-TEXT', 'A-ROOM', 'A-STAIR-DIR']) {
+        expect(lw(wall), `${wall} must plot heavier than ${anno}`).toBeGreaterThan(lw(anno));
+      }
+    }
+    // helpers are lighter than every wall layer; halftone fills lightest of all
+    for (const wall of ['A-WALL-EXT', 'A-WALL-INT', 'A-WALL-CORE']) {
+      expect(lw(wall)).toBeGreaterThan(lw('A-GRID'));
+      expect(lw(wall)).toBeGreaterThan(lw('A-BLDG-OUT'));
+      expect(lw(wall)).toBeGreaterThan(lw('A-HATCH'));
+    }
+    expect(lw('A-HATCH')).toBe(9);
+  });
+
+  it('mapping refinements keep output deterministic and structurally valid', () => {
+    const cand = fixture();
+    const a = writeDXF(cand, 'p16d-b');
+    const b = writeDXF(cand, 'p16d-b');
+    expect(a).toBe(b);
+    expect(validateDXFStructure(a).ok).toBe(true);
   });
 });
