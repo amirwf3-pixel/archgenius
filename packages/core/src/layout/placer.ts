@@ -307,6 +307,48 @@ export function buildAccessFrame(footprint: Rect, side: 'north'|'south'|'east'|'
   };
 }
 
+/**
+ * P17-E: deterministic spec-accounting over placed (world) rects. For each program
+ * spec (paired with the first same-type room not yet consumed): how much of its
+ * minimum width/length/area is MISSING, and how many specs found no room at all.
+ * Used ONLY to pick between assembly variants of the SAME placement system; the
+ * M2 hard gate still decides feasibility exactly as before.
+ */
+/** Pairwise rect-overlap test over placed rooms (corridors included); O(n²), n ≈ rooms per floor. */
+function hasOverlappingRooms(spaces: Space[]): boolean {
+  const rs = spaces.filter(s => s.rect && s.rect.w > 0 && s.rect.h > 0).map(s => s.rect as Rect);
+  for (let i = 0; i < rs.length; i++)
+    for (let j = i + 1; j < rs.length; j++) {
+      const a = rs[i], b = rs[j];
+      const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (ox > 0.02 && oy > 0.02) return true; // 2 cm tolerance absorbs wall-thickness rounding
+    }
+  return false;
+}
+
+function specAccounting(specs: PlacedSpec[], spaces: Space[]): { missing: number; deficit: number } {
+  const byType = new Map<string, Space[]>();
+  for (const s of spaces) {
+    if (!s.rect) continue;
+    const arr = byType.get(s.type as string) ?? [];
+    arr.push(s);
+    byType.set(s.type as string, arr);
+  }
+  let missing = 0;
+  let deficit = 0;
+  for (const spec of specs) {
+    const arr = byType.get(spec.type);
+    if (!arr || arr.length === 0) { missing++; continue; }
+    const s = arr.shift()!;
+    const minW = spec.minWidth ?? 1;
+    const minL = spec.minLength ?? spec.minWidth ?? 1;
+    const minA = spec.minArea ?? 0;
+    deficit += Math.max(0, minW - s.rect.w) + Math.max(0, minL - s.rect.h) + Math.max(0, minA - s.rect.w * s.rect.h);
+  }
+  return { missing, deficit };
+}
+
 export function placeSpaces(
   footprint: Rect,
   specs: PlacedSpec[],
@@ -316,13 +358,35 @@ export function placeSpaces(
 ): { spaces: Space[]; corridors: Space[]; explanation: string[] } {
   const frame = buildAccessFrame(footprint, accessSide);
   if (!frame) return placeSpacesFacingSouth(footprint, specs, strategy, accessSide, mkSpace);
-  const out = placeSpacesFacingSouth(frame.to(footprint), specs, strategy, 'south', mkSpace);
+  const framed = frame.to(footprint);
   const back = (s: Space): Space => ({ ...s, rect: frame.from(s.rect) });
-  return {
+  const assemble = (out: { spaces: Space[]; corridors: Space[]; explanation: string[] }, note: string[]) => ({
     spaces: out.spaces.map(back),
     corridors: out.corridors.map(back),
-    explanation: [`P16-B orientation frame: "${accessSide}" access normalized to frame-south; layout mapped back after placement.`, ...out.explanation],
-  };
+    explanation: [`P16-B orientation frame: "${accessSide}" access normalized to frame-south; layout mapped back after placement.`, ...note, ...out.explanation],
+  });
+  const standard = assemble(placeSpacesFacingSouth(framed, specs, strategy, 'south', mkSpace), []);
+
+  // P17-E — EAST/WEST depth-dominant sites: the rotated frame is wide-shallow
+  // (street-perpendicular depth = the site's short side), the regime where the stacked
+  // entry sequence starves the living field. In that case ALSO assemble the public band
+  // as ONE side-by-side row along the street (same splitter, same rules) and adopt it
+  // ONLY when it strictly satisfies more program minimums in the mapped rects.
+  // Ties keep the standard orientation, so behavior is strictly additive: a variant
+  // wins by earning it, never by assumption. The M2 gate is untouched.
+  if ((accessSide === 'east' || accessSide === 'west') && framed.w > framed.h) {
+    const stdAcc = specAccounting(specs, [...standard.spaces, ...standard.corridors]);
+    if (stdAcc.missing > 0) {
+      const rowOut = placeSpacesFacingSouth(framed, specs, strategy, 'south', mkSpace, true);
+      const row = assemble(rowOut, [`P17-E shallow-band row: street-perpendicular depth ${framed.h.toFixed(1)} m — public band tiled side-by-side along the street.`]);
+      const rowAcc = specAccounting(specs, [...row.spaces, ...row.corridors]);
+      // Refuse an overlapping row assembly outright — a variant that trades missing
+      // rooms for collisions is never an improvement (M2 would reject it anyway).
+      if (rowAcc.missing === 0 && rowAcc.deficit <= stdAcc.deficit + 1e-9 &&
+          !hasOverlappingRooms([...row.spaces, ...row.corridors])) return row;
+    }
+  }
+  return standard;
 }
 
 function placeSpacesFacingSouth(
@@ -331,6 +395,7 @@ function placeSpacesFacingSouth(
   strategy: CandidateStrategy,
   accessSide: 'north'|'south'|'east'|'west',
   mkSpace: (type: SpaceType, r: Rect, label: string, id: string, zone: Zone) => Space,
+  shallowBand = false,
 ): { spaces: Space[]; corridors: Space[]; explanation: string[] } {
   void accessSide;
 
@@ -1577,6 +1642,19 @@ function placeSpacesFacingSouth(
               { x: eastX, y: publicRect.y, w: eastW, h: publicH },
               dining.placedLabel, dining.placedId, 'public'));
           }
+        } else if (shallowBand) {
+          // P17-E: shallow public band (wide street-facing frame) — the band cannot host a
+          // stacked entry sequence plus the living field, so the ENTIRE public program
+          // tiles side-by-side in one full-depth row along the street: entry rooms, living,
+          // dining, guest-wc. Reuses the existing min-aware binary splitter (same rules as
+          // every other row); no second placement system, no new HARD semantics. Deterministic.
+          const rowCells: PlacedSpec[] = [...publicUnplaced];
+          if (guestWc !== undefined) rowCells.push(guestWc);
+          rowCells.push(living, dining);
+          placed.push(...splitBinary(publicRect, rowCells, mkSpace, 'public', 'x'));
+          publicUnplaced.length = 0;
+          guestWc = undefined;
+          explanation.push(`P17-E shallow-band public row: ${rowCells.map(c => c.type).join(' + ')} tiled side-by-side (band depth ${publicRect.h.toFixed(2)} m).`);
         } else {
           livingW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, livingW));
           // Phase 15 M4: cap the shared row height at the cells' program-driven maximum
