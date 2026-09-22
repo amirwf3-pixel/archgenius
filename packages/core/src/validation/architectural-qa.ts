@@ -25,6 +25,10 @@ function f(code: string, severity: Finding['severity'], msg: string, entityIds?:
   return { code, severity, message: msg, entityIds, bbox } as Finding;
 }
 
+// P16-C: habitable types for which daylight depth is a quality concern (soft only —
+// daylight regulation itself stays MBH4-DYL-001's hard exterior-wall check).
+const DAYLIGHT_QUALITY_TYPES = new Set(['living', 'dining', 'bedroom', 'master-bedroom', 'guest-room', 'family-room', 'kitchen']);
+
 export function validateArchitecturalQA(floor: Floor): Finding[] {
   const findings: Finding[] = [];
 
@@ -46,6 +50,13 @@ export function validateArchitecturalQA(floor: Floor): Finding[] {
     }
     if (ratio > 3.5 && s.type !== 'corridor') {
       findings.push(f('ROOM_BAD_PROPORTION', 'soft', `Room "${s.label}" has bad proportion: ${maxSide.toFixed(2)} / ${minSide.toFixed(2)} = ${ratio.toFixed(1)}.`, [s.id]));
+    }
+    // P16-C: healthy daylight depth — the 7 m window-depth ceiling cited in MBH4-DYL-001's
+    // own text, enforced here as a SOFT quality finding (the hard DYL-001 check itself stays
+    // the exterior-wall test, untouched). A deep habitable room that does have an exterior
+    // window still loses usable daylight past ~7 m, so it is ranked down, never gated.
+    if (DAYLIGHT_QUALITY_TYPES.has(s.type) && maxSide > 7.0 + 1e-3 && s.hasExteriorWall) {
+      findings.push(f('ROOM_DAYLIGHT_QUALITY', 'soft', `Room "${s.label}" is ${maxSide.toFixed(2)} m deep — beyond the 7 m healthy daylight depth from its window (quality heuristic, cf. MBH4-DYL-001).`, [s.id]));
     }
     if (s.type === 'corridor' && minSide < CORRIDOR_MIN_WIDTH - 1e-3) {
       findings.push(f('CIRC_CORRIDOR_TOO_NARROW', 'hard', `Corridor "${s.label}" width ${minSide.toFixed(2)} m below minimum ${CORRIDOR_MIN_WIDTH} m.`, [s.id]));

@@ -409,6 +409,7 @@ export const FINDING_CODE_FA: Record<string, string> = {
   PRIVACY_WEAK: 'حریم خصوصی ضعیف',
   EXCESSIVE_RESIDUAL: 'فضای باقی‌ماندهٔ بیش از حد',
   ROOM_TOO_NARROW: 'اتاق بیش‌ازحد باریک',
+  ROOM_DAYLIGHT_QUALITY: 'عمق بیش‌ازحد اتاق فراتر از عمق نورگیر',
   ROOM_BAD_PROPORTION: 'تناسب نامناسب اتاق',
   CIRCULATION_DEAD_END: 'بن‌بست سیرکولاسیون',
   CIRCULATION_EXCESSIVE: 'سیرکولاسیون بیش‌ازحد',
@@ -600,6 +601,7 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
   // --- validation/architectural-qa.ts ---
   ROOM_UNUSABLE: [{ re: /^Room "(.+)" is unusable: area ([\d.]+) m², min side ([\d.]+) m below ([\d.]+) m\.$/, fa: 'فضای «{1}» غیرقابل استفاده است: مساحت {2} مترمربع، کم‌ترین ضلع {3} متر — کمتر از حداقل {4} متر.', labels: [1] }],
   ROOM_TOO_NARROW: [{ re: /^Room "(.+)" is too narrow: min side ([\d.]+) m\.$/, fa: 'فضای «{1}» بیش از حد باریک است: کم‌ترین ضلع {2} متر.', labels: [1] }],
+  ROOM_DAYLIGHT_QUALITY: [{ re: /^Room "(.+)" is ([\d.]+) m deep — beyond the 7 m healthy daylight depth from its window \(quality heuristic, cf\. MBH4-DYL-001\)\.$/, fa: 'فضای «{1}» به عمق {2} متر می‌رسد — فراتر از عمق سالم ۷ متری نور پنجره (ملاک کیفی، ر.ک MBH4-DYL-001).', labels: [1] }],
   ROOM_BAD_PROPORTION: [{ re: /^Room "(.+)" has bad proportion: ([\d.]+) \/ ([\d.]+) = ([\d.]+)\.$/, fa: 'فضای «{1}» نسبت ابعاد نامناسب دارد: {2} / {3} = {4}.', labels: [1] }],
   CIRC_CORRIDOR_TOO_NARROW: [{ re: /^Corridor "(.+)" width ([\d.]+) m below minimum ([\d.]+) m\.$/, fa: 'عرض راهرو «{1}» برابر {2} متر است — کمتر از حداقل {3} متر.', labels: [1] }],
   CIRCULATION_EXCESSIVE: [

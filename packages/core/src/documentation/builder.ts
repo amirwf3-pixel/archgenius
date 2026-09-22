@@ -231,6 +231,7 @@ function isHeuristic(code: string): boolean {
   const heuristicCodes = new Set([
     'ROOM_TOO_NARROW',
     'ROOM_BAD_PROPORTION',
+    'ROOM_DAYLIGHT_QUALITY',
     'CIRCULATION_DEAD_END',
     'CIRCULATION_EXCESSIVE',
     'DOOR_COLLISION',

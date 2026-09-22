@@ -32,6 +32,7 @@ export interface RankingVector {
   hardCount: number;
   dimensionalSoft: number;
   proportionFailures: number;
+  daylightQualityFailures: number;
   doorFailures: number;
   hardAdjacencyFailures: number;
   circulationFailures: number;
@@ -46,6 +47,7 @@ export function rankVector(c: LayoutCandidate): RankingVector {
   let hard = 0;
   let dimensionalSoft = 0;
   let proportionFailures = 0;
+  let daylightQual = 0;
   let doorFailures = 0;
   let circFail = 0;
   let furnitureFailures = 0;
@@ -71,6 +73,9 @@ export function rankVector(c: LayoutCandidate): RankingVector {
     }
     if (code === 'ROOM_BAD_PROPORTION' || code === 'ROOM_CONSTRAINT_ASPECT_RATIO') {
       proportionFailures++;
+    }
+    if (code === 'ROOM_DAYLIGHT_QUALITY') {
+      daylightQual++;
     }
     if (
       code === 'OPENING_DOOR_SWING_BLOCKED' ||
@@ -125,6 +130,7 @@ export function rankVector(c: LayoutCandidate): RankingVector {
     hardCount: hard,
     dimensionalSoft: dimensionalSoft + requiredMissing * 10, // weight missing essential heavily in dimensional tier
     proportionFailures,
+    daylightQualityFailures: daylightQual,
     doorFailures,
     hardAdjacencyFailures: hardAdj,
     circulationFailures: circFail,
@@ -138,6 +144,7 @@ export function rankVector(c: LayoutCandidate): RankingVector {
       (1 - c.metrics.orientationSatisfaction) * 3 +
       (1 - c.metrics.privacySatisfaction) * 4 +
       badProp * 0.5 +
+      daylightQual * 0.75 +
       deadEnds * 1 +
       serviceExposure * 2 +
       privacyWeak * 1.5 +
@@ -156,6 +163,9 @@ export function compareCandidates(a: LayoutCandidate, b: LayoutCandidate): numbe
   if (va.hardAdjacencyFailures !== vb.hardAdjacencyFailures) return va.hardAdjacencyFailures - vb.hardAdjacencyFailures;
   // Tier 4: room proportions
   if (va.proportionFailures !== vb.proportionFailures) return va.proportionFailures - vb.proportionFailures;
+  // Tier 4b (P16-C): daylight quality — deep habitable rooms past the 7 m healthy
+  // window depth are ranked below proportionally sound alternatives.
+  if (va.daylightQualityFailures !== vb.daylightQualityFailures) return va.daylightQualityFailures - vb.daylightQualityFailures;
   // Tier 5: door validity
   if (va.doorFailures !== vb.doorFailures) return va.doorFailures - vb.doorFailures;
   // Tier 6: circulation

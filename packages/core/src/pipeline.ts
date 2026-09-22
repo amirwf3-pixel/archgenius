@@ -18,13 +18,21 @@ import { buildManifest } from './documentation/manifest.js';
 import type { DocumentationModel } from './documentation/model.js';
 import type { QAReport } from './documentation/report.js';
 import type { ProjectManifest } from './documentation/manifest.js';
-import { compareCandidates } from './layout/ranking.js';
+import { compareCandidates, rankVector } from './layout/ranking.js';
 
 export interface GenerateOptions {
   strategies?: CandidateStrategy[];
   projectName?: string;
   /** If true, return ALL strategies; default returns only the best-ranked. */
   allStrategies?: boolean;
+  /**
+   * P16-C: number of ranked candidates to expose in `candidates` (default 1).
+   * A runner-up is included ONLY when it adds clear value — i.e. it beats the
+   * winner on at least one ranking dimension (a genuine trade-off); a purely
+   * dominated alternative is noise, not choice. The project's full ranked
+   * candidate list is always available via `project.candidates`.
+   */
+  topCandidates?: number;
 }
 
 /**
@@ -246,13 +254,29 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
   // candidates are never ranked, never selected, never exposed as usable — they are diagnostics.
   const candidates = rankCandidatesBestFirst(usableCandidates, strategies);
   const bestCandidate = candidates[0];
-  project.candidates = usableCandidates;
+  // P16-C: the stored list is ranked best-first, so the runner-up (candidates[1])
+  // is the honest second choice wherever one exists.
+  project.candidates = candidates;
   project.selectedCandidateId = bestCandidate.id;
   project.updatedAt = Date.now();
   if (opts.allStrategies) {
-    return { project, candidates: usableCandidates, bestCandidate, infeasible: null };
+    return { project, candidates, bestCandidate, infeasible: null };
   }
-  return { project, candidates: [bestCandidate], bestCandidate, infeasible: null };
+  let wantTop = Math.max(1, Math.min(opts.topCandidates ?? 1, candidates.length));
+  if (wantTop > 1 && !addsClearValue(candidates[0], candidates[1])) wantTop = 1;
+  return { project, candidates: candidates.slice(0, wantTop), bestCandidate, infeasible: null };
+}
+
+/**
+ * P16-C: a runner-up adds clear value when it strictly beats the winner on at least
+ * one ranking dimension (all rankVector dimensions are lower-is-better). Deterministic.
+ */
+function addsClearValue(best: LayoutCandidate, second: LayoutCandidate): boolean {
+  const vb = rankVector(best), vs = rankVector(second);
+  for (const k of Object.keys(vb) as (keyof typeof vb)[]) {
+    if ((vs[k] as number) < (vb[k] as number) - 1e-6) return true;
+  }
+  return false;
 }
 
 const INFEASIBLE_MARKER_CODES = ['HARD_CONSTRAINT_INFEASIBLE_DIMENSION', 'HARD_RULE_VIOLATION'] as const;

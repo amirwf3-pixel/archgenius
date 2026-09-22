@@ -30,6 +30,39 @@ const MIN_SIDE = 1.0;
 const BATH_STRIP_H = 2.6; // corridor-edge wet strip, m
 const KITCHEN_W = 2.4;
 
+/**
+ * P16-C — Band-cell quality depth. A band cell that absorbs the WHOLE cross
+ * dimension of its band is only sound when the program actually needs that
+ * depth; on deep or narrow zones uncapped absorption produces ribbons (a
+ * 2.50×13 m "bedroom") — geometrically legal, architecturally unacceptable.
+ * The free cross extent of a full-band cell is capped at the LARGEST of its
+ * contract floor (minLength / minArea), and the smallest of:
+ *   - the M4 area cap (1.75×max(target,minArea), same formula as solveBand)
+ *     divided by the cell's width,
+ *   - the existing ROOM_BAD_PROPORTION aspect bound (3.5),
+ *   - the healthy daylight depth (7 m) cited in MBH4-DYL-001's own text
+ *     (a SOFT quality cap only — DYL-001's hard check stays exterior-wall).
+ * Slack beyond the cap remains an intentional void at the band's free end —
+ * the M4 convention, restated for the column/branch paths. No dimension is
+ * special-cased: every constant mirrors an existing contract value.
+ */
+const CELL_QUALITY_MAX_ASPECT = 3.5;
+const CELL_QUALITY_DAYLIGHT_DEPTH = 7.0;
+const CELL_QUALITY_MIN_VOID = 0.6; // never manufacture a sliver void
+function cappedBandDepth(
+  spec: { minWidth?: number; minLength?: number; minArea?: number; targetArea?: number },
+  alongW: number,
+  bandExtent: number,
+): number {
+  if (!(bandExtent > 0) || !(alongW > 0)) return bandExtent;
+  const contractFloor = Math.max(spec.minLength ?? spec.minWidth ?? 1.5, 1.5, (spec.minArea ?? 0) / Math.max(alongW, 0.5));
+  const capA = Math.max((spec.minArea ?? 0) * 1.1, Math.max(spec.targetArea ?? 0, spec.minArea ?? 0) * 1.75, 0.01);
+  const want = Math.min(capA / Math.max(alongW, 0.5), CELL_QUALITY_MAX_ASPECT * alongW, CELL_QUALITY_DAYLIGHT_DEPTH);
+  let d = Math.min(bandExtent, Math.max(contractFloor, want));
+  if (bandExtent - d < CELL_QUALITY_MIN_VOID) d = bandExtent; // slack too small to read as a void — keep the tile
+  return Math.min(d, bandExtent);
+}
+
 export function zoneOf(spec: SpaceSpec): Zone {
   if (spec.zone) return spec.zone;
   switch (spec.type) {
@@ -407,6 +440,16 @@ function placeSpacesFacingSouth(
   // --- Private band: GENERIC graph-driven placement ---
   // Phase 13: Actually consume graph.clusters and placement ordering, not hard-coded bedroom branches
   const privateRect = layout.zones.private[0];
+  // P16-C: capped band cells keep contact with circulation by anchoring on the
+  // band edge facing the corridor; the intentional void always falls at the band's
+  // FREE end (M4 convention: the free end is whichever end circulation is not on).
+  const corridorBelowBand = (band: Rect): boolean => {
+    const c = layout.corridors[0];
+    if (!c || !(band.h > 0)) return false;
+    return c.y + c.h / 2 > band.y + band.h / 2;
+  };
+  const bandAnchoredY = (band: Rect, h: number): number =>
+    corridorBelowBand(band) ? Math.round((band.y + band.h - h + 1e-9) * 100) / 100 : band.y;
   if (privateRect) {
     // Collect all private specs generically from byType (not hard-coded beds/baths)
     const privateTypes = [...byType.keys()].filter(t => zoneOf({ type: t } as any) === 'private');
@@ -703,6 +746,7 @@ function placeSpacesFacingSouth(
             const totalMinH = firstMinH + secondMinH;
             let bh: number;
             let secondH: number;
+            let pairDepthCapped = false;
             if (colRect.h < totalMinH - 1e-6) {
               bh = firstMinH;
               secondH = secondMinH;
@@ -710,8 +754,22 @@ function placeSpacesFacingSouth(
               bh = Math.min(BATH_STRIP_H + 0.4, colRect.h * 0.35);
               bh = Math.max(firstMinH, Math.min(colRect.h - secondMinH, bh));
               secondH = colRect.h - bh;
+              // P16-C quality-depth cap: each stacked half takes no more than its own
+              // contract+quality need; the surplus stays intentional void at the band's
+              // free end (M4 convention) instead of becoming a 90 m² bathroom.
+              const firstWant = cappedBandDepth(first, colRect.w, colRect.h - secondMinH);
+              if (firstWant < bh - 1e-9) {
+                bh = Math.max(firstMinH, firstWant);
+                secondH = Math.max(secondMinH, Math.min(colRect.h - bh, cappedBandDepth(second, colRect.w, colRect.h - bh)));
+                pairDepthCapped = true;
+              }
             }
-            const firstRect = { x: colRect.x, y: colRect.y, w: colRect.w, h: bh };
+            // P16-C: with the cap active, pack the stack against the corridor-facing band
+            // edge so corridor contact survives; void falls at the band's free end.
+            const packBottom = pairDepthCapped && corridorBelowBand(colRect);
+            const firstRect = packBottom
+              ? { x: colRect.x, y: Math.round((colRect.y + colRect.h - secondH - bh + 1e-9) * 100) / 100, w: colRect.w, h: bh }
+              : { x: colRect.x, y: colRect.y, w: colRect.w, h: bh };
             const firstSpace = mkSpace(first.type, firstRect, first.placedLabel, first.placedId, 'private');
             firstSpace.rect.x = Math.round((firstSpace.rect.x+1e-9)*100)/100;
             firstSpace.rect.y = Math.round((firstSpace.rect.y+1e-9)*100)/100;
@@ -719,14 +777,18 @@ function placeSpacesFacingSouth(
             firstSpace.rect.h = Math.round((firstSpace.rect.h+1e-9)*100)/100;
             firstSpace.polygon = rCorners(firstSpace.rect); firstSpace.area = rArea(firstSpace.rect);
             const secondY = Math.round((firstSpace.rect.y + firstSpace.rect.h + 1e-9)*100)/100;
-            const secondRect = { x: colRect.x, y: secondY, w: colRect.w, h: Math.max(secondH, colRect.h - (secondY - colRect.y)) };
+            // P16-C: when the quality cap fired, the second half keeps its capped depth
+            // and the surplus stays a band-end void; legacy fill-up preserved otherwise.
+            const secondRect = { x: colRect.x, y: secondY, w: colRect.w, h: pairDepthCapped ? secondH : Math.max(secondH, colRect.h - (secondY - colRect.y)) };
             placed.push(firstSpace);
             placed.push(mkSpace(second.type, secondRect, second.placedLabel, second.placedId, 'private'));
           } else {
             const single = cl.rooms[0];
             const singleMinH = Math.max(single.minLength ?? single.minWidth ?? 2.0, 1.0);
-            const finalH = Math.max(colRect.h, singleMinH);
-            placed.push(mkSpace(single.type, { x: colRect.x, y: colRect.y, w: colRect.w, h: finalH }, single.placedLabel, single.placedId, 'private'));
+            // P16-C: never deeper than the cell's contract+quality need — slack beyond
+            // the cap stays intentional void at the band's free end (M4 convention).
+            const finalH = Math.max(cappedBandDepth(single, finalColW, colRect.h), singleMinH);
+            placed.push(mkSpace(single.type, { x: colRect.x, y: bandAnchoredY(privateRect, finalH), w: colRect.w, h: finalH }, single.placedLabel, single.placedId, 'private'));
           }
         }
         explanation.push(`Phase13 fallback generic: placed ${genericClusters.length} clusters as columns, min preserved totalMinW=${totalMinW.toFixed(2)} ≤ ${privateRect.w.toFixed(2)}, bottom touches corridor, top may violate direct access — explicit HARD code=HARD_CONSTRAINT_INFEASIBLE_DIMENSION`);
@@ -1051,7 +1113,11 @@ function placeSpacesFacingSouth(
                 }
                 const firstSpec = cl.rooms[0];
                 const secondSpec = cl.rooms[1];
-                const leftRect: Rect = { x: colRect.x, y: colRect.y, w: bedW, h: colRect.h };
+                // P16-C quality-depth cap: side-by-side halves take only their contract+
+                // quality depth (anchored on the corridor edge); surplus stays intentional
+                // void at the band's free end — ribbons like 2.5×13 m are never a success.
+                const bedRH = cappedBandDepth(firstSpec, bedW, colRect.h);
+                const leftRect: Rect = { x: colRect.x, y: bandAnchoredY(privateRect, bedRH), w: bedW, h: bedRH };
                 const firstSpace = mkSpace(firstSpec.type, leftRect, firstSpec.placedLabel, firstSpec.placedId, 'private');
                 firstSpace.rect.x = Math.round((firstSpace.rect.x+1e-9)*100)/100;
                 firstSpace.rect.y = Math.round((firstSpace.rect.y+1e-9)*100)/100;
@@ -1059,12 +1125,18 @@ function placeSpacesFacingSouth(
                 firstSpace.rect.h = Math.round((firstSpace.rect.h+1e-9)*100)/100;
                 firstSpace.polygon = rCorners(firstSpace.rect); firstSpace.area = rArea(firstSpace.rect);
                 const rightX = Math.round((firstSpace.rect.x + firstSpace.rect.w + 1e-9)*100)/100;
-                const rightRect: Rect = { x: rightX, y: colRect.y, w: Math.max(bathW, colRect.w - (rightX - colRect.x)), h: colRect.h };
+                const rightW = Math.max(bathW, colRect.w - (rightX - colRect.x));
+                const rightRH = cappedBandDepth(secondSpec, rightW, colRect.h);
+                const rightRect: Rect = { x: rightX, y: bandAnchoredY(privateRect, rightRH), w: rightW, h: rightRH };
                 attemptPlaced.push(firstSpace);
                 attemptPlaced.push(mkSpace(secondSpec.type, rightRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
               } else {
                 const single = cl.rooms[0];
-                attemptPlaced.push(mkSpace(single.type, colRect, single.placedLabel, single.placedId, 'private'));
+                // P16-C: capped at the cell's contract+quality depth; slack stays an
+                // intentional void at the band's free end (M4 convention).
+                const singleH = cappedBandDepth(single, colRect.w, colRect.h);
+                const singleRect: Rect = { x: colRect.x, y: bandAnchoredY(privateRect, singleH), w: colRect.w, h: singleH };
+                attemptPlaced.push(mkSpace(single.type, singleRect, single.placedLabel, single.placedId, 'private'));
               }
             }
           }
@@ -1102,6 +1174,8 @@ function placeSpacesFacingSouth(
 
         if (bestPlacement) {
           placed.push(...bestPlacement.spaces);
+          const bandVoid = Math.max(0, privateRect.w * privateRect.h - bestPlacement.spaces.reduce((a, s) => a + s.area, 0));
+          if (bandVoid > 0.5) explanation.push(`Phase16-C quality-depth cap: ${bandVoid.toFixed(2)} m² of band slack kept as intentional void at the band's free end (M4 convention)`);
           explanation.push(`Phase13 bounded search: ${bestPlacement.attempts} attempt(s) (max ${MAX_CONSTRAINT_PLACEMENT_ATTEMPTS}), valid=${bestPlacement.valid}, clusters=${genericClusters.length}, mustTouchCorridor respected, separation evaluated via sharedWallEdges`);
         }
       }
@@ -1143,7 +1217,13 @@ function placeSpacesFacingSouth(
 
   const kitchen = take('kitchen');
   if (kitchen && kitchenRect) {
-    placed.push(mkSpace('kitchen', kitchenRect, kitchen.placedLabel, kitchen.placedId, 'service'));
+    // P16-C: a service pocket that is deeper than the kitchen's contract+quality need
+    // stops force-feeding that depth into the room — capped here, slack stays band void.
+    const kitH = cappedBandDepth(kitchen, kitchenRect.w, kitchenRect.h);
+    const kitRect = kitH < kitchenRect.h - 1e-9
+      ? { x: kitchenRect.x, y: bandAnchoredY(kitchenRect, kitH), w: kitchenRect.w, h: kitH }
+      : kitchenRect;
+    placed.push(mkSpace('kitchen', kitRect, kitchen.placedLabel, kitchen.placedId, 'service'));
   }
   const stair = take('stair-hall');
   if (stair) {
