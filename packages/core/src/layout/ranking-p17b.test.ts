@@ -166,8 +166,9 @@ describe('P17-B corridor proportion penalty', () => {
     rooms[4] = space('corridor', { x: 0, y: 8.5, w: 20, h: 1.5 }, { area: 30, targetArea: 12 });
     rooms[5] = space('entrance', { x: 14, y: 0, w: 6, h: 8.5 }, { area: 51, targetArea: 48 });
     const p = rankVector(candidate('strip', [rooms])).architecturalQualityPenalty;
-    // AR term: (13.33 − 8) × 0.5 ≈ 2.67; length term: (1.0 − 0.75) × 2 = 0.5
-    expect(p).toBeCloseTo((20 / 1.5 - 8) * 0.5 + 0.5, 3);
+    // P17-D refined the corridor ramps (continuous quadratics, merged systems):
+    // AR term 0.06·(13.33 − 8)² ≈ 1.707; span term 4·(1.0 − 0.75)² = 0.25
+    expect(p).toBeCloseTo(0.06 * (20 / 1.5 - 8) ** 2 + 4 * 0.25 ** 2, 3);
     expect(compareCandidates(HEALTHY(), candidate('strip', [rooms]))).toBeLessThan(0);
   });
 

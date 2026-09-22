@@ -58,10 +58,16 @@ const P17_COMMUNAL_TYPES = new Set(['living', 'dining', 'family-room']);
 const P17_COMMUNAL_RATIO = 2.0;
 /** Penalty weight per unit of target-ratio beyond the threshold. */
 const P17_COMMUNAL_WEIGHT = 1.5;
-/** Corridor aspect ratio above this is penalized (corridors are exempt from room-proportion rules). */
+/** P17-D: corridor aspect ratio at/below this is proportionate — zero penalty (corridors are exempt from room-proportion rules). */
 const P17_CORRIDOR_AR = 8.0;
-/** Corridor longer than this fraction of the floor's long side is penalized (single-loaded strips). */
+/** P17-D: continuous quadratic ramp weight for aspect ratio beyond P17_CORRIDOR_AR. */
+const P17_CORRIDOR_AR_WEIGHT = 0.06;
+/** P17-D: corridor dominant run beyond this fraction of the floor's long side is excessive circulation. */
 const P17_CORRIDOR_LEN_FRACTION = 0.75;
+/** P17-D: continuous quadratic ramp weight for span beyond P17_CORRIDOR_LEN_FRACTION. */
+const P17_CORRIDOR_LEN_WEIGHT = 4.0;
+/** P17-D: corridor rects overlapping/touching within this eps are ONE system (no double counting). */
+const P17_CORRIDOR_MERGE_EPS = 1e-6;
 /** Contiguous uncovered floor-envelope areas up to this size are intentional voids — never penalized. */
 const P17_VOID_ALLOWANCE_M2 = 8;
 /** Penalty weight per m² of contiguous void beyond the allowance. */
@@ -83,21 +89,72 @@ function communalOversizePenalty(spaces: Space[]): number {
 }
 
 /**
- * Corridor proportion penalty: aspect ratio beyond 8 and length beyond 75% of the
- * floor's long side. Continuous; never rejects a plan by itself.
+ * P17-D corridor proportion penalty, scored once per connected corridor SYSTEM:
+ * overlapping/touching corridor rects (spine + entrance patch, L-spur) are merged
+ * first, so one circulation system is never double-counted across its segments.
+ *
+ * Per system: effective run L = dominant bbox side; effective width W = exact
+ * union area / L (robust for L-shaped systems); aspect ratio AR = L / W.
+ * Both terms are continuous quadratic ramps, exactly zero at/below the thresholds:
+ *   AR term:   0.06 · max(0, AR − 8)²
+ *   span term: 4.0 · max(0, L / floorLongSide − 0.75)²
+ * A proportionate corridor pays nothing; a legitimately long spine on a deep
+ * floor pays only a little; sliver or redundant circulation ramps up smoothly.
+ * Ranking only — never rejects a plan by itself. Deterministic.
  */
 function corridorProportionPenalty(spaces: Space[], footprint: Rect | undefined): number {
+  const rects = spaces
+    .filter(s => s.type === 'corridor' && s.rect && s.rect.w > 0 && s.rect.h > 0)
+    .map(s => s.rect as Rect);
+  if (rects.length === 0) return 0;
   const longSide = footprint ? Math.max(footprint.w, footprint.h) : 0;
   let p = 0;
-  for (const s of spaces) {
-    if (s.type !== 'corridor') continue;
-    const r = s.rect;
-    if (!r || !(r.w > 0) || !(r.h > 0)) continue;
-    const ar = Math.max(r.w, r.h) / Math.min(r.w, r.h);
-    p += Math.max(0, ar - P17_CORRIDOR_AR) * 0.5;
-    if (longSide > 0) p += Math.max(0, Math.max(r.w, r.h) / longSide - P17_CORRIDOR_LEN_FRACTION) * 2;
+  for (const comp of corridorSystems(rects)) {
+    // exact union area + bbox via coordinate compression (few rects; deterministic)
+    const xs = [...new Set(comp.flatMap(r => [r.x, r.x + r.w]))].sort((a, b) => a - b);
+    const ys = [...new Set(comp.flatMap(r => [r.y, r.y + r.h]))].sort((a, b) => a - b);
+    let area = 0;
+    for (let i = 0; i + 1 < xs.length; i++)
+      for (let j = 0; j + 1 < ys.length; j++) {
+        const cx = (xs[i] + xs[i + 1]) / 2;
+        const cy = (ys[j] + ys[j + 1]) / 2;
+        if (comp.some(r => cx > r.x && cx < r.x + r.w && cy > r.y && cy < r.y + r.h))
+          area += (xs[i + 1] - xs[i]) * (ys[j + 1] - ys[j]);
+      }
+    const bw = xs[xs.length - 1] - xs[0];
+    const bh = ys[ys.length - 1] - ys[0];
+    const run = Math.max(bw, bh);
+    if (!(run > 0) || !(area > 0)) continue;
+    const width = area / run;
+    const ar = run / width;
+    p += P17_CORRIDOR_AR_WEIGHT * Math.max(0, ar - P17_CORRIDOR_AR) ** 2;
+    if (longSide > 0)
+      p += P17_CORRIDOR_LEN_WEIGHT * Math.max(0, run / longSide - P17_CORRIDOR_LEN_FRACTION) ** 2;
   }
   return p;
+}
+
+/** Connected corridor systems: rects overlapping or touching within eps form one system (BFS; order-independent result). */
+function corridorSystems(rects: Rect[]): Rect[][] {
+  const n = rects.length;
+  const seen = new Uint8Array(n);
+  const systems: Rect[][] = [];
+  const touches = (a: Rect, b: Rect) =>
+    a.x <= b.x + b.w + P17_CORRIDOR_MERGE_EPS && b.x <= a.x + a.w + P17_CORRIDOR_MERGE_EPS &&
+    a.y <= b.y + b.h + P17_CORRIDOR_MERGE_EPS && b.y <= a.y + a.h + P17_CORRIDOR_MERGE_EPS;
+  for (let i = 0; i < n; i++) {
+    if (seen[i]) continue;
+    const comp = [rects[i]];
+    seen[i] = 1;
+    for (let k = 0; k < comp.length; k++)
+      for (let j = 0; j < n; j++) {
+        if (seen[j] || !touches(comp[k], rects[j])) continue;
+        seen[j] = 1;
+        comp.push(rects[j]);
+      }
+    systems.push(comp);
+  }
+  return systems;
 }
 
 /**
