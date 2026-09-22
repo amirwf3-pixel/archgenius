@@ -13,6 +13,11 @@
  * package is part of the released v1.0.1 and must not be modified.
  */
 
+import pkg from '../../../package.json';
+
+/** Release version — derived from the root package.json, never hard-coded here. */
+export const APP_VERSION: string = pkg.version;
+
 export const LOCALE = 'fa';
 export const DIR: 'rtl' = 'rtl';
 
@@ -24,7 +29,7 @@ const fa = {
   // Header
   appName: 'آرچ‌جنیوس',
   headerTagline: 'سامانهٔ طراحی پارامتریک معماری',
-  headerMeta: 'نسخه v1.0.1 · آفلاین · خروجی DXF R12 · تولید قطعی (Deterministic)',
+  headerMeta: 'نسخه v{version} · آفلاین · خروجی DXF R12 · تولید قطعی (Deterministic)',
 
   // Project section
   sectionProject: 'پروژه',
@@ -308,31 +313,51 @@ export const SPACE_TYPE_FA: Record<string, string> = {
  * Translate a core-generated English space label ("Bedroom 2", "Stair Hall", …)
  * to Persian. Machine ids and unknown labels are returned unchanged.
  */
-export function spaceLabel(label: string): string {
+/** English core space label -> Persian (shared by spaceLabel and finding messages). */
+const ROOM_LABEL_EN_FA: Record<string, string> = {
+  'Living Room': 'نشیمن',
+  'Dining': 'غذاخوری',
+  'Kitchen': 'آشپزخانه',
+  'Master Bedroom': 'اتاق خواب مستر',
+  'Master Bathroom': 'سرویس مستر',
+  'Guest WC': 'توالت مهمان',
+  'Guest Room': 'اتاق مهمان',
+  'Family Room': 'اتاق خانواده',
+  'Corridor': 'راهرو',
+  'Stair Hall': 'هال راه‌پله',
+  'Elevator Hall': 'هال آسانسور',
+  'Entrance': 'ورودی',
+  'Foyer': 'لابی ورودی',
+  'Storage': 'انباری',
+  'Balcony': 'بالکن',
+  'Yard': 'حیاط',
+  'Parking': 'پارکینگ',
+  'Utility': 'فضای تأسیسات',
+};
+
+/** Persian label for one core space label; unknown labels are returned unchanged. */
+function roomLabelFa(label: string): string {
   if (!label) return label;
-  let m = label.match(/^(Bedroom|Bathroom) (\d+)$/);
+  const m = label.match(/^(Bedroom|Bathroom) (\d+)$/);
   if (m) return m[1] === 'Bedroom' ? `اتاق خواب ${m[2]}` : `سرویس بهداشتی ${m[2]}`;
-  const known: Record<string, string> = {
-    'Living Room': 'نشیمن',
-    'Dining': 'غذاخوری',
-    'Kitchen': 'آشپزخانه',
-    'Master Bedroom': 'اتاق خواب مستر',
-    'Master Bathroom': 'سرویس مستر',
-    'Guest WC': 'توالت مهمان',
-    'Guest Room': 'اتاق مهمان',
-    'Family Room': 'اتاق خانواده',
-    'Corridor': 'راهرو',
-    'Stair Hall': 'هال راه‌پله',
-    'Elevator Hall': 'هال آسانسور',
-    'Entrance': 'ورودی',
-    'Foyer': 'لابی ورودی',
-    'Storage': 'انباری',
-    'Balcony': 'بالکن',
-    'Yard': 'حیاط',
-    'Parking': 'پارکینگ',
-    'Utility': 'فضای تأسیسات',
-  };
-  return known[label] ?? label;
+  return ROOM_LABEL_EN_FA[label] ?? label;
+}
+
+export function spaceLabel(label: string): string {
+  return roomLabelFa(label);
+}
+
+/**
+ * P22-D: replace quoted English room labels inside (already-Persian) finding
+ * messages — e.g. اتاق "Bedroom 1" -> اتاق «اتاق خواب 1» — keeping all
+ * dimensions and technical values verbatim. Applied only to MBH4-ROOM-* codes.
+ */
+function applyRoomLabels(code: string | null | undefined, s: string): string {
+  if (!code || !code.startsWith('MBH4-ROOM') || !s) return s;
+  return s.replace(/"([A-Za-z][A-Za-z0-9 ]{0,40})"/g, (full, label: string) => {
+    const fa = roomLabelFa(label.trim());
+    return fa === label.trim() ? full : `«${fa}»`;
+  });
 }
 
 /** Persian label for a space's machine `type` (unknown types fall back to the code). */
@@ -455,6 +480,44 @@ export const FINDING_CODE_FA: Record<string, string> = {
   'MUN-PARK-001': 'پارکینگ — الزامات شهرداری',
   'MUN-SET-001': 'عقب‌نشینی — الزامات شهرداری',
   'THN-000': 'قواعد تهران — مورد عمومی',
+  // P22-D: titles for the remaining engine-emitted codes (machine codes stay untranslated)
+  'CONSTRAINT_DIRECT_ACCESS': 'الزام دسترسی مستقیم',
+  'CONSTRAINT_MUST_SEPARATED': 'الزام جداسازی فضاها',
+  'CONSTRAINT_PREFER_ADJACENT': 'ترجیح هم‌جواری فضاها',
+  'CONSTRAINT_PREFER_SEPARATED': 'ترجیح جداسازی فضاها',
+  'CONSTRAINT_PRIVACY': 'ترجیح حریم فضاها',
+  'DEF-PARK-001': 'پارکینگ — پیش‌فرض نرم‌افزار',
+  'DEF-SETBACK-001': 'عقب‌نشینی — پیش‌فرض نرم‌افزار',
+  'GEO_ROOMS_OVERLAP': 'هم‌پوشانی فضاها',
+  'HARD_CONSTRAINT_INFEASIBLE_DIMENSION': 'نقض حداقل‌های هندسه',
+  'HARD_RULE_VIOLATION': 'نقض قاعدهٔ سخت',
+  'INTERFLOOR_ACCESS_MISSING': 'نبود دسترسی بین‌طبقه‌ای',
+  'INTERFLOOR_CIRCULATION_MISSING': 'نبود سیرکولاسیون بین‌طبقه‌ای',
+  'INTERFLOOR_ENTRANCE_VERTICAL_LONG': 'مسیر عمودی ورودی بیش‌ازحد بلند',
+  'INTERFLOOR_PRIVACY_WEAK': 'حریم ضعیف بین‌طبقه‌ای',
+  'REG_FAKE_TEST': 'قاعدهٔ آزمایشی (تست)',
+  'ROOM_CONSTRAINT_MIN_AREA': 'حداقل مساحت فضا',
+  'ROOM_CONSTRAINT_MAX_AREA': 'حداکثر مساحت فضا',
+  'ROOM_CONSTRAINT_MIN_WIDTH': 'حداقل عرض فضا',
+  'ROOM_CONSTRAINT_MIN_LENGTH': 'حداقل طول فضا',
+  'ROOM_CONSTRAINT_ASPECT_RATIO': 'نسبت ابعاد فضا',
+  'SITE_FURNITURE_OUTSIDE_BUILDABLE': 'مبلمان بیرون از محدودهٔ ساخت',
+  'SITE_FURNITURE_OUTSIDE_ROOM': 'مبلمان بیرون از فضای خود',
+  'SITE_GEOM_INVALID': 'هندسهٔ نامعتبر سایت',
+  'SITE_INSUFFICIENT_BUILDABLE': 'سطح قابل‌ساخت ناکافی',
+  'SITE_INVALID_POLYGON': 'چندضلعی نامعتبر سایت',
+  'SITE_OPENING_HOST_WALL_OUTSIDE': 'دیوار میزبان بازشو بیرون از محدودهٔ ساخت',
+  'SITE_OPENING_OUTSIDE_BUILDABLE': 'بازشو بیرون از محدودهٔ ساخت',
+  'SITE_PARKING_OUTSIDE_SITE': 'پارکینگ بیرون از محدودهٔ سایت',
+  'SITE_PARKING_OVERLAPS_BUILDING': 'هم‌پوشانی پارکینگ و بنا',
+  'SITE_STAIR_FLIGHT_OUTSIDE_BUILDABLE': 'پلکان بیرون از محدودهٔ ساخت',
+  'SITE_STAIR_OUTSIDE_BUILDABLE': 'راه‌پله بیرون از محدودهٔ ساخت',
+  'SITE_WALL_OUTSIDE_BUILDABLE': 'دیوار بیرون از محدودهٔ ساخت',
+  'SITE_ZERO_AREA': 'سایت با مساحت صفر',
+  'STACKING_INEFFICIENT': 'چیدمان ناکارآمد طبقات',
+  'VERT_CIRC_INVALID_STAIR': 'راه‌پلهٔ عمودی نامعتبر',
+  'VERT_CIRC_MISALIGNED': 'ناهم‌ترازی راه‌پله در طبقات',
+  'VERT_CIRC_MISSING_STAIR': 'نبود راه‌پلهٔ عمودی',
 };
 
 /** Persian title for a finding code/ruleId; unknown codes fall back to the code itself. */
@@ -820,13 +883,13 @@ export function findingMessageFa(f: { code?: string | null; message: string }): 
   if (!msg) return msg;
   for (const rule of FINDING_MESSAGE_FA[f.code ?? ''] ?? []) {
     const out = applyMsgRule(rule, msg);
-    if (out !== null) return out;
+    if (out !== null) return applyRoomLabels(f.code, out);
   }
   for (const rule of UNIVERSAL_MESSAGE_FA) {
     const out = applyMsgRule(rule, msg);
-    if (out !== null) return out;
+    if (out !== null) return applyRoomLabels(f.code, out);
   }
-  return msg;
+  return applyRoomLabels(f.code, msg);
 }
 
 /** Persian translation of the INFEASIBLE explanation (fixed frame;

@@ -19,7 +19,7 @@ import { Collapsible, SeverityBadge, StatusNote, IconCube, IconCheckCircle, Icon
 const INITIAL_VISIBLE = 8;
 
 function TechLine({ f }: { f: Finding }) {
-  const parts = [f.code ?? f.ruleId ?? '', f.ruleId && f.code ? f.ruleId : ''].filter(Boolean);
+  const parts = [...new Set([f.code ?? f.ruleId ?? '', f.ruleId && f.code ? f.ruleId : ''].filter(Boolean))];
   return (
     <div className="finding-tech ltr" dir="ltr" title={t('technicalDetails')}>
       {parts.join(' · ')}

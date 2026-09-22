@@ -16,6 +16,7 @@ import {
   t, tf, faNum, DIR, LOCALE, spaceLabel, spaceTypeFromLabel,
   STRATEGY_FA, STAIR_TYPE_FA, SHAPE_FA, SIDE_FA,
   translateEngineError, translateInfeasibleExplanation,
+  APP_VERSION,
 } from './i18n';
 
 interface FormState {
@@ -261,7 +262,7 @@ export function App() {
           : t('resultSuccess'));
       }
     } catch (e: any) {
-      setError(e?.message ?? String(e));
+      setError(translateEngineError(e?.message ?? String(e)));
     } finally {
       setBusy(false);
       setStage('idle');
@@ -369,7 +370,7 @@ export function App() {
             <p className="text-[10px] text-ink-400 truncate">{t('headerTagline')}</p>
           </div>
         </div>
-        <div className="text-[10px] sm:text-xs text-ink-400 shrink-0 hidden sm:block">{t('headerMeta')}</div>
+        <div className="text-[10px] sm:text-xs text-ink-400 shrink-0 hidden sm:block">{tf('headerMeta', { version: APP_VERSION })}</div>
       </header>
 
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 lg:overflow-hidden">
