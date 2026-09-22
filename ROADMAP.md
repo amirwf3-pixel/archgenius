@@ -83,13 +83,20 @@
 | 12 | Constraint-aware architectural placement |
 | 13 | Generic constraint solver & graph-driven placement |
 | 13.1 | Hardening: negative dimensions eliminated, feasibility-first placement, invalid candidates excluded from ranking |
-| 13.2 | **Final development phase** — infeasible result semantics: nullable bestCandidate, explicit INFEASIBLE state, downstream output guards |
+| 13.2 | Infeasible result semantics: nullable bestCandidate, explicit INFEASIBLE state, downstream output guards |
+| 15 | M1–M8 hardening: 560-case stress matrix, honest NC taxonomy, bounded search, program completeness, vertical-core coherence |
+| 16 | P16-A parking band reservation + stall placement · P16-B all-side entrance orientation · P16-C proportions/quality depth · P16-D DXF presentation QA |
+| 17 | P17-A architectural audit · P17-B form-quality ranking · P17-C per-floor envelope compaction · P17-D corridor-quality ranking · P17-E east/west access · P17-F final architectural QA (0 CRITICAL / 0 HIGH / 5 MEDIUM) |
 
-## V1.0 release state
+## Release state (v1.1.0)
 
-- Development **frozen** after Phase 13.2. No Phase 14.
-- Independent release QA: `VERIFIED WITH MEDIUM FINDINGS` (two non-blocking findings, documented in [RELEASE_NOTES.md](RELEASE_NOTES.md)).
-- Known partial capabilities at V1.0: parking stall placement (0 stalls in verified probes), elevator (not implemented), apartment (first slice), regulation explorer UI, project dashboard, CI pipeline.
+- Phases 15 (stress/validation hardening), 16 (parking, all-side access, proportions, DXF
+  presentation) and 17 (architectural quality program, audit-closed) are **complete**.
+- Independent release QA: `VERIFIED WITH MEDIUM FINDINGS` at V1.0 (M1/M2 still documented);
+  final architectural QA at v1.1.0 (P17-F): 0 CRITICAL, 0 HIGH, 5 MEDIUM known limitations
+  (see [RELEASE_NOTES.md](RELEASE_NOTES.md) and README §10).
+- Known partial capabilities: elevator (not implemented), apartment (first slice), regulation
+  explorer UI, project dashboard, CI pipeline. Parking is implemented since P16-A.
 
 ## Non-goals (for the foreseeable future)
 - Image/PDF/DXF import

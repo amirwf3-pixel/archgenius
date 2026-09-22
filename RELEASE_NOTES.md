@@ -1,3 +1,70 @@
+# ArchGenius V1.1.0 — Release Notes
+
+**Version:** 1.1.0 · **State:** Release · **Branch:** `arena/01a0c87d-archgenius` · **Base:** v1.0.2 (`274aa32`)
+**Scope:** architectural quality program (Phase 16 A–D, Phase 17 A–F). No changes to the DXF
+architecture, regulations, feasibility semantics, or validators. First release since v1.0.2
+(DXF R12 hardening, 2026-09-19).
+
+## What's new since v1.0.2
+
+### Phase 16 — parking, access, proportions, drawing quality
+- **P16-A — parking placement (was: known limitation "0 stalls"):** the access-side parking band
+  (aisle + stall depth) is reserved BEFORE room slicing, guarded by a 72% program-headroom rule;
+  perpendicular/parallel stalls are placed with street access. When the geometry cannot host the
+  band, the reservation is refused and parking is reported honestly (never crushing rooms into
+  slivers). Every feasible battery case requesting parking places exactly the requested count.
+- **P16-B — all-side access:** entrance recovery is access-aware; the vestibule is carved on the
+  real street edge for N/S/E/W access via the orientation frame (street normalized to
+  frame-south, layout mapped back).
+- **P16-C — room proportions / quality depth:** proportion-aware sizing with an intentional-void
+  convention at band free ends; ranking depth cap.
+- **P16-D — DXF presentation QA:** professional pen-ladder lineweights, furniture and sanitary
+  annotation layers (A-FURN, A-SANITARY), grid/axis/north/title sheets (A-GRID, A-AXIS, A-NORTH,
+  A-TITLE), per-floor namespaces, duplicate suppression. (See docs/DXF_ENGINE.md.)
+
+### Phase 17 — final architectural quality program
+- **P17-A — independent audit:** established the systemic defect baselines (corridor AR 8–14,
+  oversized communal rooms, floor-envelope residuals, east/west NC gap).
+- **P17-B — architectural-form ranking (ranking only):** deterministic penalties for contiguous
+  floor voids (> 8 m² grid-BFS), communal oversizing (> 2× target), and corridor proportion;
+  a new architecturalQualityPenalty vector component after the furniture tier.
+- **P17-C — per-floor envelope compaction:** each floor's declared footprint is compacted to its
+  placed geometry (occupied bbox + wall pad, clipped to the buildable rect) with safe fallback
+  keeping the original envelope; deep-narrow envelope 177→127 m² (northern void eliminated);
+  audited quality penalties −84%/−58% on the audited defect cases.
+- **P17-D — corridor quality:** the corridor term scores connected corridor SYSTEMS once with
+  continuous quadratic ramps (AR > 8, span > 75% of the floor long side); proportionate
+  corridors pay zero, deep-site spines pay little, slivers ramp up smoothly.
+- **P17-E — east/west access on depth-dominant sites:** east/west NC count 344→331/332 (+13/+12
+  valid plans) by assembling the public band as one side-by-side row along the street for wide
+  frames — adopted only when it strictly fixes missing program without new deficits or overlaps.
+  Genuinely impossible geometry stays honest NC with deterministic reasons.
+- **P17-F — final architectural QA (audit only):** 15 rendered scenarios, wall-level entrance
+  verification, DXF/validator cross-check. Result: **0 CRITICAL, 0 HIGH, 5 MEDIUM** known
+  limitations (communal oversizing on wide plans, door-swing soft findings, large intentional
+  residuals on wide/L plans, multi-floor circulation ratio ~36%, minimum-sized wet cells) plus
+  LOW observations — all documented in README §10. No further engineering subphase required.
+
+## Verification at release (this tree, `8045a60` + docs/version bumps)
+
+- Core: **847/847 tests** (45 files) · Web: **64/64** · typecheck 0 errors · web build 320 modules.
+- 560-case deterministic battery (single run): **160 feasible / 400 NC / 0 hard-invalid winners /
+  0 harness errors**; DXF sample **126/126 valid + byte-deterministic**; NC proven-genuine 77/400.
+- Representative regression probes: deep-narrow compaction intact (6.0×21.2 m envelope), corridor
+  penalty 1.462 on the audited deep-narrow plan, east/west entrances on the requested facades,
+  multi-floor stair rects identical across levels, parking stalls exact.
+
+## Compliance language (unchanged posture)
+
+No "guaranteed compliance", "municipality approved", or legal/construction claims. Automated
+validation (HARD/SOFT/ADVISORY findings) is an engineering aid, **not** a substitute for review
+by licensed professionals. Iranian code rules carry Tier-1 source evidence; municipal values
+remain REQUIRES_SOURCE_VERIFICATION. See README §7.
+
+---
+
+## Historical — V1.0.0 release notes (frozen after Phase 13.2 era)
+
 # ArchGenius V1.0 — Release Notes
 
 **Version:** 1.0.0 · **State:** Release Candidate · **Branch:** `arena/01a0b849-archgenius`
