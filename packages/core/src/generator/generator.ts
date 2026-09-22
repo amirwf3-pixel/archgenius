@@ -53,6 +53,7 @@ import {
   isOrthogonal,
 } from '../geometry/polygon-ops.js';
 import { createRectangleRoomPolygon, roomPolygonToBoundingRect } from '../geometry/room-polygon.js';
+import { applyFloorCompaction } from '../layout/compaction.js';
 
 export const ALL_STRATEGIES: CandidateStrategy[] = [
   'area-efficiency',
@@ -615,6 +616,19 @@ function buildFloorSiteAware(
 
   if (level === 0) explanations.push(`Entrance placed on the ${access} facade — site shape ${input.site.shape}.`);
   explanations.push(`Furniture footprints placed: ${furniture.length}. Phase 11 polygon canonical, rect compatibility, shapeType rectangle default, editing/locking foundation.`);
+  // P17-C: compact the declared floor envelope to the actually-placed geometry.
+  // The footprint used to stay the full buildable rect, leaving program-sized
+  // interiors counted as built (the P17-A residual-void defect). Rooms, cores,
+  // parking and walls are untouched — only the declared envelope shrinks to
+  // honestly contain them; the fallback keeps the original envelope when the
+  // shrink is unsafe. Site/buildable authority and per-floor cores unchanged.
+  {
+    const before = floor.footprint;
+    if (applyFloorCompaction(floor)) {
+      const a = floor.footprint;
+      explanations.push(`Envelope compacted to placed geometry: ${a.w.toFixed(2)}x${a.h.toFixed(2)} m (was ${before.w.toFixed(2)}x${before.h.toFixed(2)} m) — P17-C.`);
+    }
+  }
   return floor;
 }
 
