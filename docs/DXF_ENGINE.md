@@ -2,8 +2,9 @@
 
 Status: P16-D-A/B/C/D complete. This document describes the **actual current**
 DXF output pipeline. For the historical R12 black-screen diagnosis see
-`docs/DXF_R12_COMPATIBILITY.md` (note: the header has since been reduced further —
-today only `$ACADVER` is emitted).
+`docs/DXF_R12_COMPATIBILITY.md` (the conservative initial-view profile was briefly
+reduced to only `$ACADVER` in 00a6b57; Phase 22-B restored the envelope-derived
+view variables and the VPORT-first table after real-world blank-open reports).
 
 ## 1. Overview
 

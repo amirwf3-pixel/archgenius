@@ -3,6 +3,18 @@
 ## 1. Goal
 Emit genuine R12 ASCII DXF with visible, editable modelspace geometry (walls/rooms/doors/windows/furniture/stairs/dims/text) inside a sane envelope. The browser download path (Blob via `writeDXF`) must be byte-identical to `exportDXF()` string and render without black/empty view in AutoCAD.
 
+## 1.5 Status update (Phase 22-B, 2026-09)
+
+The initial-view profile described below was briefly removed by commit 00a6b57
+("minimal header" experiment), which re-introduced the black/empty AutoCAD open
+(generated report below for the historical record). Phase 22-B restored it in
+`packages/core/src/dxf/writer.ts`: $INSBASE, $EXTMIN/$EXTMAX, $LIMMIN/$LIMMAX,
+$VIEWCTR/$VIEWSIZE, $VIEWDIR (0,0,1), $LUNITS 2 — computed from the emitted-entity
+envelope — plus the VPORT-first table with *ACTIVE. The genuinely invalid R13+
+variables ($DWGCODEPAGE, $SCREENSIZE, $INSUNITS, $MEASUREMENT) remain forbidden.
+The VPORT record omits the optional 73/74 flags so the LTYPE dash-X regression
+guards (which ban 49/73/74 across TABLES) stay intact and untouched.
+
 ## 2. Root Cause — Why Browser Download Was Black/Empty (diagnosed 2026-09-19)
 
 ### Header R13+ variables in AC1009
