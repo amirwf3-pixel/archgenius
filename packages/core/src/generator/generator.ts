@@ -332,42 +332,54 @@ function buildFloorSiteAware(
   // their arrival from the stair/core, not a fabricated front door (pre-M3 this produced
   // "phantom upper-floor entrances" on multi-floor plans).
   const floorHasEntranceSpec = placedSpecs.some(s => s.type === 'entrance');
+  // P16-B: recovery is access-aware — the "front" is the real street edge of
+  // sliceRect, not min-y; the vestibule strip is carved against that edge.
+  const accessEdge = input.site.accessSide;
+  const touchesFront = (r: Rect): boolean =>
+    accessEdge === 'south' ? r.y <= sliceRect.y + EPS
+    : accessEdge === 'north' ? r.y + r.h >= sliceRect.y + sliceRect.h - EPS
+    : accessEdge === 'west' ? r.x <= sliceRect.x + EPS
+    : r.x + r.w >= sliceRect.x + sliceRect.w - EPS;
+  const carveVestibule = (host: { rect: Rect; polygon?: any; area?: number }, depth: number): { entr: Rect; rest: Rect } | null => {
+    const r = host.rect;
+    if (accessEdge === 'west' || accessEdge === 'east') {
+      const d = Math.min(depth, r.w);
+      if (r.w <= d + 0.9) return null;
+      const x = accessEdge === 'west' ? r.x : r.x + r.w - d;
+      return { entr: { x, y: r.y, w: d, h: r.h }, rest: accessEdge === 'west' ? { x: r.x + d, y: r.y, w: r.w - d, h: r.h } : { x: r.x, y: r.y, w: r.w - d, h: r.h } };
+    }
+    const d = Math.min(depth, r.h);
+    if (r.h <= d + 0.9) return null;
+    const y = accessEdge === 'north' ? r.y + r.h - d : r.y;
+    return { entr: { x: r.x, y, w: Math.min(1.8, r.w), h: d }, rest: accessEdge === 'north' ? { x: r.x, y: r.y, w: r.w, h: r.h - d } : { x: r.x, y: r.y + d, w: r.w, h: r.h - d } };
+  };
   if (!entrancePlaced && floorHasEntranceSpec) {
-    const foyer = repaired.spaces.find(s => (s.type === 'foyer' || s.type === 'corridor') && s.rect.y <= sliceRect.y + EPS);
+    const foyer = repaired.spaces.find(s => (s.type === 'foyer' || s.type === 'corridor') && touchesFront(s.rect));
     if (foyer) {
-      const spurH = Math.min(1.5, foyer.rect.h * 0.4);
-      // Phase 13.1: feasibility-first — never create negative height
-      if (foyer.rect.h > spurH + 0.9) {
+      const cut = carveVestibule(foyer, 1.5);
+      if (cut && rectInsidePolygon(cut.entr, buildableBoundary, 1e-3)) {
         const entrId = nextId('entrance');
-        const entrRect: Rect = { x: foyer.rect.x, y: foyer.rect.y, w: Math.min(1.8, foyer.rect.w), h: spurH };
-        if (rectInsidePolygon(entrRect, buildableBoundary, 1e-3)) {
-          repaired.spaces.push(mkSpace('entrance', entrRect, 'Entrance', entrId, 'public'));
-          const newFoyerRect: Rect = { x: foyer.rect.x, y: foyer.rect.y + spurH, w: foyer.rect.w, h: foyer.rect.h - spurH };
-          foyer.rect = newFoyerRect;
-          foyer.polygon = createRectangleRoomPolygon(newFoyerRect);
-          foyer.area = polygonArea(foyer.polygon);
-          entrancePlaced = true;
-          explanations.push('Entrance vestibule carved from corridor/foyer on the access facade — site-aware.');
-        }
+        repaired.spaces.push(mkSpace('entrance', cut.entr, 'Entrance', entrId, 'public'));
+        foyer.rect = cut.rest;
+        foyer.polygon = createRectangleRoomPolygon(cut.rest);
+        foyer.area = polygonArea(foyer.polygon);
+        entrancePlaced = true;
+        explanations.push(`Entrance vestibule carved from corridor/foyer on the ${accessEdge} facade — site-aware.`);
       }
     }
   }
   if (!entrancePlaced && floorHasEntranceSpec) {
-    const pub = repaired.spaces.find(s => s.zone === 'public' || s.type === 'living');
+    const pub = repaired.spaces.find(s => (s.zone === 'public' || s.type === 'living') && touchesFront(s.rect))
+      ?? repaired.spaces.find(s => s.zone === 'public' || s.type === 'living');
     if (pub) {
-      const eW = Math.min(1.6, pub.rect.w * 0.3);
-      const eH = Math.min(1.5, pub.rect.h * 0.3);
-      if (pub.rect.w > eW + 0.9 && pub.rect.h > eH + 0.9) {
+      const cut = carveVestibule(pub, 1.5);
+      if (cut && rectInsidePolygon(cut.entr, buildableBoundary, 1e-3)) {
         const entrId = nextId('entrance');
-        const r: Rect = { x: pub.rect.x, y: pub.rect.y, w: eW, h: eH };
-        if (rectInsidePolygon(r, buildableBoundary, 1e-3)) {
-          repaired.spaces.push(mkSpace('entrance', r, 'Entrance', entrId, 'public'));
-          const newPubRect: Rect = { x: pub.rect.x, y: pub.rect.y + eH, w: pub.rect.w, h: pub.rect.h - eH };
-          pub.rect = newPubRect;
-          pub.polygon = createRectangleRoomPolygon(newPubRect);
-          pub.area = polygonArea(pub.polygon);
-          entrancePlaced = true;
-        }
+        repaired.spaces.push(mkSpace('entrance', cut.entr, 'Entrance', entrId, 'public'));
+        pub.rect = cut.rest;
+        pub.polygon = createRectangleRoomPolygon(cut.rest);
+        pub.area = polygonArea(pub.polygon);
+        entrancePlaced = true;
       }
     }
   }
@@ -565,6 +577,7 @@ function buildFloorSiteAware(
     level, floorHeight: DEFAULT_FLOOR_HEIGHT,
     elevation: level * DEFAULT_FLOOR_HEIGHT,
     footprint: buildableRect,
+    accessSide: input.site.accessSide,
     spaces: finalSpaces, walls, openings: [],
     stairs, elevators: [], furniture, parkingStalls, parkingArea,
     parkingRequested: parkingRequested > 0 ? parkingRequested : undefined,

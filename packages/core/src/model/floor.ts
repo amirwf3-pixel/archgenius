@@ -33,4 +33,7 @@ export interface Floor {
   /** P16-A: stalls the program requested on this floor (ground floor only);
    *  the plan must place exactly this many or surface a HARD finding. */
   parkingRequested?: number;
+  /** P16-B: street side this floor's entrance must face (generator stamped;
+   *  validator enforces for ground floors). Undefined on hand-built fixtures. */
+  accessSide?: 'north'|'south'|'east'|'west';
 }

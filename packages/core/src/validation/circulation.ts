@@ -9,12 +9,81 @@
 import type { Floor } from '../model/floor.js';
 import type { Opening } from '../model/opening.js';
 import type { Finding } from './types.js';
+import { wallSide } from '../generator/openings.js';
 
 const CIRC_TYPES = new Set(['entrance', 'foyer', 'corridor', 'stair-hall', 'elevator-hall']);
 
 export function validateCirculation(floor: Floor): Finding[] {
   const findings: Finding[] = [];
   const spacesById = new Map(floor.spaces.map(s => [s.id, s]));
+
+  // --- P16-B: a ground floor must have a real exterior entrance on the
+  // street/access facade. A plan whose front door is missing (or on the wrong
+  // side) is a sealed house — never publishable, no matter that the interior
+  // door graph is connected. Same facade classification the door placer uses
+  // (wallSide over the building bbox), so generator and validator cannot
+  // disagree about which side a door is on.
+  if (floor.level === 0 && floor.accessSide && floor.spaces.length) {
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (const s of floor.spaces) {
+      bx0 = Math.min(bx0, s.rect.x); by0 = Math.min(by0, s.rect.y);
+      bx1 = Math.max(bx1, s.rect.x + s.rect.w); by1 = Math.max(by1, s.rect.y + s.rect.h);
+    }
+    const bldgBox = { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 };
+    const CIRC_OK = new Set(['entrance', 'foyer', 'corridor', 'stair-hall', 'living', 'dining']);
+    let streetDoor: Opening | undefined;
+    for (const o of floor.openings) {
+      if (o.type !== 'entrance') continue;
+      const w = floor.walls.find(x => x.id === o.wallId);
+      if (!w || w.kind !== 'exterior') continue;
+      if (wallSide(w, bldgBox) !== floor.accessSide) continue;
+      const innerId = w.spaceIds[0] ?? w.spaceIds[1];
+      const inner = innerId ? spacesById.get(innerId) : undefined;
+      if (!inner || inner.type === 'yard' || inner.type === 'parking') continue;
+      if (!CIRC_OK.has(inner.type)) { // wrong room on the street side — try next candidate
+        continue;
+      }
+      streetDoor = o;
+      break;
+    }
+    if (!streetDoor) {
+      findings.push(f('NO_STREET_ENTRANCE', 'hard',
+        `Ground floor has no usable exterior entrance door on the ${floor.accessSide} (street) facade — street -> front door -> interior circulation is mandatory.`,
+        floor.openings.filter(o => o.type === 'entrance').map(o => o.id)));
+    } else {
+      // The door's interior side must reach the rest of circulation (BFS over
+      // the interior door graph from that space).
+      const w = floor.walls.find(x => x.id === streetDoor!.wallId)!;
+      const innerId = w.spaceIds[0] ?? w.spaceIds[1];
+      if (innerId) {
+        const adj2: Record<string, Set<string>> = {};
+        for (const s of floor.spaces) adj2[s.id] = new Set();
+        for (const o of floor.openings) {
+          if (o.id === streetDoor!.id) continue; // the street door itself doesn't connect rooms
+          if (o.type !== 'door' && o.type !== 'entrance' && o.type !== 'sliding-door') continue;
+          const ww = floor.walls.find(x => x.id === o.wallId);
+          if (!ww) continue;
+          const [a, b] = ww.spaceIds;
+          if (a && b) { adj2[a].add(b); adj2[b].add(a); }
+        }
+        const seen = new Set<string>([innerId]);
+        const q = [innerId];
+        let reachesCirc = CIRC_OK.has(spacesById.get(innerId)?.type ?? '') && innerId !== undefined
+          && [...adj2[innerId] ?? []].length > 0; // an entry room with at least one interior door onward
+        while (q.length) {
+          const id = q.shift()!;
+          const sp = spacesById.get(id);
+          if (sp && (sp.type === 'corridor' || sp.type === 'foyer' || sp.type === 'stair-hall') && id !== innerId) reachesCirc = true;
+          for (const n of adj2[id] ?? []) if (!seen.has(n)) { seen.add(n); q.push(n); }
+        }
+        if (!reachesCirc) {
+          findings.push(f('NO_STREET_ENTRANCE', 'hard',
+            `Street entrance door exists but its interior space does not connect onward into the house's circulation — the entry sequence is dead-ended.`,
+            [streetDoor.id, innerId]));
+        }
+      }
+    }
+  }
   const adj: Record<string, Set<string>> = {};
   for (const s of floor.spaces) adj[s.id] = new Set();
 

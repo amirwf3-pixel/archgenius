@@ -28,6 +28,7 @@ export type FindingCode =
   | 'CIRC_ROOM_THROUGH_ROOM'
   | 'CIRC_REDUNDANT_DOOR'
   | 'CIRC_INVALID_ENTRY'
+  | 'NO_STREET_ENTRANCE'
   | 'CIRC_EXCESSIVE_PATH'
   | 'CIRC_VERTICAL_DISCONNECTED'
   // ---- Program ----

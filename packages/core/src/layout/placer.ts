@@ -239,7 +239,60 @@ function carveZones(
   return { zones, corridors, entrancePatch };
 }
 
+/**
+ * P16-B — access-orientation frame. The zone model places the entry/public band
+ * at MIN-Y (its internal notion of "front"). For N/E/W street access the whole
+ * placement runs in a mirrored/transposed axis-aligned frame in which the actual
+ * access edge becomes the frame-south edge, then the placed rects are mapped
+ * back. Same dimensions, same areas, same deterministic arithmetic — the entry
+ * sequence simply ends up on the real street facade.
+ */
+export interface OrientationFrame {
+  /** footprint mapped INTO the frame (street face at min-y). */
+  to: (r: Rect) => Rect;
+  /** rect mapped from the frame back to world plan coordinates. */
+  from: (r: Rect) => Rect;
+}
+export function buildAccessFrame(footprint: Rect, side: 'north'|'south'|'east'|'west'): OrientationFrame | null {
+  const fx = footprint.x, fy = footprint.y, fw = footprint.w, fh = footprint.h;
+  if (side === 'south') return null;
+  if (side === 'north') {
+    const mirror = (r: Rect): Rect => ({ x: r.x, y: fy + fh - (r.y + r.h), w: r.w, h: r.h });
+    return { to: mirror, from: mirror }; // involution
+  }
+  if (side === 'east') {
+    // T(x,y) = (fx + (y - fy), fy + (fx + fw) - x): east face -> frame south.
+    return {
+      to: r => ({ x: fx + (r.y - fy), y: fy + fx + fw - (r.x + r.w), w: r.h, h: r.w }),
+      from: r => ({ x: fx + fw + fy - r.y - r.h, y: r.x - fx + fy, w: r.h, h: r.w }),
+    };
+  }
+  // west: T(x,y) = (fx + fh - (y - fy) - fh ... ) -> west face becomes frame south.
+  return {
+    to: r => ({ x: fx + fh - (r.y + r.h - fy), y: fy + (r.x - fx), w: r.h, h: r.w }),
+    from: r => ({ x: r.y - fy + fx, y: fx + fh + fy - r.x - r.w, w: r.h, h: r.w }),
+  };
+}
+
 export function placeSpaces(
+  footprint: Rect,
+  specs: PlacedSpec[],
+  strategy: CandidateStrategy,
+  accessSide: 'north'|'south'|'east'|'west',
+  mkSpace: (type: SpaceType, r: Rect, label: string, id: string, zone: Zone) => Space,
+): { spaces: Space[]; corridors: Space[]; explanation: string[] } {
+  const frame = buildAccessFrame(footprint, accessSide);
+  if (!frame) return placeSpacesFacingSouth(footprint, specs, strategy, accessSide, mkSpace);
+  const out = placeSpacesFacingSouth(frame.to(footprint), specs, strategy, 'south', mkSpace);
+  const back = (s: Space): Space => ({ ...s, rect: frame.from(s.rect) });
+  return {
+    spaces: out.spaces.map(back),
+    corridors: out.corridors.map(back),
+    explanation: [`P16-B orientation frame: "${accessSide}" access normalized to frame-south; layout mapped back after placement.`, ...out.explanation],
+  };
+}
+
+function placeSpacesFacingSouth(
   footprint: Rect,
   specs: PlacedSpec[],
   strategy: CandidateStrategy,

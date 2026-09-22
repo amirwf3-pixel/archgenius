@@ -348,6 +348,8 @@ export function spaceTypeFromLabel(s: { type: string }): string {
 
 export const FINDING_CODE_FA: Record<string, string> = {
   ARCH_PROGRAM_UNPLACED: 'جایدهی‌نشدن فضای برنامه',
+  PARKING_PROGRAM_UNPLACED: 'جایدهی‌نشدن نقطهٔ پارکینگ',
+  NO_STREET_ENTRANCE: 'نبود ورودی به خیابان',
   // Geometric
   GEO_OVERLAPPING_ROOMS: 'هم‌پوشانی فضاها',
   GEO_OVERLAPPING_WALLS: 'هم‌پوشانی دیوارها',
@@ -754,6 +756,13 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
   //     diagnostic candidates whenever a topology fails to host the requested program) ---
   ARCH_PROGRAM_UNPLACED: [{ re: /^Floor (\d+): requested program room '([^']+)' not placed \(required x(\d+), placed x(\d+)\) — requested rooms are never silently dropped$/, fa: 'طبقهٔ {1}: فضای درخواستی «{2}» جایدهی نشد (تعداد خواسته {3}، جایدهی‌شده {4}) — فضاهای درخواستی هرگز به‌صورت خاموش حذف نمی‌شوند', labels: [2] }],
   PARKING_PROGRAM_UNPLACED: [{ re: /^Parking program requests (\d+) stall\(s\) but (\d+) valid stall\(s\) were placed — an unfilled parking request must never publish \(and never as an aisle-only drawing\)\.$/, fa: 'برنامهٔ پارکینگ {1} نقطه خواسته بود اما {2} نقطهٔ معتبر جایدهی شد — درخواست پارکینگ جایدهی‌نشده هرگز منتشر نمی‌شود (و هرگز به‌صورت نقشهٔ تنها-راه‌رو).', labels: [] }],
+  NO_STREET_ENTRANCE: [
+    { re: /^Ground floor has no usable exterior entrance door on the north \(street\) facade — street -> front door -> interior circulation is mandatory\.$/, fa: 'طبقهٔ همکف هیچ درب ورودی معتبری به نمای شمالی (خیابان) ندارد — مسیر خیابان ← درب ورودی ← تردد داخلی الزامی است.', labels: [] },
+    { re: /^Ground floor has no usable exterior entrance door on the south \(street\) facade — street -> front door -> interior circulation is mandatory\.$/, fa: 'طبقهٔ همکف هیچ درب ورودی معتبری به نمای جنوبی (خیابان) ندارد — مسیر خیابان ← درب ورودی ← تردد داخلی الزامی است.', labels: [] },
+    { re: /^Ground floor has no usable exterior entrance door on the east \(street\) facade — street -> front door -> interior circulation is mandatory\.$/, fa: 'طبقهٔ همکف هیچ درب ورودی معتبری به نمای شرقی (خیابان) ندارد — مسیر خیابان ← درب ورودی ← تردد داخلی الزامی است.', labels: [] },
+    { re: /^Ground floor has no usable exterior entrance door on the west \(street\) facade — street -> front door -> interior circulation is mandatory\.$/, fa: 'طبقهٔ همکف هیچ درب ورودی معتبری به نمای غربی (خیابان) ندارد — مسیر خیابان ← درب ورودی ← تردد داخلی الزامی است.', labels: [] },
+    { re: /^Street entrance door exists but its interior space does not connect onward into the house's circulation — the entry sequence is dead-ended\.$/, fa: 'درب ورودی خیابان وجود دارد اما فضای پشت آن به مسیر رفت‌وآمد خانه متصل نیست — توالی ورودی به بن‌بست خورده است.', labels: [] },
+  ],
 
   // --- validation/site.ts ---
   SITE_INVALID_POLYGON: [{ re: /^Site polygon invalid: (.*) — shape (\S+)$/, fa: 'چندضلعی سایت نامعتبر است: {1} — شکل {2}', maps: { 2: SITE_SHAPE_FA } }],

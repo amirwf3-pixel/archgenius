@@ -32,7 +32,10 @@ interface OpeningPlaced {
 }
 
 /** Returns the side (N/S/E/W) of the site exterior that a wall lies on, or null. */
-function wallSide(wall: Wall, footprint: { x: number; y: number; w: number; h: number }): AccessSide | null {
+/** P16-B: exported — the circulation validator reuses the SAME facade
+ * classification as door placement (single source of truth for "which side
+ * is this wall"). */
+export function wallSide(wall: Wall, footprint: { x: number; y: number; w: number; h: number }): AccessSide | null {
   const x = wall.start.x, y = wall.start.y;
   const endX = wall.end.x, endY = wall.end.y;
   const mx = (x + endX) / 2, my = (y + endY) / 2;
