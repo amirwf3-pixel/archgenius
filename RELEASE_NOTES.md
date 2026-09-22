@@ -1,3 +1,26 @@
+## Unreleased — Phase 18 final QA (post-v1.1.0)
+
+Final QA pass on the four remaining SOFT findings from the P17-F audit. Two were
+fixed (validator/producer precision — no HARD, threshold, or architecture changes):
+
+- **Door-swing + furniture-vs-door findings eliminated at the source.** Both
+  `OPENING_DOOR_SWING_BLOCKED` and `FURNITURE_BLOCKS_DOOR` were driven by proxy
+  heuristics (arc bounding box + 0.4 m proximity; 0.8 m furniture-center
+  distance). Both now use the exact 90° swing sector the Opening model already
+  carries (new `geometry/swing.ts`, shared by validators and the furniture
+  producer, which now runs after openings and skips swing sectors). Genuine
+  obstructions still flag; tangential/T-junction contacts stay clear.
+  Representative scenarios: both counts 0 (previously 1–4 and 1–3 per plan).
+- **Confirmed intentional (unchanged, documented):** `EXCESSIVE_RESIDUAL`
+  (P16-C/M4 intentional band-slack voids) and `CIRCULATION_EXCESSIVE` (narrow
+  multi-floor circulation ~36%) remain honest reports ranked by P17-B/P17-D.
+
+Verification: core **854/854** (46 files), web 64/64, typecheck 0 errors,
+build 321 modules, 560-case battery 160 feasible / 400 NC / 0 hard / 0 err,
+DXF 126/126 valid + deterministic.
+
+---
+
 # ArchGenius V1.1.0 — Release Notes
 
 **Version:** 1.1.0 · **State:** Release · **Branch:** `arena/01a0c87d-archgenius` · **Base:** v1.0.2 (`274aa32`)

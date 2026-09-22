@@ -87,6 +87,7 @@
 | 15 | M1–M8 hardening: 560-case stress matrix, honest NC taxonomy, bounded search, program completeness, vertical-core coherence |
 | 16 | P16-A parking band reservation + stall placement · P16-B all-side entrance orientation · P16-C proportions/quality depth · P16-D DXF presentation QA |
 | 17 | P17-A architectural audit · P17-B form-quality ranking · P17-C per-floor envelope compaction · P17-D corridor-quality ranking · P17-E east/west access · P17-F final architectural QA (0 CRITICAL / 0 HIGH / 5 MEDIUM) |
+| 18 | Final QA: exact door-swing sector geometry (swing/furniture SOFT false positives eliminated); residual/circulation findings confirmed intentional |
 
 ## Release state (v1.1.0)
 
