@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { writeDXF, validateDXFStructure } from './writer.js';
 import { LAYERS } from './layers.js';
+import { pointInPolygon } from '../geometry/polygon.js';
 import { createProject, exportDXF } from '../pipeline.js';
 import { legacyGenerate } from '../testutil/legacy-generate.js';
 
@@ -460,5 +461,157 @@ describe('P16-D-B lineweight pen ladder', () => {
     const b = writeDXF(cand, 'p16d-b');
     expect(a).toBe(b);
     expect(validateDXFStructure(a).ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P16-D-C — architectural symbols & room annotation
+// ---------------------------------------------------------------------------
+
+/** Mirror of the writer's millimetre rounding: Math.round(m * 100000) / 100. */
+const mmOf = (m: number) => Math.round(m * 100000) / 100;
+
+/** Room polygon (or rect fallback) shifted to DXF millimetre model-space coordinates. */
+function roomPolyMm(fi: number, globalMaxH: number, s: { polygon?: Array<{ x: number; y: number }> | null; rect: { x: number; y: number; w: number; h: number } }): Array<{ x: number; y: number }> {
+  const off = fi * (globalMaxH + 4) * 1000;
+  if (s.polygon && s.polygon.length >= 3) {
+    return s.polygon.map(p => ({ x: mmOf(p.x), y: mmOf(p.y) + off }));
+  }
+  const r = s.rect;
+  return [
+    { x: mmOf(r.x), y: mmOf(r.y) + off },
+    { x: mmOf(r.x + r.w), y: mmOf(r.y) + off },
+    { x: mmOf(r.x + r.w), y: mmOf(r.y + r.h) + off },
+    { x: mmOf(r.x), y: mmOf(r.y + r.h) + off },
+  ];
+}
+
+/** Shoelace area (m²) of a space — polygon when canonical, rect otherwise. */
+function spaceArea(s: { polygon?: Array<{ x: number; y: number }> | null; rect: { x: number; y: number; w: number; h: number } }): number {
+  if (s.polygon && s.polygon.length >= 3) return shoelace(s.polygon);
+  return s.rect.w * s.rect.h;
+}
+
+describe('P16-D-C room annotation is anchored inside the actual room polygon', () => {
+  const cand = fixture();
+  const globalMaxH = Math.max(...cand.floors.map(f => f.footprint.h), cand.buildableArea.h);
+
+  it('every emitted room area label sits inside its own room and quotes its true area', () => {
+    const dxf = writeDXF(cand, 'p16d-c');
+    const areaEnts = entities(dxf).filter(e => e.type === 'TEXT' && /^\d+\.\d m2$/.test(e.codes[1] ?? ''));
+    expect(areaEnts.length).toBeGreaterThan(0);
+    for (const e of areaEnts) {
+      const p = { x: Number(e.codes[10]), y: Number(e.codes[20]) };
+      let attributed = false;
+      for (let fi = 0; fi < cand.floors.length; fi++) {
+        for (const s of cand.floors[fi].spaces ?? []) {
+          const poly = roomPolyMm(fi, globalMaxH, s);
+          if (pointInPolygon(p, poly) && e.codes[1] === `${spaceArea(s).toFixed(1)} m2`) attributed = true;
+        }
+      }
+      expect(attributed, `area label "${e.codes[1]}" at (${p.x},${p.y}) is not inside its own room`).toBe(true);
+    }
+  });
+
+  it('room name labels stay inside the room polygon too', () => {
+    const dxf = writeDXF(cand, 'p16d-c');
+    const nameEnts = entities(dxf).filter(e =>
+      e.type === 'TEXT' && /A-ROOM$/.test(e.codes[8] ?? '') && (e.codes[1] ?? '').includes('. F'));
+    expect(nameEnts.length).toBeGreaterThan(0);
+    for (const e of nameEnts) {
+      const p = { x: Number(e.codes[10]), y: Number(e.codes[20]) };
+      let insideSomeRoom = false;
+      for (let fi = 0; fi < cand.floors.length; fi++) {
+        for (const s of cand.floors[fi].spaces ?? []) {
+          if (pointInPolygon(p, roomPolyMm(fi, globalMaxH, s))) insideSomeRoom = true;
+        }
+      }
+      expect(insideSomeRoom, `name label "${e.codes[1]}" at (${p.x},${p.y}) fell outside every room`).toBe(true);
+    }
+  });
+
+  it('text stays readable: 0°/90° only, bounded heights, wide rooms horizontal', () => {
+    const dxf = writeDXF(cand, 'p16d-c');
+    const roomTxt = entities(dxf).filter(e => e.type === 'TEXT' && /A-ROOM$/.test(e.codes[8] ?? ''));
+    expect(roomTxt.length).toBeGreaterThan(0);
+    for (const t of roomTxt) {
+      expect(['0', '90', undefined]).toContain(t.codes[50]);
+      const h = Number(t.codes[40]) / 1000; // DXF heights are millimetres
+      // area sub-labels render at 0.7× the governed name height
+      expect(h).toBeGreaterThanOrEqual(0.12 * 0.7 - 1e-6);
+      expect(h).toBeLessThanOrEqual(0.35 + 1e-6);
+    }
+    // The tall-narrow bedrooms run their labels along the long (vertical) axis.
+    expect(roomTxt.some(t => t.codes[50] === '90')).toBe(true);
+    // The wide-flat corridor keeps a horizontal label (reads along its long axis).
+    const corr = roomTxt.find(t => (t.codes[1] ?? '').startsWith('Corridor'));
+    expect(corr).toBeDefined();
+    expect(corr!.codes[50] ?? '0').toBe('0');
+  });
+
+  it('annotation output remains deterministic and validates clean', () => {
+    const a = writeDXF(cand, 'p16d-c');
+    expect(a).toBe(writeDXF(cand, 'p16d-c'));
+    expect(validateDXFStructure(a).ok).toBe(true);
+  });
+});
+
+describe('P16-D-C furniture and sanitary footprint glyphs', () => {
+  const cand = fixture();
+  const SAN = new Set(['toilet', 'sink', 'shower', 'bathtub']);
+
+  it('every generated footprint is drawn as a rect outline on its discipline layer', () => {
+    const dxf = writeDXF(cand, 'p16d-c');
+    const ents = entities(dxf);
+    const furn = cand.floors.flatMap(fl => fl.furniture ?? []).filter(f => !SAN.has(f.type));
+    const san = cand.floors.flatMap(fl => fl.furniture ?? []).filter(f => SAN.has(f.type));
+    expect(furn.length + san.length).toBeGreaterThan(0);
+    const linesOn = (base: string) => ents.filter(e =>
+      e.type === 'LINE' && (e.codes[8] === base || e.codes[8]?.endsWith(`-${base}`))).length;
+    expect(linesOn('A-FURN')).toBeGreaterThanOrEqual(4 * furn.length);
+    expect(linesOn('A-SANITARY')).toBeGreaterThanOrEqual(4 * san.length);
+  });
+
+  it('glyph geometry equals the model footprint coordinates exactly', () => {
+    const dxf = writeDXF(cand, 'p16d-c');
+    const ents = entities(dxf);
+    const f0 = (cand.floors[0].furniture ?? [])[0];
+    expect(f0).toBeDefined();
+    const base = SAN.has(f0.type) ? 'A-SANITARY' : 'A-FURN';
+    const r = f0.rect;
+    const edges: string[] = [
+      `L|${mmOf(r.x)},${mmOf(r.y)}|${mmOf(r.x + r.w)},${mmOf(r.y)}`,
+      `L|${mmOf(r.x + r.w)},${mmOf(r.y)}|${mmOf(r.x + r.w)},${mmOf(r.y + r.h)}`,
+      `L|${mmOf(r.x + r.w)},${mmOf(r.y + r.h)}|${mmOf(r.x)},${mmOf(r.y + r.h)}`,
+      `L|${mmOf(r.x)},${mmOf(r.y + r.h)}|${mmOf(r.x)},${mmOf(r.y)}`,
+    ];
+    for (const e of ents) {
+      if (e.type !== 'LINE') continue;
+      if (e.codes[8] !== base && e.codes[8] !== `A-FLOOR-0-${base}`) continue;
+      const k = `L|${e.codes[10]},${e.codes[20]}|${e.codes[11]},${e.codes[21]}`;
+      const idx = edges.indexOf(k);
+      if (idx >= 0) edges.splice(idx, 1);
+    }
+    expect(edges, `footprint edges missing on ${base}: ${edges.join(' ; ')}`).toHaveLength(0);
+  });
+
+  it('glyph layers follow the layer scheme and validate clean in all schemes', () => {
+    for (const layerScheme of ['both', 'none', 'generic'] as const) {
+      const dxf = writeDXF(cand, 'p16d-c', { layerScheme });
+      const v = validateDXFStructure(dxf);
+      expect(v.ok, `scheme ${layerScheme}: ${v.errors.join('; ')}`).toBe(true);
+      const used = layerSet(dxf);
+      if (layerScheme === 'none') {
+        expect([...used].some(l => l === 'A-FURN')).toBe(false);
+        expect([...used].some(l => l === 'A-SANITARY')).toBe(false);
+        expect([...used].some(l => l.endsWith('-A-FURN'))).toBe(true);
+        expect([...used].some(l => l.endsWith('-A-SANITARY'))).toBe(true);
+      }
+      if (layerScheme === 'generic') {
+        expect([...used].some(l => l === 'A-FURN')).toBe(true);
+        expect([...used].some(l => l === 'A-SANITARY')).toBe(true);
+        expect([...used].some(l => l.startsWith('A-FLOOR-'))).toBe(false);
+      }
+    }
   });
 });

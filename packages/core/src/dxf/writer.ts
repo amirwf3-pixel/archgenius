@@ -20,6 +20,7 @@ import { LAYERS } from './layers.js';
 import { rCorners } from '../geometry/rect.js';
 import type { Rect } from '../geometry/rect.js';
 import { vSub, vNorm } from '../geometry/vec2.js';
+import { pointInPolygon, polygonCentroid } from '../geometry/polygon.js';
 
 const CR = "\r\n";
 
@@ -150,8 +151,10 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   // For each floor and each base wall/room/opening/stair layer, create A-FLOOR-{n}-{base}
   // P16-D-B: A-TEXT joins the floor namespace so general annotations (floor headers,
   // stair build notes) keep per-floor routing in every layer scheme.
+  // P16-D-C: A-FURN / A-SANITARY join it too — the Phase-11 generator already places
+  // Furniture footprints per floor, drawn as glyph rectangles on these layers.
   const floorSpecificDefs: { name: string; color: number; linetype: string; lineweight: number; description: string }[] = [];
-  const baseForFloorLayers = ['A-WALL-EXT','A-WALL-INT','A-WALL-CORE','A-WALL-SERVICE','A-WALL-PART','A-DOOR','A-WINDOW','A-STAIR','A-STAIR-TREAD','A-STAIR-DIR','A-ROOM','A-TEXT','A-DIMS','A-PARKING','A-BLDG-OUT','A-SITE','A-SETBACK'];
+  const baseForFloorLayers = ['A-WALL-EXT','A-WALL-INT','A-WALL-CORE','A-WALL-SERVICE','A-WALL-PART','A-DOOR','A-WINDOW','A-STAIR','A-STAIR-TREAD','A-STAIR-DIR','A-ROOM','A-TEXT','A-FURN','A-SANITARY','A-DIMS','A-PARKING','A-BLDG-OUT','A-SITE','A-SETBACK'];
   for (let fi = 0; fi < floorCount; fi++) {
     for (const baseName of baseForFloorLayers) {
       const baseDef = LAYERS.find(l => l.name === baseName);
@@ -239,9 +242,9 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     push(50, s);
     push(51, e);
   };
-  const emitText = (x: number, y: number, text: string, heightM: number, layer: string, horiz = 0) => {
+  const emitText = (x: number, y: number, text: string, heightM: number, layer: string, horiz = 0, rotDeg = 0) => {
     const safeTxt = dxfSafeText(text);
-    const kt = `T|${layer}|${mm(x)},${mm(y)}|${safeTxt}|${mm(heightM)}`;
+    const kt = `T|${layer}|${mm(x)},${mm(y)}|${safeTxt}|${mm(heightM)}|${rotDeg}`;
     if (!safeTxt || !(heightM > 0) || seenEnt.has(kt)) return; // empty/zero-height text is never valid
     seenEnt.add(kt);
     b.push('0', 'TEXT');
@@ -249,7 +252,7 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     push(10, mm(x)); push(20, mm(y)); push(30, '0');
     push(40, mm(heightM));
     push(1, safeTxt);
-    push(50, 0);
+    push(50, rotDeg); // P16-D-C: optional rotation (R12 group 50); 0 preserves the legacy output
     push(72, horiz);
     // R12 TEXT second alignment point 11,21,31 required when 72 is non-0 (and canonical even when 0)
     push(11, mm(x)); push(21, mm(y)); push(31, '0');
@@ -310,7 +313,7 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     const yOff = floorOffset(fi);
     const LY = (base: string): string[] => layersFor(fi, base);
     const lineB = (x1: number, y1: number, x2: number, y2: number, base: string) => { for (const L of LY(base)) emitLine(x1, y1, x2, y2, L); };
-    const textB = (x: number, y: number, txt: string, h: number, base: string, horiz = 0) => { for (const L of LY(base)) emitText(x, y, txt, h, L, horiz); };
+    const textB = (x: number, y: number, txt: string, h: number, base: string, horiz = 0, rotDeg = 0) => { for (const L of LY(base)) emitText(x, y, txt, h, L, horiz, rotDeg); };
     const polyB = (pts: Vec2[], base: string, closed = true) => { for (const L of LY(base)) emitPolyline(pts, L, closed); };
 
     // Buildable outline per floor — canonical buildableBoundary polygon, NOT bounding rect
@@ -413,6 +416,21 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
       textB(a.x + a.w / 2, a.y + a.h / 2, 'AISLE', 0.25, 'A-PARKING', 1);
     }
 
+    // Furniture/sanitary glyphs — P16-D-C, the established deferred path: the
+    // Phase-11 generator already places Furniture footprints on every floor for
+    // clearance QA (model/furniture.ts documents the A-FURN drawing intent), and
+    // both layers exist since the original layer set. Each footprint is drawn as
+    // a plain rectangle outline — footprints only, no invented symbols, no labels.
+    for (const fu of fl.furniture ?? []) {
+      const base = fu.type === 'toilet' || fu.type === 'sink' || fu.type === 'shower' || fu.type === 'bathtub' ? 'A-SANITARY' : 'A-FURN';
+      const r = shiftRect(fu.rect, yOff);
+      const [fa, fb, fc, fd] = rCorners(r);
+      lineB(fa.x, fa.y, fb.x, fb.y, base);
+      lineB(fb.x, fb.y, fc.x, fc.y, base);
+      lineB(fc.x, fc.y, fd.x, fd.y, base);
+      lineB(fd.x, fd.y, fa.x, fa.y, base);
+    }
+
     // Room polygon geometry — canonical polygon (not the bounding rect).
     for (const s of fl.spaces) {
       const poly = s.polygon;
@@ -422,27 +440,28 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     }
 
     // Room labels + areas — area derived from the canonical POLYGON (never stale metadata).
+    // P16-D-C professional annotation: the anchor is the deepest interior point of the
+    // ACTUAL room polygon (guaranteed inside — a concave-room centroid can fall outside),
+    // the text height is fitted to the room's inscribed chord through that anchor so the
+    // label stays within the room, and tall-narrow rooms rotate the block 90° to run
+    // along the long axis. All deterministic, geometry-derived placement.
     for (const s of fl.spaces) {
-      let cx: number, cy: number;
-      if (s.polygon && s.polygon.length >= 3) {
-        let cxx = 0, cyy = 0, a2 = 0;
-        const poly = s.polygon;
-        for (let i = 0, n = poly.length; i < n; i++) {
-          const p1 = poly[i]; const p2 = poly[(i + 1) % n];
-          const cross = p1.x * p2.y - p2.x * p1.y;
-          a2 += cross; cxx += (p1.x + p2.x) * cross; cyy += (p1.y + p2.y) * cross;
-        }
-        const a = a2 * 3 || 1;
-        cx = cxx / a; cy = cyy / a + yOff;
-      } else {
-        cx = s.rect.x + s.rect.w / 2; cy = s.rect.y + s.rect.h / 2 + yOff;
-      }
+      const poly = s.polygon && s.polygon.length >= 3 ? s.polygon : null;
+      const anchor = roomLabelAnchor(poly, s.rect);
       const area = polyArea(s.polygon, s.rect);
       totalNetArea += area;
-      const h = Math.min(0.35, Math.max(0.18, Math.min(s.rect.w, s.rect.h) * 0.08));
       const lbl = candidate.floors.length > 1 ? `${s.label} · F${fi}` : s.label;
-      textB(cx, cy + h * 0.62, lbl, h, 'A-ROOM', 1);
-      textB(cx, cy - h * 0.62, `${area.toFixed(1)} m²`, h * 0.7, 'A-ROOM', 1);
+      const areaTxt = `${area.toFixed(1)} m²`;
+      const { h, rot } = fitRoomText(lbl, areaTxt, poly, s.rect, anchor);
+      const cx = anchor.x, cy = anchor.y + yOff;
+      if (rot === 90) {
+        // rotated block: lines stack ACROSS the text run — name on the +x side
+        textB(cx + h * 0.62, cy, lbl, h, 'A-ROOM', 1, 90);
+        textB(cx - h * 0.62, cy, areaTxt, h * 0.7, 'A-ROOM', 1, 90);
+      } else {
+        textB(cx, cy + h * 0.62, lbl, h, 'A-ROOM', 1);
+        textB(cx, cy - h * 0.62, areaTxt, h * 0.7, 'A-ROOM', 1);
+      }
     }
 
     // Annotation infrastructure — grid, dimension chains.
@@ -634,6 +653,134 @@ function emitWallWithOpenings(
 }
 
 // ---- P16-D presentation helpers (single source, scheme-routed via base-layer emitters) ----
+
+// ---- P16-D-C room annotation helpers (deterministic, geometry-derived) ----
+
+/** Average advance width of a txt.shx character as a fraction of its height. */
+const ROOM_TXT_CHAR_W = 0.72;
+/** Clear margin kept between a room label run and the room boundary (m). */
+const ROOM_TXT_PAD = 0.15;
+/** Readable room text height bounds (m at the documented 1:100 plot scale). */
+const ROOM_TXT_MIN_H = 0.12;
+const ROOM_TXT_MAX_H = 0.35;
+/** The vertical run must beat horizontal by this factor before the label rotates. */
+const ROOM_TXT_ROT_ADVANTAGE = 1.15;
+
+/** Squared distance from point p to segment ab. */
+function segDist2(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const l2 = dx * dx + dy * dy;
+  const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
+  const qx = ax + t * dx - px, qy = ay + t * dy - py;
+  return qx * qx + qy * qy;
+}
+
+/** Distance from p to the nearest edge of the ring. */
+function ringEdgeDist(p: Vec2, poly: Vec2[]): number {
+  let best = Infinity;
+  for (let i = 0, n = poly.length; i < n; i++) {
+    const a = poly[i], bpt = poly[(i + 1) % n];
+    best = Math.min(best, segDist2(p.x, p.y, a.x, a.y, bpt.x, bpt.y));
+  }
+  return Math.sqrt(best);
+}
+
+/**
+ * Deterministic interior anchor for a room label — the deepest interior point
+ * (pole of inaccessibility) of the actual polygon, found by a fixed grid scan
+ * plus local refinement (no randomness). Unlike a concave room's centroid, the
+ * result is guaranteed inside the polygon. Rect fallback: rect centre.
+ */
+function roomLabelAnchor(poly: Vec2[] | null, rect: Rect): Vec2 {
+  if (!poly) return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+  const ring: Vec2[] = poly;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of poly) {
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+  }
+  let best = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  let bestD = -1;
+  // P16-D-C tie-break: on a rectangular room every centreline point reaches the
+  // same maximal depth — prefer the tie closest to the polygon centroid so labels
+  // centre themselves. (Purely geometric comparator: deterministic, no randomness.)
+  const cen = polygonCentroid(ring);
+  let bestC2 = Infinity;
+  const TOL = 1e-6;
+  const consider = (p: Vec2) => {
+    if (!pointInPolygon(p, ring)) return;
+    const d = ringEdgeDist(p, ring);
+    const c2 = (p.x - cen.x) * (p.x - cen.x) + (p.y - cen.y) * (p.y - cen.y);
+    if (d > bestD + TOL || (d >= bestD - TOL && c2 < bestC2)) {
+      if (d > bestD) bestD = d;
+      bestC2 = c2;
+      best = p;
+    }
+  };
+  // coarse pass over the whole bbox …
+  const span = Math.max(maxX - minX, maxY - minY);
+  const cols = Math.max(1, Math.round((maxX - minX) / span * 24));
+  const rows = Math.max(1, Math.round((maxY - minY) / span * 24));
+  for (let r = 0; r <= rows; r++) {
+    for (let c = 0; c <= cols; c++) {
+      consider({ x: minX + (c / cols) * (maxX - minX), y: minY + (r / rows) * (maxY - minY) });
+    }
+  }
+  // … then refine around the winner on a shrinking local grid.
+  let step = span / 48;
+  for (let k = 0; k < 6 && step > 1e-4; k++) {
+    for (let gy = -2; gy <= 2; gy++) {
+      for (let gx = -2; gx <= 2; gx++) {
+        consider({ x: best.x + gx * step, y: best.y + gy * step });
+      }
+    }
+    step /= 2;
+  }
+  return best;
+}
+
+/**
+ * Length of the straight run inside the room through p, along X and along Y
+ * (the chord of the polygon containing p). Rect fallback: rect w/h.
+ */
+function roomChords(poly: Vec2[] | null, rect: Rect, p: Vec2): { h: number; v: number } {
+  const chord = (axis: 'x' | 'y'): number => {
+    if (!poly) return axis === 'x' ? rect.w : rect.h;
+    const pC = axis === 'x' ? p.y : p.x;
+    const crossings: number[] = [];
+    for (let i = 0, n = poly.length; i < n; i++) {
+      const a = poly[i], bpt = poly[(i + 1) % n];
+      const aC = axis === 'x' ? a.y : a.x, bC = axis === 'x' ? bpt.y : bpt.x;
+      if ((aC <= pC) === (bC <= pC)) continue;
+      const t = (pC - aC) / (bC - aC);
+      crossings.push(axis === 'x' ? a.x + t * (bpt.x - a.x) : a.y + t * (bpt.y - a.y));
+    }
+    crossings.sort((u, w) => u - w);
+    const pc = axis === 'x' ? p.x : p.y;
+    for (let i = 0; i + 1 < crossings.length; i += 2) {
+      if (crossings[i] - 1e-9 <= pc && pc <= crossings[i + 1] + 1e-9) return crossings[i + 1] - crossings[i];
+    }
+    return axis === 'x' ? rect.w : rect.h; // numeric fallback
+  };
+  return { h: chord('x'), v: chord('y') };
+}
+
+/**
+ * Fit the room name/area text block deterministically: the largest height at
+ * which the wider line still fits the room chord through the anchor, compared
+ * horizontally vs rotated 90°. The orientation only flips when the vertical
+ * run wins by a clear margin, so near-square rooms keep horizontal labels.
+ */
+function fitRoomText(lbl: string, areaTxt: string, poly: Vec2[] | null, rect: Rect, anchor: Vec2): { h: number; rot: 0 | 90 } {
+  const c = roomChords(poly, rect, anchor);
+  const fitH = (chord: number, txt: string, factor: number) =>
+    Math.max(ROOM_TXT_MIN_H, Math.min(ROOM_TXT_MAX_H, (chord - 2 * ROOM_TXT_PAD) / (txt.length * ROOM_TXT_CHAR_W * factor)));
+  // the name line governs; the area line (0.7× the name height) must fit too
+  const hFit = (chord: number) => Math.min(fitH(chord, lbl, 1), fitH(chord, areaTxt, 0.7));
+  const hh = hFit(c.h);
+  const hv = hFit(c.v);
+  return hv > hh * ROOM_TXT_ROT_ADVANTAGE ? { h: hv, rot: 90 } : { h: hh, rot: 0 };
+}
 
 /** 45° architectural tick at a dimension endpoint, oriented along (dirX, dirY). */
 function drawTickAt(
@@ -1015,7 +1162,7 @@ export function validateDXFStructure(dxf: string): { ok: boolean; errors: string
   if (!lines.includes('ENTITIES')) errors.push('Missing ENTITIES section');
   if (!lines.includes('EOF')) errors.push('Missing EOF');
   if (!lines.includes('LAYER')) errors.push('Missing LAYER table');
-  for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-TEXT', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR', 'A-GRID', 'A-AXIS', 'A-AXIS-TEXT', 'A-NORTH', 'A-TITLE', 'A-PARKING', 'A-SITE', 'A-SETBACK', 'A-BLDG-OUT']) {
+  for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-TEXT', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR', 'A-GRID', 'A-AXIS', 'A-AXIS-TEXT', 'A-NORTH', 'A-TITLE', 'A-PARKING', 'A-FURN', 'A-SANITARY', 'A-SITE', 'A-SETBACK', 'A-BLDG-OUT']) {
     if (!lines.includes(name)) errors.push(`Missing layer entry: ${name}`);
   }
   // Minimal R12: ONLY $ACADVER AC1009 is required. All other HEADER variables ($VIEWCTR,$VIEWSIZE,$EXTMIN,$EXTMAX,$LIMMIN,$LIMMAX,$VIEWDIR)
