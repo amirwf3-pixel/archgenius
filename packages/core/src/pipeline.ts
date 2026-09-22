@@ -337,7 +337,7 @@ export function validateCandidate(candidate: LayoutCandidate): ValidationResult 
  */
 const SITE_ENVELOPE_VIOLATION = /^(?:SITE|GEO)_[A-Z]+_OUTSIDE(?:_BUILDABLE|_SITE|_FOOTPRINT)?$/;
 
-export function exportDXF(candidate: LayoutCandidate, projectName = 'ArchGenius Plan', dxfOptions: { includeGenericLayers?: boolean } = {}): { dxf: string; validation: ReturnType<typeof validateDXFStructure> } {
+export function exportDXF(candidate: LayoutCandidate, projectName = 'ArchGenius Plan', dxfOptions: { includeGenericLayers?: boolean; layerScheme?: 'none' | 'generic' | 'both' } = {}): { dxf: string; validation: ReturnType<typeof validateDXFStructure> } {
   requireUsableCandidate(candidate, 'exportDXF');
   const envelopeViolations = validateLayout(candidate).findings.filter(
     (f) => f.severity === 'hard' && SITE_ENVELOPE_VIOLATION.test(f.code),

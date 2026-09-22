@@ -93,10 +93,39 @@ export function dxfSafeText(text: string): string {
  * Phase 9.1 — Optional includeGenericLayers flag (default true) to disable backward compat generic layers if needed.
  */
 export interface DXFOptions {
-  includeGenericLayers?: boolean; // default true — emit generic base layers for floor 0 for backward compat
+  /**
+   * P16-D layer scheme.
+   *   'both' (DEFAULT, = legacy contract) — every floor draws on its A-FLOOR-{n}-{DISCIPLINE}
+   *              layer; floor 0 additionally mirrors onto the base discipline layers
+   *              (A-WALL-EXT, A-DOOR, …) so the drawing satisfies both the per-floor and
+   *              the flat-discipline layer conventions simultaneously.
+   *   'none'   — floor layers only: the leanest, fully non-duplicated drawing.
+   *   'generic'— discipline layers only: one shared layer set across all floors.
+   * All schemes emit each entity exactly once PER LAYER — coincident same-layer repeats
+   * are suppressed at the emitter (P16-D cleanliness), and the base layers are always
+   * defined in the LAYER table.
+   */
+  layerScheme?: 'none' | 'generic' | 'both';
+  /** Legacy alias: true = 'both' (default), false = 'none'. layerScheme wins if given. */
+  includeGenericLayers?: boolean;
 }
 export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius Plan', options: DXFOptions = {}): string {
-  const includeGenericLayers = options.includeGenericLayers ?? true;
+  // P16-D: resolve the layer scheme; includeGenericLayers kept as a legacy alias.
+  const scheme: 'none' | 'generic' | 'both' =
+    options.layerScheme ?? (options.includeGenericLayers === false ? 'none' : 'both');
+  const ENVELOPE_LAYERS = new Set(['A-BLDG-OUT', 'A-SETBACK', 'A-SITE']);
+  // Every discipline resolves to the layer name(s) its entities live on. In the default
+  // 'both' scheme each floor draws on its own A-FLOOR-{n}-* layers and floor 0 mirrors
+  // onto the base discipline layers (the established dual-convention contract). Whatever
+  // the scheme, an entity is emitted AT MOST ONCE per layer — the emitter-level
+  // deduplication added in P16-D removes the harmful exact repeats.
+  const layersFor = (fi: number, base: string): string[] => {
+    const fl = `A-FLOOR-${fi}-${base}`;
+    if (scheme === 'generic') return [base];
+    if (scheme === 'none') return [fl];
+    // 'both': floor layer everywhere + generic alias on floor 0 (envelope trio too)
+    return fi === 0 ? [base, fl] : [fl];
+  };
   const b: string[] = [];
   const push = (code: number | string, value: string | number) => {
     b.push(String(code));
@@ -173,11 +202,21 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
 
   const mm = (m: number) => Math.round(m * MM_PER_M * 100) / 100;
 
+  // P16-D CAD cleanliness: every emitter deduplicates exact same-layer repeats (two
+  // adjacent spaces can own the same shared wall edge — drawing it once is the
+  // professional result) and refuses zero-length segments. Different layers are a
+  // legitimate representation choice, so coincident cross-layer geometry is kept.
+  const seenEnt = new Set<string>();
   const emitLine = (x1: number, y1: number, x2: number, y2: number, layer: string) => {
+    const X1 = mm(x1), Y1 = mm(y1), X2 = mm(x2), Y2 = mm(y2);
+    if (X1 === X2 && Y1 === Y2) return; // zero-length line — never emitted
+    const k = `L|${layer}|${X1},${Y1}|${X2},${Y2}`;
+    if (seenEnt.has(k)) return;
+    seenEnt.add(k);
     b.push('0', 'LINE');
     push(8, layer);
-    push(10, mm(x1)); push(20, mm(y1)); push(30, '0');
-    push(11, mm(x2)); push(21, mm(y2)); push(31, '0');
+    push(10, X1); push(20, Y1); push(30, '0');
+    push(11, X2); push(21, Y2); push(31, '0');
   };
   const emitArc = (cx: number, cy: number, r: number, startDeg: number, endDeg: number, layer: string) => {
     // Normalize ARC angles to 0..360 for R12 — AutoCAD rejects negative and ezdxf audit still passes, masking black-screen.
@@ -188,6 +227,9 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     };
     const s = norm(startDeg);
     const e = norm(endDeg);
+    const k = `A|${layer}|${mm(cx)},${mm(cy)}|${mm(r)}|${s},${e}`;
+    if (r <= 0 || seenEnt.has(k)) return;
+    seenEnt.add(k);
     b.push('0', 'ARC');
     push(8, layer);
     push(10, mm(cx)); push(20, mm(cy)); push(30, '0');
@@ -196,11 +238,15 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     push(51, e);
   };
   const emitText = (x: number, y: number, text: string, heightM: number, layer: string, horiz = 0) => {
+    const safeTxt = dxfSafeText(text);
+    const kt = `T|${layer}|${mm(x)},${mm(y)}|${safeTxt}|${mm(heightM)}`;
+    if (!safeTxt || !(heightM > 0) || seenEnt.has(kt)) return; // empty/zero-height text is never valid
+    seenEnt.add(kt);
     b.push('0', 'TEXT');
     push(8, layer);
     push(10, mm(x)); push(20, mm(y)); push(30, '0');
     push(40, mm(heightM));
-    push(1, dxfSafeText(text));
+    push(1, safeTxt);
     push(50, 0);
     push(72, horiz);
     // R12 TEXT second alignment point 11,21,31 required when 72 is non-0 (and canonical even when 0)
@@ -208,6 +254,9 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     // Style is always STANDARD (72/73 already), height via 40 above
   };
   const emitPolyline = (pts: Vec2[], layer: string, closed = true) => {
+    const kp = `P|${layer}|${closed ? 1 : 0}|` + pts.map(p => `${mm(p.x)},${mm(p.y)}`).join(';');
+    if (pts.length < 2 || seenEnt.has(kp)) return;
+    seenEnt.add(kp);
     b.push('0', 'POLYLINE');
     push(8, layer);
     // R12 POLYLINE elevation point (10,20,30) required even for 2D (0,0,0)
@@ -239,21 +288,37 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   const siteShape: string | undefined = anyCand.siteShape;
   const appliedSetbacks: any[] | undefined = anyCand.appliedSetbacks;
 
-  // ---- Draw all floors — Phase 10.1 site-aware hardening: every floor uses canonical buildableBoundary/siteBoundary
+  // ---- Draw all floors — P16-D scheme-routed single emission -----------------------
+  // Every discipline resolves through layersFor(): exactly one copy of each entity per
+  // layer it belongs to (legacy 'both' mode is the only scheme with a floor-0 alias).
+  const polyArea = (poly: Vec2[] | undefined, fallback: Rect): number => {
+    if (!poly || poly.length < 3) return fallback.w * fallback.h;
+    let acc = 0;
+    for (let i = 0, n = poly.length; i < n; i++) {
+      const p1 = poly[i]; const p2 = poly[(i + 1) % n];
+      acc += p1.x * p2.y - p2.x * p1.y;
+    }
+    return Math.abs(acc) / 2;
+  };
+  let siteBox: { x: number; y: number; w: number; h: number } | null = null;
+  let totalNetArea = 0;
+
   for (let fi = 0; fi < candidate.floors.length; fi++) {
     const fl = candidate.floors[fi];
     const yOff = floorOffset(fi);
+    const LY = (base: string): string[] => layersFor(fi, base);
+    const lineB = (x1: number, y1: number, x2: number, y2: number, base: string) => { for (const L of LY(base)) emitLine(x1, y1, x2, y2, L); };
+    const textB = (x: number, y: number, txt: string, h: number, base: string, horiz = 0) => { for (const L of LY(base)) emitText(x, y, txt, h, L, horiz); };
+    const polyB = (pts: Vec2[], base: string, closed = true) => { for (const L of LY(base)) emitPolyline(pts, L, closed); };
 
-    // Buildable outline per floor — canonical is buildableBoundary polygon, NOT bounding rect
-    // For rectangle, buildableBoundary is rectangle (same as footprint bounding), for L-shape/polygon it's non-rectangular
+    // Buildable outline per floor — canonical buildableBoundary polygon, NOT bounding rect
+    // (for rectangle it coincides with the footprint bounding; L-shape/polygon stay true).
     {
       const fr = fl.footprint;
       let shifted: Vec2[];
       if (buildableBoundary && buildableBoundary.length >= 3) {
-        // Canonical: actual buildableBoundary polygon for EVERY floor, not just ground
         shifted = buildableBoundary.map(p => ({ x: p.x, y: p.y + yOff }));
       } else {
-        // Fallback only if no canonical boundary (old data) — compatibility/presentation
         shifted = [
           { x: fr.x, y: fr.y + yOff },
           { x: fr.x + fr.w, y: fr.y + yOff },
@@ -261,48 +326,35 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
           { x: fr.x, y: fr.y + fr.h + yOff },
         ];
       }
-      // generic outline only for floor 0 to keep backward compat (still canonical polygon for floor 0)
-      if (fi === 0 && includeGenericLayers) {
-        emitPolyline(shifted, 'A-BLDG-OUT', true);
-        emitPolyline(shifted, 'A-SETBACK', true);
-      }
-      emitPolyline(shifted, `A-FLOOR-${fi}-A-BLDG-OUT`, true);
-      // A-SETBACK per floor must represent actual buildable/setback boundary for that floor/context
-      emitPolyline(shifted, `A-FLOOR-${fi}-A-SETBACK`, true);
+      polyB(shifted, 'A-BLDG-OUT', true);
+      polyB(shifted, 'A-SETBACK', true);
     }
 
-    // Site boundary outline — canonical siteBoundary polygon for EVERY floor
+    // Site boundary — canonical siteBoundary polygon for EVERY floor (floor-specific layers).
     if (siteBoundary && siteBoundary.length >= 3) {
       const shiftedSite = siteBoundary.map(p => ({ x: p.x, y: p.y + yOff }));
-      if (fi === 0 && includeGenericLayers) {
-        emitPolyline(shiftedSite, 'A-SITE', true);
-      }
-      emitPolyline(shiftedSite, `A-FLOOR-${fi}-A-SITE`, true);
-      // Site label only for ground floor to avoid clutter, but geometry per floor exists
+      polyB(shiftedSite, 'A-SITE', true);
       if (fi === 0) {
-        const br = (() => {
-          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-          for (const p of siteBoundary) {
-            if (p.x < minX) minX = p.x;
-            if (p.y < minY) minY = p.y;
-            if (p.x > maxX) maxX = p.x;
-            if (p.y > maxY) maxY = p.y;
-          }
-          return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-        })();
-        emitText(br.x, br.y - 0.8 + yOff, `SITE ${siteShape} ${br.w.toFixed(1)}x${br.h.toFixed(1)}m`, 0.3, 'A-SITE', 0);
-        emitText(br.x, br.y - 1.2 + yOff, `Setbacks N=${appliedSetbacks?.find((s:any)=>s.direction==='north')?.value ?? '?'} S=${appliedSetbacks?.find((s:any)=>s.direction==='south')?.value ?? '?'} E=${appliedSetbacks?.find((s:any)=>s.direction==='east')?.value ?? '?'} W=${appliedSetbacks?.find((s:any)=>s.direction==='west')?.value ?? '?'}`, 0.2, 'A-SETBACK', 0);
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const p of siteBoundary) {
+          if (p.x < minX) minX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y > maxY) maxY = p.y;
+        }
+        siteBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+        emitText(minX, minY - 0.8, `SITE ${siteShape} ${siteBox.w.toFixed(1)}x${siteBox.h.toFixed(1)}m`, 0.3, 'A-SITE', 0);
+        emitText(minX, minY - 1.2, `Setbacks N=${appliedSetbacks?.find((s:any)=>s.direction==='north')?.value ?? '?'} S=${appliedSetbacks?.find((s:any)=>s.direction==='south')?.value ?? '?'} E=${appliedSetbacks?.find((s:any)=>s.direction==='east')?.value ?? '?'} W=${appliedSetbacks?.find((s:any)=>s.direction==='west')?.value ?? '?'}`, 0.2, 'A-SETBACK', 0);
       }
     }
 
-    // Floor label
+    // Floor header — exactly one label per floor.
     {
       const fr = fl.footprint;
-      emitText(fr.x, fr.y + fr.h + yOff + 0.5, `FLOOR ${fi} — Level ${fl.level} — ${fl.elevation.toFixed(2)}m elev`, 0.35, `A-FLOOR-${fi}-A-ROOM`, 0);
-      if (fi === 0 && includeGenericLayers) emitText(fr.x, fr.y + fr.h + yOff + 0.5, `FLOOR ${fi} — Level ${fl.level}`, 0.35, 'A-ROOM', 0);
+      textB(fr.x, fr.y + fr.h + yOff + 0.5, `FLOOR ${fi} — ELEV ${fl.elevation.toFixed(2)} m`, 0.3, 'A-ROOM', 0);
     }
 
-    // Walls
+    // Walls — double-line faces with opening gaps, on their discipline layer.
     for (const w of fl.walls) {
       let baseLayer: string;
       switch (w.kind) {
@@ -312,125 +364,106 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
         case 'partition': baseLayer = 'A-WALL-PART'; break;
         default: baseLayer = 'A-WALL-INT'; break;
       }
-      const floorLayer = `A-FLOOR-${fi}-${baseLayer}`;
-      // Emit on floor-specific layer (with y offset)
-      emitWallWithOpeningsOffset(w, fl, emitLine, floorLayer, yOff);
-      // Also emit on generic layer for floor 0 only (backward compat)
-      if (fi === 0 && includeGenericLayers) emitWallWithOpeningsOffset(w, fl, emitLine, baseLayer, yOff);
+      for (const L of LY(baseLayer)) emitWallWithOpeningsOffset(w, fl, emitLine, L, yOff);
     }
 
-    // Openings — emit only on floor-specific + generic for floor 0 (no double hard-coded layer)
+    // Openings — door leaf + swing arc, window glass lines.
     for (const o of fl.openings) {
-      const baseLayer = o.type === 'window' ? 'A-WINDOW' : 'A-DOOR';
-      const floorLayer = `A-FLOOR-${fi}-${baseLayer}`;
-      const shiftedOpening = shiftOpening(o, yOff);
-      if (o.type === 'window') {
-        drawWindowWithLayer(shiftedOpening, emitLine, floorLayer);
-        if (fi === 0 && includeGenericLayers) drawWindowWithLayer(shiftedOpening, emitLine, baseLayer);
-      } else {
-        drawDoorWithLayer(shiftedOpening, emitLine, emitArc, floorLayer);
-        if (fi === 0 && includeGenericLayers) drawDoorWithLayer(shiftedOpening, emitLine, emitArc, baseLayer);
+      const so = shiftOpening(o, yOff);
+      if (o.type === 'window') { for (const L of LY('A-WINDOW')) drawWindowOn(so, emitLine, L); }
+      else { for (const L of LY('A-DOOR')) drawDoorOn(so, emitLine, emitArc, L); }
+      // Opening width dimension on exterior faces — geometry-derived, ticks + parallel dim.
+      const host = fl.walls.find(w => w.id === o.wallId);
+      if (host && host.kind === 'exterior' && o.width >= 0.6) {
+        const half = o.width / 2;
+        const ox = -so.normal.x, oy = -so.normal.y; // outward from the room
+        const e1x = so.center.x + so.wallDir.x * half, e1y = so.center.y + so.wallDir.y * half;
+        const e2x = so.center.x - so.wallDir.x * half, e2y = so.center.y - so.wallDir.y * half;
+        const dOff = 0.32;
+        lineB(e1x + ox * 0.05, e1y + oy * 0.05, e1x + ox * (dOff + 0.08), e1y + oy * (dOff + 0.08), 'A-DIMS');
+        lineB(e2x + ox * 0.05, e2y + oy * 0.05, e2x + ox * (dOff + 0.08), e2y + oy * (dOff + 0.08), 'A-DIMS');
+        lineB(e1x + ox * dOff, e1y + oy * dOff, e2x + ox * dOff, e2y + oy * dOff, 'A-DIMS');
+        drawTickAt(lineB, e1x + ox * dOff, e1y + oy * dOff, so.wallDir.x, so.wallDir.y);
+        drawTickAt(lineB, e2x + ox * dOff, e2y + oy * dOff, so.wallDir.x, so.wallDir.y);
+        textB(so.center.x + ox * (dOff + 0.06), so.center.y + oy * (dOff + 0.06), `${o.width.toFixed(2)} m`, 0.1, 'A-DIMS', 1);
       }
     }
 
-    // Stairs
+    // Stairs — outline, landings, treads, direction arrows, build annotation.
     for (const st of fl.stairs) {
-      const shiftedStair = shiftStair(st, yOff);
-      drawStairWithLayers(shiftedStair, emitLine, emitText, emitPolyline, fi);
-      if (fi === 0 && includeGenericLayers) drawStair(shiftedStair, emitLine, emitText, emitPolyline);
+      drawStairOn(shiftStair(st, yOff), lineB, textB, polyB);
     }
 
-    // Parking (only floor 0 typically)
+    // Parking — real stalls + aisle on A-PARKING.
     for (const stall of fl.parkingStalls) {
       const r = shiftRect(stall.rect, yOff);
       const [sw, se, ne, nw] = rCorners(r);
-      const pl = `A-FLOOR-${fi}-A-PARKING`;
-      emitLine(sw.x, sw.y, se.x, se.y, pl);
-      emitLine(se.x, se.y, ne.x, ne.y, pl);
-      emitLine(ne.x, ne.y, nw.x, nw.y, pl);
-      emitLine(nw.x, nw.y, sw.x, sw.y, pl);
-      emitText((sw.x + ne.x) / 2, (sw.y + ne.y) / 2 - 0.2, `P${stall.index} F${fi}`, 0.25, pl, 1);
-      if (fi === 0 && includeGenericLayers) {
-        emitLine(sw.x, sw.y, se.x, se.y, 'A-PARKING');
-        emitLine(se.x, se.y, ne.x, ne.y, 'A-PARKING');
-        emitLine(ne.x, ne.y, nw.x, nw.y, 'A-PARKING');
-        emitLine(nw.x, nw.y, sw.x, sw.y, 'A-PARKING');
-        emitText((sw.x + ne.x) / 2, (sw.y + ne.y) / 2 - 0.2, `P${stall.index}`, 0.25, 'A-PARKING', 1);
-      }
+      lineB(sw.x, sw.y, se.x, se.y, 'A-PARKING');
+      lineB(se.x, se.y, ne.x, ne.y, 'A-PARKING');
+      lineB(ne.x, ne.y, nw.x, nw.y, 'A-PARKING');
+      lineB(nw.x, nw.y, sw.x, sw.y, 'A-PARKING');
+      textB((sw.x + ne.x) / 2, (sw.y + ne.y) / 2 - 0.2, `P${stall.index} F${fi}`, 0.25, 'A-PARKING', 1);
     }
     if (fl.parkingArea) {
       const a = shiftRect(fl.parkingArea.aisleRect, yOff);
-      const pl = `A-FLOOR-${fi}-A-PARKING`;
-      emitPolyline([{ x: a.x, y: a.y }, { x: a.x + a.w, y: a.y }, { x: a.x + a.w, y: a.y + a.h }, { x: a.x, y: a.y + a.h }], pl, true);
-      emitText(a.x + a.w / 2, a.y + a.h / 2, 'AISLE', 0.25, pl, 1);
-      if (fi === 0 && includeGenericLayers) {
-        emitPolyline([{ x: a.x, y: a.y }, { x: a.x + a.w, y: a.y }, { x: a.x + a.w, y: a.y + a.h }, { x: a.x, y: a.y + a.h }], 'A-PARKING', true);
-        emitText(a.x + a.w / 2, a.y + a.h / 2, 'AISLE', 0.25, 'A-PARKING', 1);
-      }
+      polyB([{ x: a.x, y: a.y }, { x: a.x + a.w, y: a.y }, { x: a.x + a.w, y: a.y + a.h }, { x: a.x, y: a.y + a.h }], 'A-PARKING', true);
+      textB(a.x + a.w / 2, a.y + a.h / 2, 'AISLE', 0.25, 'A-PARKING', 1);
     }
 
-    // Room polygon geometry — Phase 11 canonical polygon, not just bounding rect
-    // Emit actual room polygon on A-ROOM layers (walls already from polygon, but explicit room polygon for DXF room geometry)
+    // Room polygon geometry — canonical polygon (not the bounding rect).
     for (const s of fl.spaces) {
       const poly = s.polygon;
       if (poly && poly.length >= 3) {
-        const shiftedPoly = poly.map(p => ({ x: p.x, y: p.y + yOff }));
-        const flLayer = `A-FLOOR-${fi}-A-ROOM`;
-        emitPolyline(shiftedPoly, flLayer, true);
-        if (fi === 0 && includeGenericLayers) {
-          emitPolyline(shiftedPoly, 'A-ROOM', true);
-        }
+        polyB(poly.map(p => ({ x: p.x, y: p.y + yOff })), 'A-ROOM', true);
       }
     }
 
-    // Room labels + areas — floor-specific + generic for floor 0, at polygon centroid for L-shaped rooms
+    // Room labels + areas — area derived from the canonical POLYGON (never stale metadata).
     for (const s of fl.spaces) {
-      // Use polygon centroid for label placement (more accurate for L-shape)
       let cx: number, cy: number;
       if (s.polygon && s.polygon.length >= 3) {
-        // Simple centroid via bounding rect center for rectangle, but for L-shape use polygon centroid approximation
-        // Compute centroid via area-weighted method
         let cxx = 0, cyy = 0, a2 = 0;
         const poly = s.polygon;
         for (let i = 0, n = poly.length; i < n; i++) {
-          const p1 = poly[i];
-          const p2 = poly[(i + 1) % n];
+          const p1 = poly[i]; const p2 = poly[(i + 1) % n];
           const cross = p1.x * p2.y - p2.x * p1.y;
-          a2 += cross;
-          cxx += (p1.x + p2.x) * cross;
-          cyy += (p1.y + p2.y) * cross;
+          a2 += cross; cxx += (p1.x + p2.x) * cross; cyy += (p1.y + p2.y) * cross;
         }
         const a = a2 * 3 || 1;
-        cx = cxx / a;
-        cy = cyy / a + yOff;
-        // Fallback to rect center if centroid outside polygon (rare for concave)
-        // For simplicity, keep computed centroid
+        cx = cxx / a; cy = cyy / a + yOff;
       } else {
-        cx = s.rect.x + s.rect.w / 2;
-        cy = s.rect.y + s.rect.h / 2 + yOff;
+        cx = s.rect.x + s.rect.w / 2; cy = s.rect.y + s.rect.h / 2 + yOff;
       }
+      const area = polyArea(s.polygon, s.rect);
+      totalNetArea += area;
       const h = Math.min(0.35, Math.max(0.18, Math.min(s.rect.w, s.rect.h) * 0.08));
-      const flLayer = `A-FLOOR-${fi}-A-ROOM`;
-      emitText(cx, cy + h * 0.5, `${s.label} [F${fi}]`, h, flLayer, 1);
-      emitText(cx, cy - h * 0.7, `${s.area.toFixed(1)} m²`, h * 0.7, flLayer, 1);
-      if (fi === 0 && includeGenericLayers) {
-        emitText(cx, cy + h * 0.5, s.label, h, 'A-ROOM', 1);
-        emitText(cx, cy - h * 0.7, `${s.area.toFixed(1)} m²`, h * 0.7, 'A-ROOM', 1);
-      }
+      const lbl = candidate.floors.length > 1 ? `${s.label} · F${fi}` : s.label;
+      textB(cx, cy + h * 0.62, lbl, h, 'A-ROOM', 1);
+      textB(cx, cy - h * 0.62, `${area.toFixed(1)} m²`, h * 0.7, 'A-ROOM', 1);
     }
 
+    // Annotation infrastructure — grid, dimension chains.
     if (fi === 0) emitGridShifted(candidate.buildableArea, emitLine, emitText, yOff);
-    emitOuterDimensionsShifted(fl.footprint, emitLine, emitText, yOff, fi, includeGenericLayers);
-    emitRoomDimensionsShifted(fl.spaces, emitLine, emitText, yOff, fi, includeGenericLayers);
+    emitOuterDims(fl.footprint, yOff, fi, lineB, textB);
+    emitRoomDims(fl.spaces, yOff, lineB, textB);
+    if (fi === 0 && siteBox) emitSiteDims(siteBox, lineB, textB);
 
     if (fi === 0) drawNorthArrow(fl.footprint.x + fl.footprint.w - 1.2, fl.footprint.y + fl.footprint.h - 0.3 + yOff, emitLine, emitText);
+  }
 
-    if (fi === 0) drawTitleBlock(candidate, projectName, emitLine, emitText);
+  if (candidate.floors[0]) {
+    // Legend swatches sit ON the discipline layer they document (floor-0
+    // routed so the 'none' scheme never leaves stray generic references).
+    const floorScoped = new Set(baseForFloorLayers);
+    const lineSw = (x1: number, y1: number, x2: number, y2: number, base: string) => {
+      const ls = floorScoped.has(base) ? layersFor(0, base) : [base];
+      for (const L of ls) emitLine(x1, y1, x2, y2, L);
+    };
+    drawTitleBlockV2(candidate, projectName, emitLine, emitText, siteBox, polyArea, totalNetArea, lineSw);
   }
 
   // Whole-building vertical markers (connect stairs across floors)
   if (candidate.floors.length > 1) {
-    // Draw vertical alignment lines between stair footprints across floors
     const firstStairs = candidate.floors[0].stairs;
     for (const st0 of firstStairs) {
       const r0 = st0.footprint ?? st0.rect;
@@ -438,7 +471,6 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
       const cx0 = r0.x + r0.w / 2;
       const cy0Bottom = r0.y + floorOffset(0);
       const cyTop = (candidate.floors[candidate.floors.length - 1].footprint.y + candidate.floors[candidate.floors.length - 1].footprint.h) + floorOffset(candidate.floors.length - 1);
-      // Dashed-like vertical line indicating stair stack
       emitLine(cx0, cy0Bottom, cx0, cyTop, 'A-STAIR');
       emitText(cx0 + 0.2, cyTop + 0.2, `STAIR STACK — ${candidate.floors.length} FLOORS — Whole-Building`, 0.25, 'A-STAIR-DIR', 0);
     }
@@ -598,28 +630,43 @@ function emitWallWithOpenings(
   }
 }
 
-function drawWindow(o: Opening, emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void) {
-  // Draw a triple-line representation: two outer lines (wall edges) and a middle glass line
-  // For V1, draw two short lines across the opening width.
-  const wd = vNorm(vSub({ x: o.wallDir.y, y: -o.wallDir.x }, { x: 0, y: 0 })); // perpendicular
-  // wallDir is unit; perpendicular = (-wallDir.y, wallDir.x)
+// ---- P16-D presentation helpers (single source, scheme-routed via base-layer emitters) ----
+
+/** 45° architectural tick at a dimension endpoint, oriented along (dirX, dirY). */
+function drawTickAt(
+  line: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
+  x: number, y: number, dirX: number, dirY: number, base = 'A-DIMS',
+) {
+  const t = 0.05;
+  // tick = short slash rotated 45° from the dimension line direction
+  const px = -dirY, py = dirX;
+  line(x - dirX * t - px * t, y - dirY * t - py * t, x + dirX * t + px * t, y + dirY * t + py * t, base);
+}
+
+/** Window: two wall-face lines + two glass lines inside the opening (classic double-line symbol). */
+function drawWindowOn(
+  o: Opening,
+  line: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
+  layer: string,
+) {
   const perp: Vec2 = { x: -o.wallDir.y, y: o.wallDir.x };
-  // draw four parallel lines along wall direction between opening ends
   const half = o.width / 2;
   const center = o.center;
   const along = o.wallDir;
-  const depth = 0.04; // distance between lines
+  const depth = 0.04;
   for (const sign of [-1.5, -0.5, 0.5, 1.5]) {
     const cx = center.x + perp.x * depth * sign;
     const cy = center.y + perp.y * depth * sign;
-    emitLine(cx - along.x * half, cy - along.y * half, cx + along.x * half, cy + along.y * half, 'A-WINDOW');
+    line(cx - along.x * half, cy - along.y * half, cx + along.x * half, cy + along.y * half, layer);
   }
 }
 
-function drawDoor(
+/** Door: leaf line, quarter-circle swing arc, leaf-end thickness tick. */
+function drawDoorOn(
   o: Opening,
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitArc: (cx: number, cy: number, r: number, startDeg: number, endDeg: number, layer: string) => void,
+  line: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
+  arc: (cx: number, cy: number, r: number, startDeg: number, endDeg: number, layer: string) => void,
+  layer: string,
 ) {
   const along = o.wallDir;
   const n = o.normal;
@@ -630,131 +677,108 @@ function drawDoor(
     openEnd = o.openEnd;
   } else {
     const hingeSign = o.swing === 'right' ? 1 : -1;
-    hinge = {
-      x: o.center.x + along.x * (o.width / 2) * hingeSign,
-      y: o.center.y + along.y * (o.width / 2) * hingeSign,
-    };
-    closedEnd = {
-      x: o.center.x - along.x * (o.width / 2) * hingeSign,
-      y: o.center.y - along.y * (o.width / 2) * hingeSign,
-    };
-    openEnd = {
-      x: hinge.x + n.x * o.width,
-      y: hinge.y + n.y * o.width,
-    };
+    hinge = { x: o.center.x + along.x * (o.width / 2) * hingeSign, y: o.center.y + along.y * (o.width / 2) * hingeSign };
+    closedEnd = { x: o.center.x - along.x * (o.width / 2) * hingeSign, y: o.center.y - along.y * (o.width / 2) * hingeSign };
+    openEnd = { x: hinge.x + n.x * o.width, y: hinge.y + n.y * o.width };
   }
-  emitLine(hinge.x, hinge.y, closedEnd.x, closedEnd.y, 'A-DOOR');
+  line(hinge.x, hinge.y, closedEnd.x, closedEnd.y, layer);
   const a1 = Math.atan2(closedEnd.y - hinge.y, closedEnd.x - hinge.x) * 180 / Math.PI;
   const a2 = Math.atan2(openEnd.y - hinge.y, openEnd.x - hinge.x) * 180 / Math.PI;
   let start = a1, end = a2;
   let diff = end - start;
   while (diff < 0) diff += 360;
   while (diff > 360) diff -= 360;
-  if (diff > 180) {
-    const t = start; start = end; end = t;
-  }
+  if (diff > 180) { const t = start; start = end; end = t; }
   if (end < start) end += 360;
-  emitArc(hinge.x, hinge.y, o.width, start, end, 'A-DOOR');
+  arc(hinge.x, hinge.y, o.width, start, end, layer);
   if (o.leafThickness) {
     const perpOpen: Vec2 = { x: -n.y, y: n.x };
     const thk = o.leafThickness;
-    emitLine(openEnd.x, openEnd.y, openEnd.x + perpOpen.x * thk, openEnd.y + perpOpen.y * thk, 'A-DOOR');
+    line(openEnd.x, openEnd.y, openEnd.x + perpOpen.x * thk, openEnd.y + perpOpen.y * thk, layer);
   }
 }
 
-function drawStair(
+/** Stair: outline, landings with labels, per-flight treads, direction arrows, build note. */
+function drawStairOn(
   st: any,
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
-  emitPolyline: (pts: Vec2[], layer: string, closed?: boolean) => void,
+  line: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
+  text: (x: number, y: number, txt: string, h: number, base: string, horiz?: number) => void,
+  poly: (pts: Vec2[], base: string, closed?: boolean) => void,
 ) {
   const rect: Rect = st.footprint ?? st.rect;
-  // Stairwell outline
   const [sw, se, ne, nw] = rCorners(rect);
-  emitPolyline([sw, se, ne, nw], 'A-STAIR', true);
+  // Stair well envelope: explicit edges (easily selectable in any tool).
+  const env = [sw, se, ne, nw];
+  for (let j = 0; j < env.length; j++) {
+    const q = env[(j + 1) % env.length];
+    line(env[j].x, env[j].y, q.x, q.y, 'A-STAIR');
+  }
 
   const flights: any[] = st.flights ?? [];
   const landings: any[] = st.landings ?? [];
 
   if (flights.length === 0) {
-    // Legacy fallback: simple parallel tread lines.
     const t = Math.max(0.25, st.tread ?? 0.28);
     const x0 = rect.x + 0.1;
     const x1 = rect.x + rect.w - 0.1;
     let y = rect.y + 0.3;
     while (y < rect.y + rect.h - 0.3) {
-      emitLine(x0, y, x1, y, 'A-STAIR-TREAD');
+      line(x0, y, x1, y, 'A-STAIR-TREAD');
       y += t;
     }
-    emitText(rect.x + rect.w - 0.6, rect.y + rect.h - 0.3, 'UP', 0.2, 'A-STAIR-DIR');
+    text(rect.x + rect.w - 0.6, rect.y + rect.h - 0.3, 'UP', 0.2, 'A-STAIR-DIR');
     return;
   }
 
-  // Landing fills: draw outline for each landing on A-STAIR.
   for (const l of landings) {
     const lr = l.footprint as Rect;
     const [a, b, c, d] = rCorners(lr);
-    emitPolyline([a, b, c, d], 'A-STAIR', true);
-    emitText(lr.x + lr.w / 2, lr.y + lr.h / 2, `LDNG ${l.depth?.toFixed(2) ?? Math.max(lr.w, lr.h).toFixed(2)}`, 0.18, 'A-STAIR', 1);
+    poly([a, b, c, d], 'A-STAIR', true);
+    text(lr.x + lr.w / 2, lr.y + lr.h / 2, `LDNG ${l.depth?.toFixed(2) ?? Math.max(lr.w, lr.h).toFixed(2)}`, 0.18, 'A-STAIR', 1);
   }
 
-  // Flights: draw parallel tread lines across each flight, perpendicular
-  // to the direction of travel.
   for (const fl of flights) {
     const fr = fl.footprint as Rect;
     const dir: string = fl.direction;
-    // Flight boundary (lighter, same outline color).
     const [a, b, c, d] = rCorners(fr);
-    emitPolyline([a, b, c, d], 'A-STAIR', false);
-    // v1.0.1 (AGX-01): draw the ACTUAL flight going — no minimum-spacing clamp.
+    poly([a, b, c, d], 'A-STAIR', false);
     const t = fl.treadDepth ?? st.tread ?? 0.28;
     if (dir === 'north' || dir === 'south') {
-      // Horizontal treads spanning east-west; y varies.
-      const x0 = fr.x;
-      const x1 = fr.x + fr.w;
-      // Start at startPoint.y; step by tread towards endPoint.y.
-      const yStart = fl.startPoint.y;
-      const yEnd = fl.endPoint.y;
+      const x0 = fr.x; const x1 = fr.x + fr.w;
+      const yStart = fl.startPoint.y; const yEnd = fl.endPoint.y;
       const step = yEnd > yStart ? t : -t;
       for (let y = yStart + step; Math.abs(y - yEnd) > 0.005; y += step) {
         if (y < fr.y - 0.005 || y > fr.y + fr.h + 0.005) break;
-        emitLine(x0, y, x1, y, 'A-STAIR-TREAD');
+        line(x0, y, x1, y, 'A-STAIR-TREAD');
       }
     } else {
-      // Vertical treads spanning north-south; x varies.
-      const y0 = fr.y;
-      const y1 = fr.y + fr.h;
-      const xStart = fl.startPoint.x;
-      const xEnd = fl.endPoint.x;
+      const y0 = fr.y; const y1 = fr.y + fr.h;
+      const xStart = fl.startPoint.x; const xEnd = fl.endPoint.x;
       const step = xEnd > xStart ? t : -t;
       for (let x = xStart + step; Math.abs(x - xEnd) > 0.005; x += step) {
         if (x < fr.x - 0.005 || x > fr.x + fr.w + 0.005) break;
-        emitLine(x, y0, x, y1, 'A-STAIR-TREAD');
+        line(x, y0, x, y1, 'A-STAIR-TREAD');
       }
     }
-    // Direction arrow at mid-run.
     const cx = (fl.startPoint.x + fl.endPoint.x) / 2;
     const cy = (fl.startPoint.y + fl.endPoint.y) / 2;
-    drawDirArrow(cx, cy, dir, emitLine, 0.35);
+    drawDirArrowOn(cx, cy, dir, line, 0.35);
   }
 
-  // "UP" label at the bottom of the lowest flight.
-  const bottom = flights.reduce((p: any, c: any) =>
-    c.startPoint.y < p.startPoint.y ? c : p, flights[0]);
-  emitText(bottom.startPoint.x - 0.25, bottom.startPoint.y - 0.05, 'UP', 0.18, 'A-STAIR-DIR');
-  // v1.0.1 (AGX-01): annotate the ACTUAL generated geometry (per-flight going
-  // and riser), never a nominal value that differs from the drawn stair.
+  const bottom = flights.reduce((p: any, c: any) => (c.startPoint.y < p.startPoint.y ? c : p), flights[0]);
+  text(bottom.startPoint.x - 0.25, bottom.startPoint.y - 0.05, 'UP', 0.18, 'A-STAIR-DIR');
+  // Annotate the ACTUAL generated geometry (per-flight going and riser).
   const actRiser = flights[0]?.riserHeight ?? st.riserHeight ?? st.riser ?? 0;
   const actTread = Math.min(...flights.map((f: any) => f.treadDepth ?? st.tread ?? st.treadDepth ?? 0.28));
   const lvl = st.floor ?? 0;
   const label = `${flights.length}F · ${st.totalRisers}R @ ${(actRiser*100).toFixed(0)}×${(actTread*100).toFixed(0)} · F${lvl}→F${lvl + 1} ${st.type}${st.entrySide ? ' ent.' + st.entrySide : ''}`;
-  emitText(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, 'A-STAIR-DIR');
+  text(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, 'A-STAIR-DIR');
 }
 
-/** Draw a small arrow pointing in `dir` direction, centered at (cx,cy). */
-function drawDirArrow(
+/** Up/down direction arrow with open V head. */
+function drawDirArrowOn(
   cx: number, cy: number, dir: string,
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
+  line: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
   size = 0.3,
 ) {
   let tipX = cx, tipY = cy;
@@ -765,18 +789,18 @@ function drawDirArrow(
     case 'east':  tipX = cx + size; bx = cx - size; break;
     case 'west':  tipX = cx - size; bx = cx + size; break;
   }
-  emitLine(bx, by, tipX, tipY, 'A-STAIR-DIR');
-  // Arrowhead
+  line(bx, by, tipX, tipY, 'A-STAIR-DIR');
   if (dir === 'north' || dir === 'south') {
     const s = dir === 'north' ? -1 : 1;
-    emitLine(tipX, tipY, tipX - 0.08, tipY + s * 0.12, 'A-STAIR-DIR');
-    emitLine(tipX, tipY, tipX + 0.08, tipY + s * 0.12, 'A-STAIR-DIR');
+    line(tipX, tipY, tipX - 0.08, tipY + s * 0.12, 'A-STAIR-DIR');
+    line(tipX, tipY, tipX + 0.08, tipY + s * 0.12, 'A-STAIR-DIR');
   } else {
     const s = dir === 'east' ? -1 : 1;
-    emitLine(tipX, tipY, tipX + s * 0.12, tipY - 0.08, 'A-STAIR-DIR');
-    emitLine(tipX, tipY, tipX + s * 0.12, tipY + 0.08, 'A-STAIR-DIR');
+    line(tipX, tipY, tipX + s * 0.12, tipY - 0.08, 'A-STAIR-DIR');
+    line(tipX, tipY, tipX + s * 0.12, tipY + 0.08, 'A-STAIR-DIR');
   }
 }
+
 
 function drawNorthArrow(
   cx: number, cy: number,
@@ -795,9 +819,7 @@ function emitCircleStub(
   cx: number, cy: number, r: number,
   emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
 ) {
-  // Draw a circle using line segments (polygon). A proper CIRCLE entity isn't used here
-  // to keep this helper independent; caller can use emitCircle instead — but used for
-  // north arrow circle in a line-only fashion.
+  // A CIRCLE entity isn't used here to keep this helper line-only.
   const n = 24;
   for (let i = 0; i < n; i++) {
     const a1 = (i / n) * Math.PI * 2;
@@ -806,34 +828,61 @@ function emitCircleStub(
   }
 }
 
-function drawTitleBlock(
+/**
+ * P16-D title block: professional drawing information + layer legend, model space,
+ * A-TITLE. Deterministic — no wall-clock dates (byte determinism is a hard contract).
+ */
+function drawTitleBlockV2(
   cand: LayoutCandidate,
   projectName: string,
   emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
   emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
-) {
-  // Place a simple title block below the plan in model space.
-  const pad = 1.5;
+  siteBox: { x: number; y: number; w: number; h: number } | null,
+  polyArea: (poly: Vec2[] | undefined, fallback: Rect) => number,
+  totalNetArea: number,
+  swLine?: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
+): void {
   const fr = cand.floors[0].footprint;
+  const pad = 1.5;
   const bx0 = fr.x - pad;
-  const by0 = fr.y - pad - 2.5;
+  const by0 = fr.y - pad - 4.6;
   const bx1 = fr.x + fr.w + pad;
   const by1 = fr.y + fr.h + pad;
-  // outer border around full drawing (approximate)
+  // outer border around the full drawing
   emitLine(bx0, by0, bx1, by0, 'A-TITLE');
   emitLine(bx1, by0, bx1, by1, 'A-TITLE');
   emitLine(bx1, by1, bx0, by1, 'A-TITLE');
   emitLine(bx0, by1, bx0, by0, 'A-TITLE');
-  // Title block bottom-right
-  const tw = 10, th = 2;
-  const tx0 = bx1 - tw, ty0 = by0;
-  emitLine(tx0, ty0, bx1, ty0, 'A-TITLE');
-  emitLine(tx0, ty0 + th, bx1, ty0 + th, 'A-TITLE');
-  emitLine(tx0, ty0, tx0, ty0 + th, 'A-TITLE');
-  emitLine(bx1, ty0, bx1, ty0 + th, 'A-TITLE');
-  emitText(tx0 + 0.3, ty0 + th - 0.5, projectName, 0.4, 'A-TITLE');
-  emitText(tx0 + 0.3, ty0 + th - 1.0, 'ArchGenius — AI Architectural Planning & Professional AutoCAD System', 0.22, 'A-TITLE');
-  emitText(tx0 + 0.3, ty0 + 0.3, `Strategy: ${cand.metadata.strategy} | Floors: ${cand.floors.length} | Scale: 1:100`, 0.2, 'A-TITLE');
+  // title box, bottom-right
+  const tw = Math.min(11, Math.max(6, fr.w)), th = 2.4;
+  const tx0 = bx1 - tw, ty0 = by0 + 0.15;
+  emitLine(tx0, ty0, bx1 - 0.15, ty0, 'A-TITLE');
+  emitLine(bx1 - 0.15, ty0, bx1 - 0.15, ty0 + th, 'A-TITLE');
+  emitLine(bx1 - 0.15, ty0 + th, tx0, ty0 + th, 'A-TITLE');
+  emitLine(tx0, ty0 + th, tx0, ty0, 'A-TITLE');
+  emitLine(tx0 + 0.25, ty0 + th - 0.75, bx1 - 0.4, ty0 + th - 0.75, 'A-TITLE');
+  emitText(tx0 + 0.3, ty0 + th - 0.55, projectName, 0.32, 'A-TITLE');
+  emitText(tx0 + 0.3, ty0 + th - 1.1, `FLOOR PLANS — ${cand.floors.length} FLOOR(S) | STRATEGY ${cand.metadata.strategy}`, 0.18, 'A-TITLE');
+  emitText(tx0 + 0.3, ty0 + th - 1.5, 'UNITS: MILLIMETRES | MODEL SPACE 1:1 | PLOT SCALE 1:100 @ A1', 0.16, 'A-TITLE');
+  const siteTxt = siteBox ? ` | SITE ${siteBox.w.toFixed(1)}x${siteBox.h.toFixed(1)} m` : '';
+  emitText(tx0 + 0.3, ty0 + th - 1.9, `NET FLOOR AREA (SUM OF ROOMS, ALL FLOORS): ${totalNetArea.toFixed(1)} m²${siteTxt}`, 0.16, 'A-TITLE');
+  emitText(tx0 + 0.3, ty0 + 0.12, 'ARCHGENIUS — AUTOMATED CAD DRAFT — PROFESSIONAL REVIEW REQUIRED', 0.14, 'A-TITLE');
+  // layer legend — swatch on the discipline layer + name on A-TITLE
+  const LEG: Array<[string, string]> = [
+    ['A-WALL-EXT', 'WALL, EXTERIOR'], ['A-WALL-INT', 'WALL, INTERIOR'], ['A-WALL-CORE', 'WALL, CORE'],
+    ['A-DOOR', 'DOOR + SWING'], ['A-WINDOW', 'WINDOW'], ['A-STAIR', 'STAIR / LANDING'],
+    ['A-PARKING', 'PARKING STALL'],
+    ['A-DIMS', 'DIMENSIONS (m)'], ['A-SITE', 'SITE BOUNDARY'], ['A-GRID', 'GRID / AXIS'],
+  ];
+  const lx = tx0 - 3.6, lyTop = ty0 + 0.35;
+  emitText(lx, lyTop + 0.35, 'LEGEND', 0.2, 'A-TITLE');
+  const sw = swLine ?? emitLine;
+  for (let i = 0; i < LEG.length; i++) {
+    const y = lyTop + i * 0.3;
+    sw(lx, y, lx + 0.9, y, LEG[i][0]);
+    emitText(lx + 1.15, y - 0.06, `${LEG[i][0]} — ${LEG[i][1]}`, 0.14, 'A-TITLE');
+  }
+  emitLine(lx - 0.2, ty0, lx - 0.2, ty0 + th + 1.3, 'A-TITLE');
 }
 
 function emitGrid(
@@ -863,207 +912,75 @@ function emitGridShifted(
   emitText(fr.x - 0.7, cy, '2', 0.25, 'A-AXIS-TEXT', 2);
 }
 
-function emitRoomDimensions(
+/** Room chain dimensions: dim line + 45° ticks + value, bottom and left of each room. */
+function emitRoomDims(
   spaces: Space[],
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
-) { emitRoomDimensionsShifted(spaces, emitLine, emitText, 0, 0); }
-
-function emitRoomDimensionsShifted(
-  spaces: Space[],
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
   yOff: number,
-  floorIdx: number,
-  includeGenericLayers = true,
+  line: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
+  text: (x: number, y: number, txt: string, h: number, base: string, horiz?: number) => void,
 ) {
   for (const s of spaces) {
     if (s.type === 'parking' || s.type === 'yard') continue;
     if (s.rect.w < 2 || s.rect.h < 2) continue;
-    const r = shiftRect(s.rect, yOff);
-    const off = 0.15;
-    const base = `A-FLOOR-${floorIdx}-A-DIMS`;
-    emitLine(r.x, r.y - off, r.x + r.w, r.y - off, base);
-    emitText(r.x + r.w / 2, r.y - off - 0.15, `${r.w.toFixed(2)}`, 0.12, base, 1);
-    emitLine(r.x - off, r.y, r.x - off, r.y + r.h, base);
-    emitText(r.x - off - 0.2, r.y + r.h / 2, `${r.h.toFixed(2)}`, 0.12, base, 2);
-    if (floorIdx === 0 && includeGenericLayers) {
-      emitLine(r.x, r.y - off, r.x + r.w, r.y - off, 'A-DIMS');
-      emitText(r.x + r.w / 2, r.y - off - 0.15, `${r.w.toFixed(2)}`, 0.12, 'A-DIMS', 1);
-      emitLine(r.x - off, r.y, r.x - off, r.y + r.h, 'A-DIMS');
-      emitText(r.x - off - 0.2, r.y + r.h / 2, `${r.h.toFixed(2)}`, 0.12, 'A-DIMS', 2);
-    }
+    const r = { x: s.rect.x, y: s.rect.y + yOff, w: s.rect.w, h: s.rect.h };
+    const off = 0.18;
+    line(r.x, r.y - off, r.x + r.w, r.y - off, 'A-DIMS');
+    drawTickAt(line, r.x, r.y - off, 1, 0);
+    drawTickAt(line, r.x + r.w, r.y - off, 1, 0);
+    text(r.x + r.w / 2, r.y - off - 0.16, `${r.w.toFixed(2)} m`, 0.12, 'A-DIMS', 1);
+    line(r.x - off, r.y, r.x - off, r.y + r.h, 'A-DIMS');
+    drawTickAt(line, r.x - off, r.y, 0, 1);
+    drawTickAt(line, r.x - off, r.y + r.h, 0, 1);
+    text(r.x - off - 0.2, r.y + r.h / 2, `${r.h.toFixed(2)} m`, 0.12, 'A-DIMS', 2);
   }
 }
 
-function emitOuterDimensions(
+/** Building overall dimensions per floor, outboard with witness lines + ticks. */
+function emitOuterDims(
   fr: Rect,
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
-) { emitOuterDimensionsShifted(fr, emitLine, emitText, 0, 0); }
-
-function emitOuterDimensionsShifted(
-  fr: Rect,
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
   yOff: number,
-  floorIdx: number,
-  includeGenericLayers = true,
+  fi: number,
+  line: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
+  text: (x: number, y: number, txt: string, h: number, base: string, horiz?: number) => void,
 ) {
   const r = shiftRect(fr, yOff);
   const off = 1.0;
-  const base = `A-FLOOR-${floorIdx}-A-DIMS`;
-  emitLine(r.x, r.y - off, r.x + r.w, r.y - off, base);
-  emitText((r.x + r.x + r.w) / 2, r.y - off - 0.3, `${r.w.toFixed(2)} m F${floorIdx}`, 0.22, base, 1);
-  emitLine(r.x, r.y - off - 0.15, r.x, r.y - off + 0.15, base);
-  emitLine(r.x + r.w, r.y - off - 0.15, r.x + r.w, r.y - off + 0.15, base);
-  emitLine(r.x - off, r.y, r.x - off, r.y + r.h, base);
-  emitText(r.x - off - 0.3, (r.y + r.y + r.h) / 2, `${r.h.toFixed(2)} m`, 0.22, base, 1);
-  emitLine(r.x - off - 0.15, r.y, r.x - off + 0.15, r.y, base);
-  emitLine(r.x - off - 0.15, r.y + r.h, r.x - off + 0.15, r.y + r.h, base);
-  if (floorIdx === 0 && includeGenericLayers) {
-    emitLine(r.x, r.y - off, r.x + r.w, r.y - off, 'A-DIMS');
-    emitText((r.x + r.x + r.w) / 2, r.y - off - 0.3, `${r.w.toFixed(2)} m`, 0.22, 'A-DIMS', 1);
-    emitLine(r.x, r.y - off - 0.15, r.x, r.y - off + 0.15, 'A-DIMS');
-    emitLine(r.x + r.w, r.y - off - 0.15, r.x + r.w, r.y - off + 0.15, 'A-DIMS');
-    emitLine(r.x - off, r.y, r.x - off, r.y + r.h, 'A-DIMS');
-    emitText(r.x - off - 0.3, (r.y + r.y + r.h) / 2, `${r.h.toFixed(2)} m`, 0.22, 'A-DIMS', 1);
-    emitLine(r.x - off - 0.15, r.y, r.x - off + 0.15, r.y, 'A-DIMS');
-    emitLine(r.x - off - 0.15, r.y + r.h, r.x - off + 0.15, r.y + r.h, 'A-DIMS');
-  }
+  line(r.x, r.y - 0.1, r.x, r.y - off - 0.15, 'A-DIMS');
+  line(r.x + r.w, r.y - 0.1, r.x + r.w, r.y - off - 0.15, 'A-DIMS');
+  line(r.x, r.y - off, r.x + r.w, r.y - off, 'A-DIMS');
+  drawTickAt(line, r.x, r.y - off, 1, 0);
+  drawTickAt(line, r.x + r.w, r.y - off, 1, 0);
+  text((r.x + r.x + r.w) / 2, r.y - off - 0.32, `${r.w.toFixed(2)} m F${fi}`, 0.2, 'A-DIMS', 1);
+  line(r.x - 0.1, r.y, r.x - off - 0.15, r.y, 'A-DIMS');
+  line(r.x - 0.1, r.y + r.h, r.x - off - 0.15, r.y + r.h, 'A-DIMS');
+  line(r.x - off, r.y, r.x - off, r.y + r.h, 'A-DIMS');
+  drawTickAt(line, r.x - off, r.y, 0, 1);
+  drawTickAt(line, r.x - off, r.y + r.h, 0, 1);
+  text(r.x - off - 0.3, (r.y + r.y + r.h) / 2, `${r.h.toFixed(2)} m`, 0.2, 'A-DIMS', 2);
 }
 
-// Layer-aware wrappers
-function drawWindowWithLayer(o: Opening, emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void, layer: string) {
-  const perp: Vec2 = { x: -o.wallDir.y, y: o.wallDir.x };
-  const half = o.width / 2;
-  const center = o.center;
-  const along = o.wallDir;
-  const depth = 0.04;
-  for (const sign of [-1.5, -0.5, 0.5, 1.5]) {
-    const cx = center.x + perp.x * depth * sign;
-    const cy = center.y + perp.y * depth * sign;
-    emitLine(cx - along.x * half, cy - along.y * half, cx + along.x * half, cy + along.y * half, layer);
-  }
-}
-
-function drawDoorWithLayer(
-  o: Opening,
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitArc: (cx: number, cy: number, r: number, startDeg: number, endDeg: number, layer: string) => void,
-  layer: string,
+/** Site overall dimensions on the ground-floor context band. */
+function emitSiteDims(
+  site: { x: number; y: number; w: number; h: number },
+  line: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
+  text: (x: number, y: number, txt: string, h: number, base: string, horiz?: number) => void,
 ) {
-  const along = o.wallDir;
-  const n = o.normal;
-  let hinge: Vec2, closedEnd: Vec2, openEnd: Vec2;
-  if (o.hinge && o.leafEnd && o.openEnd) {
-    hinge = o.hinge; closedEnd = o.leafEnd; openEnd = o.openEnd;
-  } else {
-    const hingeSign = o.swing === 'right' ? 1 : -1;
-    hinge = { x: o.center.x + along.x * (o.width / 2) * hingeSign, y: o.center.y + along.y * (o.width / 2) * hingeSign };
-    closedEnd = { x: o.center.x - along.x * (o.width / 2) * hingeSign, y: o.center.y - along.y * (o.width / 2) * hingeSign };
-    openEnd = { x: hinge.x + n.x * o.width, y: hinge.y + n.y * o.width };
-  }
-  emitLine(hinge.x, hinge.y, closedEnd.x, closedEnd.y, layer);
-  const a1 = Math.atan2(closedEnd.y - hinge.y, closedEnd.x - hinge.x) * 180 / Math.PI;
-  const a2 = Math.atan2(openEnd.y - hinge.y, openEnd.x - hinge.x) * 180 / Math.PI;
-  let start = a1, end = a2;
-  let diff = end - start; while (diff < 0) diff += 360; while (diff > 360) diff -= 360;
-  if (diff > 180) { const t = start; start = end; end = t; }
-  if (end < start) end += 360;
-  emitArc(hinge.x, hinge.y, o.width, start, end, layer);
-  if (o.leafThickness) {
-    const perpOpen: Vec2 = { x: -n.y, y: n.x };
-    const thk = o.leafThickness;
-    emitLine(openEnd.x, openEnd.y, openEnd.x + perpOpen.x * thk, openEnd.y + perpOpen.y * thk, layer);
-  }
+  const off = 1.9;
+  line(site.x, site.y - 0.6, site.x, site.y - off - 0.15, 'A-DIMS');
+  line(site.x + site.w, site.y - 0.6, site.x + site.w, site.y - off - 0.15, 'A-DIMS');
+  line(site.x, site.y - off, site.x + site.w, site.y - off, 'A-DIMS');
+  drawTickAt(line, site.x, site.y - off, 1, 0);
+  drawTickAt(line, site.x + site.w, site.y - off, 1, 0);
+  text(site.x + site.w / 2, site.y - off - 0.34, `SITE ${site.w.toFixed(2)} m`, 0.22, 'A-DIMS', 1);
+  line(site.x - 0.6, site.y, site.x - 2.5, site.y, 'A-DIMS');
+  line(site.x - 0.6, site.y + site.h, site.x - 2.5, site.y + site.h, 'A-DIMS');
+  line(site.x - off, site.y, site.x - off, site.y + site.h, 'A-DIMS');
+  drawTickAt(line, site.x - off, site.y, 0, 1);
+  drawTickAt(line, site.x - off, site.y + site.h, 0, 1);
+  text(site.x - off - 0.34, site.y + site.h / 2, `SITE ${site.h.toFixed(2)} m`, 0.22, 'A-DIMS', 2);
 }
 
-function drawStairWithLayers(
-  st: any,
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
-  emitPolyline: (pts: Vec2[], layer: string, closed?: boolean) => void,
-  floorIdx: number,
-) {
-  const rect: Rect = st.footprint ?? st.rect;
-  const [sw, se, ne, nw] = rCorners(rect);
-  emitPolyline([sw, se, ne, nw], `A-FLOOR-${floorIdx}-A-STAIR`, true);
-  const flights: any[] = st.flights ?? [];
-  const landings: any[] = st.landings ?? [];
-  if (flights.length === 0) {
-    const t = Math.max(0.25, st.tread ?? 0.28);
-    const x0 = rect.x + 0.1; const x1 = rect.x + rect.w - 0.1;
-    let y = rect.y + 0.3; while (y < rect.y + rect.h - 0.3) { emitLine(x0, y, x1, y, `A-FLOOR-${floorIdx}-A-STAIR-TREAD`); y += t; }
-    emitText(rect.x + rect.w - 0.6, rect.y + rect.h - 0.3, 'UP', 0.2, `A-FLOOR-${floorIdx}-A-STAIR-DIR`);
-    return;
-  }
-  for (const l of landings) {
-    const lr = l.footprint as Rect;
-    const [a, b, c, d] = rCorners(lr);
-    emitPolyline([a, b, c, d], `A-FLOOR-${floorIdx}-A-STAIR`, true);
-    emitText(lr.x + lr.w / 2, lr.y + lr.h / 2, 'LDNG', 0.18, `A-FLOOR-${floorIdx}-A-STAIR`, 1);
-  }
-  for (const fl of flights) {
-    const fr = fl.footprint as Rect;
-    const dir: string = fl.direction;
-    const [a, b, c, d] = rCorners(fr);
-    emitPolyline([a, b, c, d], `A-FLOOR-${floorIdx}-A-STAIR`, false);
-    const t = fl.treadDepth ?? st.tread ?? 0.28; // v1.0.1 (AGX-01): actual going, no clamp
-    if (dir === 'north' || dir === 'south') {
-      const x0 = fr.x; const x1 = fr.x + fr.w;
-      const yStart = fl.startPoint.y; const yEnd = fl.endPoint.y;
-      const step = yEnd > yStart ? t : -t;
-      for (let y = yStart + step; Math.abs(y - yEnd) > 0.005; y += step) {
-        if (y < fr.y - 0.005 || y > fr.y + fr.h + 0.005) break;
-        emitLine(x0, y, x1, y, `A-FLOOR-${floorIdx}-A-STAIR-TREAD`);
-      }
-    } else {
-      const y0 = fr.y; const y1 = fr.y + fr.h;
-      const xStart = fl.startPoint.x; const xEnd = fl.endPoint.x;
-      const step = xEnd > xStart ? t : -t;
-      for (let x = xStart + step; Math.abs(x - xEnd) > 0.005; x += step) {
-        if (x < fr.x - 0.005 || x > fr.x + fr.w + 0.005) break;
-        emitLine(x, y0, x, y1, `A-FLOOR-${floorIdx}-A-STAIR-TREAD`);
-      }
-    }
-    const cx = (fl.startPoint.x + fl.endPoint.x) / 2;
-    const cy = (fl.startPoint.y + fl.endPoint.y) / 2;
-    drawDirArrowWithLayer(cx, cy, dir, emitLine, 0.35, `A-FLOOR-${floorIdx}-A-STAIR-DIR`);
-  }
-  const bottom = flights.reduce((p: any, c: any) => c.startPoint.y < p.startPoint.y ? c : p, flights[0]);
-  emitText(bottom.startPoint.x - 0.25, bottom.startPoint.y - 0.05, 'UP', 0.18, `A-FLOOR-${floorIdx}-A-STAIR-DIR`);
-  // v1.0.1 (AGX-01): annotate the ACTUAL generated geometry.
-  const actRiser = flights[0]?.riserHeight ?? st.riserHeight ?? st.riser ?? 0;
-  const actTread = Math.min(...flights.map((f: any) => f.treadDepth ?? st.tread ?? st.treadDepth ?? 0.28));
-  const label = `${flights.length}F · ${st.totalRisers}R @ ${(actRiser*100).toFixed(0)}×${(actTread*100).toFixed(0)} F${floorIdx}`;
-  emitText(rect.x + 0.1, rect.y + rect.h - 0.15, label, 0.15, `A-FLOOR-${floorIdx}-A-STAIR-DIR`);
-}
-
-function drawDirArrowWithLayer(
-  cx: number, cy: number, dir: string,
-  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  size: number,
-  layer: string,
-) {
-  let tipX = cx, tipY = cy; let bx = cx, by = cy;
-  switch (dir) {
-    case 'north': tipY = cy + size; by = cy - size; break;
-    case 'south': tipY = cy - size; by = cy + size; break;
-    case 'east':  tipX = cx + size; bx = cx - size; break;
-    case 'west':  tipX = cx - size; bx = cx + size; break;
-  }
-  emitLine(bx, by, tipX, tipY, layer);
-  if (dir === 'north' || dir === 'south') {
-    const s = dir === 'north' ? -1 : 1;
-    emitLine(tipX, tipY, tipX - 0.08, tipY + s * 0.12, layer);
-    emitLine(tipX, tipY, tipX + 0.08, tipY + s * 0.12, layer);
-  } else {
-    const s = dir === 'east' ? -1 : 1;
-    emitLine(tipX, tipY, tipX + s * 0.12, tipY - 0.08, layer);
-    emitLine(tipX, tipY, tipX + s * 0.12, tipY + 0.08, layer);
-  }
-}
+// legacy no-op aliases removed in P16-D (single implementation per concern)
 
 function writeLtype(b: string[], name: string, desc: string, pattern: number[]) {
   // Minimal R12 fix: 49/74 dash pattern elements cause AutoCAD to open empty (W1 PASS without 49, W2 FAIL with 49 31.75)
@@ -1078,7 +995,15 @@ function writeLtype(b: string[], name: string, desc: string, pattern: number[]) 
   b.push('40', '0');
 }
 
-/** Validate the structural integrity of a generated DXF string (lightweight). */
+/**
+ * P16-D DXF quality gate — structural + presentation sanity, deterministic and
+ * line-oriented (no external parser). Beyond the R12 profile checks this audits:
+ * NaN/Infinity coordinates, zero-length segments, exact same-layer duplicate
+ * entities, undefined layer references, invalid text (empty string / zero height),
+ * invalid ARC radius, under-vertexed polylines, absurd coordinate magnitudes and
+ * dangling linetype references. Coincident geometry across DIFFERENT layers stays
+ * legal — shared building faces are legitimate representation, not an error.
+ */
 export function validateDXFStructure(dxf: string): { ok: boolean; errors: string[] } {
   const errors: string[] = [];
   const lines = dxf.split(/\r?\n/);
@@ -1098,5 +1023,96 @@ export function validateDXFStructure(dxf: string): { ok: boolean; errors: string
   if (dxf.includes('$MEASUREMENT')) errors.push('$MEASUREMENT is not valid in DXF R12 (AC1009)');
   if (dxf.includes('$LUNITS')) errors.push('$LUNITS is not valid in minimal DXF R12 (AC1009) — remove');
   // Minimal TABLES: LTYPE + LAYER + STYLE only. VPORT/VIEW/UCS/APPID/DIMSTYLE are optional and not required.
+
+  // ---- entity-level audit ----
+  let entStart = -1;
+  for (let i = 0; i + 3 < lines.length; i++) {
+    if (lines[i].trim() === '0' && lines[i + 1] === 'SECTION' && lines[i + 2].trim() === '2' && lines[i + 3].trim() === 'ENTITIES') { entStart = i + 4; break; }
+  }
+  if (entStart >= 0) {
+    // Defined layer names + linetypes from TABLES.
+    const definedLayers = new Set<string>();
+    const definedLtypes = new Set<string>(['ByLayer', 'ByBlock', 'CONTINUOUS']);
+    for (let i = 0; i + 1 < lines.length; i++) {
+      if (lines[i].trim() !== '0') continue;
+      const t = lines[i + 1].trim();
+      if (t !== 'LAYER' && t !== 'LTYPE') continue;
+      // record layout: (0,TYPE) (2,NAME) ... — NAME is the first code-2 pair of the record
+      for (let j = i + 2; j + 1 < lines.length && j < i + 14; j += 2) {
+        const c = lines[j].trim();
+        if (c === '0') break;
+        if (c === '2') { if (t === 'LAYER') definedLayers.add(lines[j + 1].trim()); else definedLtypes.add(lines[j + 1].trim()); break; }
+      }
+    }
+    // Walk ENTITIES records; validate per record + collect signatures.
+    const sig = new Map<string, number>();
+    let nonFinite = 0, zeroLen = 0, badText = 0, badArc = 0, thinPoly = 0, huge = 0, dup = 0;
+    let curType = '';
+    let codes: Record<string, string> = {};
+    let verts = 0;
+    let polyPts = '';
+    const numericCodes = new Set(['10', '20', '30', '11', '21', '31', '40', '50', '51', '42']);
+    const finishRecord = () => {
+      if (!curType) return;
+      if (curType === 'LINE' && codes['10'] === codes['11'] && codes['20'] === codes['21']) zeroLen++;
+      if (curType === 'ARC' && !(Number(codes['40']) > 0)) badArc++;
+      if (curType === 'TEXT' && (codes['1'] === undefined || codes['1'] === '' || !(Number(codes['40']) > 0))) badText++;
+      if (curType === 'POLYLINE' && verts < 2) thinPoly++;
+      if (curType === 'LINE' || curType === 'ARC' || curType === 'TEXT' || curType === 'POLYLINE') {
+        const key = `${curType}|${codes['8'] ?? ''}|` + ['10', '20', '11', '21', '40', '50', '51', '1'].map(c => codes[c] ?? '').join(',') + (curType === 'POLYLINE' ? `|${verts}:${polyPts}` : '');
+        const n = (sig.get(key) ?? 0) + 1;
+        if (n > 1) dup++;
+        sig.set(key, n);
+      }
+      curType = ''; codes = {};
+    };
+    for (let i = entStart; i + 1 < lines.length; i++) {
+      const code = lines[i].trim();
+      const value = lines[i + 1];
+      if (code === '0') {
+        const t = value.trim();
+        if (t === 'ENDSEC' || t === 'EOF') { finishRecord(); break; }
+        if (t === 'VERTEX' && curType === 'POLYLINE') { verts++; i++; continue; } // vertex codes fold into polyPts below
+        if (t === 'SEQEND') { i++; continue; } // finalizes when the outer loop hits the next 0 record
+        finishRecord();
+        i++; // consume the entity type line
+        if (t === 'POLYLINE') { verts = 0; polyPts = ''; }
+        curType = t; codes = {};
+        continue;
+      }
+      if (!curType) continue;
+      if (numericCodes.has(code)) {
+        const n = Number(value.trim());
+        if (!Number.isFinite(n)) nonFinite++;
+        else if (Math.abs(n) > 1e9) huge++;
+      }
+      if (code === '8') {
+        const layer = value.trim();
+        if (layer && !definedLayers.has(layer)) errors.push(`Entity references undefined layer: ${layer}`);
+      }
+      if (code === '6') {
+        const lt = value.trim();
+        if (lt && !definedLtypes.has(lt)) errors.push(`Invalid linetype reference: ${lt}`);
+      }
+      if (curType === 'POLYLINE' && (code === '10' || code === '20')) polyPts += value.trim() + ',';
+      if (curType === 'LINE' || curType === 'TEXT' || curType === 'ARC' || curType === 'POLYLINE') {
+        codes[code] = value.trim();
+      }
+      i++; // consumed the value line
+    }
+    finishRecord();
+    const uniq: string[] = [];
+    for (const e of errors) if (!uniq.includes(e)) uniq.push(e);
+    errors.length = 0;
+    for (const e of uniq) errors.push(e);
+    if (nonFinite) errors.push(`Non-finite (NaN/Infinity) coordinates in ${nonFinite} group values`);
+    if (zeroLen) errors.push(`Zero-length LINE segments: ${zeroLen}`);
+    if (dup) errors.push(`Exact duplicate entities on the same layer: ${dup}`);
+    if (badText) errors.push(`Invalid TEXT (empty string or zero/negative height): ${badText}`);
+    if (badArc) errors.push(`Invalid ARC radius (<= 0): ${badArc}`);
+    if (thinPoly) errors.push(`POLYLINE with fewer than 2 vertices: ${thinPoly}`);
+    if (huge) errors.push(`Coordinate magnitude beyond sane drawing bounds (|v| > 1e9 mm): ${huge}`);
+  }
   return { ok: errors.length === 0, errors };
 }
+
