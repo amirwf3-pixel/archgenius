@@ -550,8 +550,13 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
           if (p.y > maxY) maxY = p.y;
         }
         siteBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-        emitText(minX, minY - 0.8, `SITE ${siteShape} ${siteBox.w.toFixed(1)}x${siteBox.h.toFixed(1)}m`, 0.3, 'A-SITE', 0);
-        emitText(minX, minY - 1.2, `Setbacks N=${appliedSetbacks?.find((s:any)=>s.direction==='north')?.value ?? '?'} S=${appliedSetbacks?.find((s:any)=>s.direction==='south')?.value ?? '?'} E=${appliedSetbacks?.find((s:any)=>s.direction==='east')?.value ?? '?'} W=${appliedSetbacks?.find((s:any)=>s.direction==='west')?.value ?? '?'}`, 0.2, 'A-SETBACK', 0);
+        // P44 — the lower site/setback metadata was anchored at the site's min-x,
+        // which for a site starting at x=0 lands LEFT of the drawing border
+        // (border = footprint.x - 1.5), clipping the text. Clamp it inside the border.
+        const borderL = candidate.floors[0].footprint.x - 1.5;
+        const metaX = Math.max(minX, borderL + 0.15);
+        emitText(metaX, minY - 0.8, `SITE ${siteShape} ${siteBox.w.toFixed(1)}x${siteBox.h.toFixed(1)}m`, 0.3, 'A-SITE', 0);
+        emitText(metaX, minY - 1.2, `Setbacks N=${appliedSetbacks?.find((s:any)=>s.direction==='north')?.value ?? '?'} S=${appliedSetbacks?.find((s:any)=>s.direction==='south')?.value ?? '?'} E=${appliedSetbacks?.find((s:any)=>s.direction==='east')?.value ?? '?'} W=${appliedSetbacks?.find((s:any)=>s.direction==='west')?.value ?? '?'}`, 0.2, 'A-SETBACK', 0);
       }
     }
 
@@ -1228,7 +1233,43 @@ function drawTitleBlockV2(
   // the footprint and fit each long line to the box; wider plans keep the exact
   // legacy layout byte-for-byte.
   const small = fr.w < 9;
-  const tw = small ? Math.max(5, fr.w * 0.62) : Math.min(11, Math.max(6, fr.w)), th = 2.4;
+  // layer legend — swatch on the discipline layer + name on A-TITLE (declared early so
+  // the title-box width can be sized against the legend's column needs).
+  const LEG: Array<[string, string]> = [
+    ['A-WALL-EXT', 'WALL, EXTERIOR'], ['A-WALL-INT', 'WALL, INTERIOR'], ['A-WALL-CORE', 'WALL, CORE'],
+    ['A-DOOR', 'DOOR + SWING'], ['A-WINDOW', 'WINDOW'], ['A-STAIR', 'STAIR / LANDING'],
+    ['A-PARKING', 'PARKING STALL'],
+    ['A-DIMS', 'DIMENSIONS (m)'], ['A-TEXT', 'GENERAL NOTES'], ['A-SITE', 'SITE BOUNDARY'], ['A-GRID', 'GRID / AXIS'],
+  ];
+  const legRow = (i: number) => `${LEG[i][0]} — ${LEG[i][1]}`;
+  const maxLegLen = Math.max(...LEG.map((_, i) => legRow(i).length));
+  const legacyTw = small ? Math.max(5, fr.w * 0.62) : Math.min(11, Math.max(6, fr.w));
+  const th = 2.4;
+  // Title lines declared early so the box can be sized to them.
+  const floorLine = `FLOOR PLANS — ${cand.floors.length} FLOOR(S) | STRATEGY ${cand.metadata.strategy}`;
+  const unitsLine = 'UNITS: MILLIMETRES | MODEL SPACE 1:1 | PLOT SCALE 1:100 @ A1';
+  const siteTxt = siteBox ? ` | SITE ${siteBox.w.toFixed(1)}x${siteBox.h.toFixed(1)} m` : '';
+  const netLine = `NET FLOOR AREA (SUM OF ROOMS, ALL FLOORS): ${totalNetArea.toFixed(1)} m²${siteTxt}`;
+  const honestyLine = 'ARCHGENIUS — AUTOMATED CAD DRAFT — PROFESSIONAL REVIEW REQUIRED';
+  // P44 — the legend was starved on medium plans: the box greedily took
+  // min(11, max(6, fr.w)) and left the beside column < 3 m, forcing legend rows down
+  // to 0.09 m, across the box border, and dropping rows. When the legacy width would
+  // starve the legend, size the box to its longest line to free a legible column.
+  const LEG_SW = 0.8, LEG_TEXT_X = 1.05, LEG_MIN_H = 0.12;
+  const legendFits = (twCand: number): boolean => {
+    const tx0c = bx1 - twCand;
+    const lxc = Math.max(bx0 + 0.15, tx0c - 3.6);
+    const budget = (tx0c - 0.15) - (lxc + LEG_TEXT_X);
+    return maxLegLen * LEG_MIN_H * ROOM_TXT_CHAR_W <= budget;
+  };
+  let tw = legacyTw;
+  if (!small && !legendFits(legacyTw)) {
+    const maxTitleW = Math.max(
+      projectName.length * 0.32, floorLine.length * 0.18, unitsLine.length * 0.16,
+      netLine.length * 0.16, honestyLine.length * 0.14) * ROOM_TXT_CHAR_W;
+    const contentTw = Math.min(legacyTw, Math.max(6, maxTitleW + 0.6));
+    if (legendFits(contentTw)) tw = contentTw;
+  }
   const fitTitleH = (txt: string, base: number): number =>
     small ? Math.max(0.09, Math.min(base, (tw - 0.6) / (txt.length * ROOM_TXT_CHAR_W))) : base;
   const tx0 = bx1 - tw, ty0 = by0 + 0.15;
@@ -1238,63 +1279,50 @@ function drawTitleBlockV2(
   emitLine(tx0, ty0 + th, tx0, ty0, 'A-TITLE');
   emitLine(tx0 + 0.25, ty0 + th - 0.75, bx1 - 0.4, ty0 + th - 0.75, 'A-TITLE');
   emitText(tx0 + 0.3, ty0 + th - 0.55, projectName, fitTitleH(projectName, 0.32), 'A-TITLE');
-  const floorLine = `FLOOR PLANS — ${cand.floors.length} FLOOR(S) | STRATEGY ${cand.metadata.strategy}`;
   emitText(tx0 + 0.3, ty0 + th - 1.1, floorLine, fitTitleH(floorLine, 0.18), 'A-TITLE');
-  const unitsLine = 'UNITS: MILLIMETRES | MODEL SPACE 1:1 | PLOT SCALE 1:100 @ A1';
   emitText(tx0 + 0.3, ty0 + th - 1.5, unitsLine, fitTitleH(unitsLine, 0.16), 'A-TITLE');
-  const siteTxt = siteBox ? ` | SITE ${siteBox.w.toFixed(1)}x${siteBox.h.toFixed(1)} m` : '';
-  const netLine = `NET FLOOR AREA (SUM OF ROOMS, ALL FLOORS): ${totalNetArea.toFixed(1)} m²${siteTxt}`;
   emitText(tx0 + 0.3, ty0 + th - 1.9, netLine, fitTitleH(netLine, 0.16), 'A-TITLE');
-  const honestyLine = 'ARCHGENIUS — AUTOMATED CAD DRAFT — PROFESSIONAL REVIEW REQUIRED';
   emitText(tx0 + 0.3, ty0 + 0.12, honestyLine, fitTitleH(honestyLine, 0.14), 'A-TITLE');
-  // layer legend — swatch on the discipline layer + name on A-TITLE
-  const LEG: Array<[string, string]> = [
-    ['A-WALL-EXT', 'WALL, EXTERIOR'], ['A-WALL-INT', 'WALL, INTERIOR'], ['A-WALL-CORE', 'WALL, CORE'],
-    ['A-DOOR', 'DOOR + SWING'], ['A-WINDOW', 'WINDOW'], ['A-STAIR', 'STAIR / LANDING'],
-    ['A-PARKING', 'PARKING STALL'],
-    ['A-DIMS', 'DIMENSIONS (m)'], ['A-TEXT', 'GENERAL NOTES'], ['A-SITE', 'SITE BOUNDARY'], ['A-GRID', 'GRID / AXIS'],
-  ];
   // layer legend — swatch on the discipline layer + name on A-TITLE.
-  // P16-D-D: the fixed tx0 − 3.6 column landed OUTSIDE the drawing border on
-  // plans with footprint width ≤ ~11 m (evidenced). The column is now clamped
-  // to the border; when even the clamped column cannot host the widest row
-  // without crossing deep into the title box, the legend flows into the box
-  // under the honesty line (very small plans). Roomy plans keep the exact
-  // legacy geometry byte-for-byte.
-  // P29-B: (a) before falling into the box, the beside column tries fitted row
-  // heights 0.14 → 0.12 → 0.10 — plans whose widest row missed the legacy fit
-  // by a hair (evidenced: 15×24 RECT overflowed the box rows into the title
-  // lines) keep the full legend beside the box, collision-free; (b) every
-  // legend text is guarded against the occupied annotation boxes (title lines
-  // registered by emitText) — a colliding legend text (and its swatch) is
+  // P16-D-D: the column is clamped to the drawing border; when even the clamped
+  // column cannot host the widest row at a legible height without crossing the
+  // title-box border, the legend flows into the box under the honesty line (very
+  // small plans). Roomy plans keep the legacy geometry byte-for-byte.
+  // P29-B: every legend text is guarded against the occupied annotation boxes
+  // (title lines registered by emitText) — a colliding text (and its swatch) is
   // skipped deterministically.
-  const legRow = (i: number) => `${LEG[i][0]} — ${LEG[i][1]}`;
-  const maxLegLen = Math.max(...LEG.map((_, i) => legRow(i).length));
-  const lx = Math.max(bx0 + 0.3, tx0 - 3.6);
+  // P44: the row right edge is clamped to the title-box border minus a gap so
+  // legend text can never cross it, and rows never drop below the legible floor
+  // LEG_MIN_H (previously 0.09, which was unreadable next to 0.14-0.32 title text).
+  const lx = Math.max(bx0 + 0.15, tx0 - 3.6);
   const legFitsOccupied = (x: number, y: number, txt: string, h: number): boolean => {
     const rect = annotationTextRect(x, y, dxfSafeText(txt), h, 0, 0);
     return occupiedTextRects.every(r => rectsDisjointP29(r, rect));
   };
   let legRowH: number | null = null;
-  // 0.09 m floor matches the P16-D-D small-plan fitTitleH minimum.
-  for (const h of [0.14, 0.12, 0.1, 0.09]) {
-    if (lx + 1.15 + maxLegLen * h * ROOM_TXT_CHAR_W <= tx0 + 0.3) { legRowH = h; break; }
+  for (const h of [0.14, LEG_MIN_H]) {
+    if (lx + LEG_TEXT_X + maxLegLen * h * ROOM_TXT_CHAR_W <= tx0 - 0.15) { legRowH = h; break; }
   }
   const sw = swLine ?? emitLine;
   if (legRowH !== null) {
     const lyTop = ty0 + 0.35;
+    // P44: row spacing tightened to 0.26 so all 11 rows sit below the lower
+    // site/setback metadata lines (which occupy the top of the strip) instead of
+    // colliding with them; 0.26 spacing at 0.12-0.14 text stays clearly legible.
+    const legSpacing = 0.26;
     if (legFitsOccupied(lx, lyTop + 0.35, 'LEGEND', 0.2)) {
       emitText(lx, lyTop + 0.35, 'LEGEND', 0.2, 'A-TITLE');
       occupiedTextRects.push(annotationTextRect(lx, lyTop + 0.35, dxfSafeText('LEGEND'), 0.2, 0, 0));
     }
     for (let i = 0; i < LEG.length; i++) {
-      const y = lyTop + i * 0.3;
-      if (!legFitsOccupied(lx + 1.15, y - 0.06, legRow(i), legRowH)) continue;
-      sw(lx, y, lx + 0.9, y, LEG[i][0]);
-      emitText(lx + 1.15, y - 0.06, legRow(i), legRowH, 'A-TITLE');
-      occupiedTextRects.push(annotationTextRect(lx + 1.15, y - 0.06, dxfSafeText(legRow(i)), legRowH, 0, 0));
+      const y = lyTop + i * legSpacing;
+      if (!legFitsOccupied(lx + LEG_TEXT_X, y - 0.06, legRow(i), legRowH)) continue;
+      sw(lx, y, lx + LEG_SW, y, LEG[i][0]);
+      emitText(lx + LEG_TEXT_X, y - 0.06, legRow(i), legRowH, 'A-TITLE');
+      occupiedTextRects.push(annotationTextRect(lx + LEG_TEXT_X, y - 0.06, dxfSafeText(legRow(i)), legRowH, 0, 0));
     }
-    emitLine(lx - 0.2, ty0, lx - 0.2, ty0 + th + 1.3, 'A-TITLE');
+    // Divider stops at the top legend row (previously ran up into the metadata band).
+    emitLine(lx - 0.2, ty0, lx - 0.2, lyTop + (LEG.length - 1) * legSpacing + 0.3, 'A-TITLE');
   } else {
     // Inside-box grid, confined to the clear zone BELOW the project-name divider
     // (ty0+th-0.75) and ABOVE the honesty line — rows never cross the divider.

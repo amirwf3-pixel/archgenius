@@ -916,6 +916,17 @@ function placeSpacesFacingSouth(
                   rowH = remaining >= minH - 1e-6
                     ? Math.max(minH, Math.min(remaining, Math.max(minH, clusterCapHs[ci])))
                     : minH;
+                  // P44 — apply the SAME sliver guard `cappedBandDepth` uses on the
+                  // column/branch paths: slack below CELL_QUALITY_MIN_VOID cannot read
+                  // as a void, so the tile keeps the band. The M4 spine cap was the one
+                  // sizing site missing it, so a cap landing just short of the band end
+                  // manufactured a sub-0.6 m corner sliver — evidenced: the 14×22 villa
+                  // left a 0.427 m × 4.25 m notch at the NE corner (bedroom cap 4.941 vs
+                  // 5.368 available), which pulled the exterior wall 0.43 m inside the
+                  // declared footprint/grid line and notched the building outline.
+                  if (remaining - rowH > 1e-6 && remaining - rowH < CELL_QUALITY_MIN_VOID) {
+                    rowH = remaining;
+                  }
                 } else {
                   // legacy tile (M3-exact), clamped to the band so nothing protrudes
                   const legacyH = remaining >= minH - 1e-6 ? remaining : minH;
@@ -1088,6 +1099,12 @@ function placeSpacesFacingSouth(
                   colW = remaining >= minW - 1e-6
                     ? Math.max(minW, Math.min(remaining, Math.max(minW, clusterCapWs[ci])))
                     : minW;
+                  // P44 — same sliver guard as the spine rows / `cappedBandDepth`:
+                  // sub-CELL_QUALITY_MIN_VOID slack cannot read as a void, so the tile
+                  // keeps the band instead of leaving a sliver against the envelope.
+                  if (remaining - colW > 1e-6 && remaining - colW < CELL_QUALITY_MIN_VOID) {
+                    colW = remaining;
+                  }
                 } else {
                   const legacyW = remaining >= minW - 1e-6 ? remaining : minW;
                   colW = Math.max(minW, Math.min(legacyW, remaining));
