@@ -25,7 +25,11 @@
  *   3. places each wing with the existing `placeSpaces` primitive, and
  *   4. accepts a wing plan ONLY on geometry-authoritative gates: full spec
  *      coverage, no pairwise room overlap, every room inside the buildable
- *      polygon (nothing in the notch).
+ *      polygon (nothing in the notch). P29-B: ALL gate-passing plans are
+ *      collected and the one with the lowest wing-residual imbalance wins
+ *      (total residual, then the fixed ladder order, as tie-breakers) — the
+ *      first-accept behavior that could pack almost all rooms into one wing
+ *      is gone; the gates themselves are unchanged.
  * Determinism: fixed split/strip/orientation/variant order, explicit
  * tie-breakers, no randomness. `null` return = no wing plan passed the
  * gates — the caller falls back to the pre-existing
@@ -44,6 +48,33 @@ import { placeSpaces, hasOverlappingRooms, type PlacedSpec } from '../layout/pla
 import { contactLen } from '../layout/regions.js';
 import { solveRow, solveCol, type BandCellDemand, type BandSolution } from '../layout/topology.js';
 import { EPS } from '../units.js';
+
+/**
+ * P29-B FIX 2 — wing-residual stats for the balance selection (pure, exported
+ * for tests). Residual notion matches the validator's EXCESSIVE_RESIDUAL
+ * metric (assigned area subtracted from the area of the region that should
+ * host it), applied per L wing: wing rectangle area minus the total area of
+ * the rooms whose centroid lies in that wing. `imbalance` is the selection
+ * key; `totalResidual` (wing union = the L polygon minus rooms) and the
+ * ladder order are the deterministic tie-breakers.
+ */
+export function wingResidualStats(
+  spaces: ReadonlyArray<Space>, street: Rect, other: Rect,
+): { resStreet: number; resOther: number; imbalance: number; totalResidual: number } {
+  const wingResidualOf = (wing: Rect): number => {
+    let covered = 0;
+    for (const s of spaces) {
+      const cx = s.rect.x + s.rect.w / 2, cy = s.rect.y + s.rect.h / 2;
+      if (cx >= wing.x - EPS && cx <= wing.x + wing.w + EPS && cy >= wing.y - EPS && cy <= wing.y + wing.h + EPS) {
+        covered += s.rect.w * s.rect.h;
+      }
+    }
+    return Math.max(0, rArea(wing) - covered);
+  };
+  const resStreet = wingResidualOf(street);
+  const resOther = wingResidualOf(other);
+  return { resStreet, resOther, imbalance: Math.abs(resStreet - resOther), totalResidual: resStreet + resOther };
+}
 
 /** Bridge corridor width — mirrors the placer spine width convention (CORRIDOR_W = 1.5 m). */
 const BRIDGE_W = 1.5;
@@ -399,6 +430,22 @@ export function placeSpacesLShape(
 
   splitPlans.sort((a, b) => (a.nightFits === b.nightFits ? 0 : a.nightFits ? -1 : 1));
 
+  // P29-B FIX 2 — collect EVERY gate-passing wing plan instead of returning the
+  // first. Feasibility gates below are unchanged and still run per variant; the
+  // selection afterwards ranks the feasible plans by lowest wing-residual
+  // imbalance (same residual notion as the validator: wing rectangle area minus
+  // the rooms assigned to that wing), with total residual and the original
+  // ladder order as deterministic tie-breakers. This avoids packing almost all
+  // rooms into one wing when an already-valid balanced variant exists.
+  const acceptedWingPlans: Array<{
+    spaces: Space[];
+    corridors: Space[];
+    lines: string[];
+    imbalance: number;
+    totalResidual: number;
+    dimContractOk: boolean;
+  }> = [];
+
   for (const plan of splitPlans) {
     const split = plan.split;
     const [rA, rB] = split.rects;
@@ -550,19 +597,66 @@ export function placeSpacesLShape(
           // other rooms on all four edges can never get an exterior wall —
           // reject the variant so the generic planner gets its turn.
           if (all.some(sp => DAYLIGHT_HABITABLE.has(sp.type) && isFullyInterior(sp.rect, all))) continue;
-          explanation.push(
-            `Phase 25 L-wings: plan ACCEPTED (${split.note}; ${orient.note}; ${v.note}; ${cfg.note}) — day ${v.day.length} room(s) on ${dayRectCfg.w.toFixed(1)}x${dayRectCfg.h.toFixed(1)} m, night ${v.night.length} on ${nightRectCfg.w.toFixed(1)}x${nightRectCfg.h.toFixed(1)} m, bridge strip ${cfg.strip.w.toFixed(1)}x${cfg.strip.h.toFixed(1)} m on the shared cut.`,
-          );
-          explanation.push(...dayAll.explanation.map(e => `[day wing] ${e}`));
-          explanation.push(...nightRes.explanation.map(e => `[night wing] ${e}`));
-          return {
+          // P29-B FIX 2 — wing-residual metrics for the balance ranking (no
+          // thresholds changed; purely a selection order among gate-passers).
+          // A balanced variant may only displace the ladder-first plan when it
+          // satisfies the same min-dimension contract the pipeline's Phase-13.2
+          // hard gate enforces (same tolerances) — otherwise a balanced-but-
+          // undersized plan could displace a compliant one and be excluded
+          // downstream anyway. Violating variants stay accepted (first-accept
+          // semantics preserved when NOTHING compliant exists).
+          const specById = new Map<string, PlacedSpec>();
+          for (const sp of [...v.day, ...v.night]) specById.set(sp.placedId, sp);
+          const dimContractOk = all.every(s => {
+            const spec = specById.get(s.id);
+            if (!spec) return true; // bridge/synthesized corridor rooms
+            const minW = spec.minWidth ?? 0.9;
+            const minL = spec.minLength ?? spec.minWidth ?? 0.9;
+            const minA = spec.minArea ?? 0;
+            if (s.rect.w + 1e-6 < minW - 0.05) return false;
+            if (s.rect.h + 1e-6 < minL - 0.05) return false;
+            if (minA > 1e-6 && s.rect.w * s.rect.h + 1e-6 < minA - 0.1) return false;
+            return true;
+          });
+          const { imbalance, totalResidual } = wingResidualStats(all, street, other);
+          acceptedWingPlans.push({
             spaces: [...dayAll.spaces, ...nightRes.spaces],
             corridors: [...dayAll.corridors, ...nightRes.corridors, bridgeSpace],
-            explanation,
-          };
+            lines: [
+              `Phase 25 L-wings: plan ACCEPTED (${split.note}; ${orient.note}; ${v.note}; ${cfg.note}) — day ${v.day.length} room(s) on ${dayRectCfg.w.toFixed(1)}x${dayRectCfg.h.toFixed(1)} m, night ${v.night.length} on ${nightRectCfg.w.toFixed(1)}x${nightRectCfg.h.toFixed(1)} m, bridge strip ${cfg.strip.w.toFixed(1)}x${cfg.strip.h.toFixed(1)} m on the shared cut.`,
+              ...dayAll.explanation.map(e => `[day wing] ${e}`),
+              ...nightRes.explanation.map(e => `[night wing] ${e}`),
+            ],
+            imbalance,
+            totalResidual,
+            dimContractOk,
+          });
         }
       }
     }
+  }
+
+  // P29-B FIX 2 — deterministic selection among the gate-passing wing plans:
+  // lowest wing-residual imbalance first, then lowest total residual, then the
+  // existing ladder order (strict < comparisons keep the earliest plan on
+  // ties). With no feasible wing plan the entry-annex fallback below runs
+  // exactly as before.
+  if (acceptedWingPlans.length > 0) {
+    let best = acceptedWingPlans[0];
+    for (const c of acceptedWingPlans) {
+      if (c.dimContractOk !== best.dimContractOk) {
+        if (c.dimContractOk) best = c;
+        continue;
+      }
+      if (c.imbalance < best.imbalance - 1e-9) best = c;
+      else if (c.imbalance <= best.imbalance + 1e-9 && c.totalResidual < best.totalResidual - 1e-9) best = c;
+    }
+    explanation.push(...best.lines);
+    return {
+      spaces: best.spaces,
+      corridors: best.corridors,
+      explanation,
+    };
   }
 
   // ---- Entry-annex fallback (south access; axis-y Ls like SW: the street

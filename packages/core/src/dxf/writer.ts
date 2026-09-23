@@ -110,6 +110,143 @@ export interface DXFOptions {
   /** Legacy alias: true = 'both' (default), false = 'none'. layerScheme wins if given. */
   includeGenericLayers?: boolean;
 }
+
+// ---- P29-B annotation collision guard (shared model) ---------------------------
+// Rotation-aware TEXT bounding box in model metres, using the writer's own
+// ROOM_TXT_CHAR_W metric and the R12 justification the emitter pushes
+// (group 72: 0 = left at the insert point, 1 = centred on it, 2 = right-ending
+// on it; baseline vertical). Exported so tests and the emitter guard share one
+// model — the collision audit and the guard can never drift apart.
+export function annotationTextRect(
+  x: number, y: number, txt: string, heightM: number, horiz: number, rotDeg: number,
+): [number, number, number, number] {
+  const w = txt.length * heightM * ROOM_TXT_CHAR_W;
+  const r = ((rotDeg % 360) + 360) % 360;
+  if (r === 90 || r === 270) {
+    const x0 = x - heightM / 2, x1 = x + heightM / 2;
+    if (horiz === 1) return [x0, y - w / 2, x1, y + w / 2];
+    if (horiz === 2) return [x0, y - w, x1, y];
+    return [x0, y, x1, y + w];
+  }
+  if (horiz === 1) return [x - w / 2, y, x + w / 2, y + heightM];
+  if (horiz === 2) return [x - w, y, x, y + heightM];
+  return [x, y, x + w, y + heightM];
+}
+
+/** Axis-aligned overlap test with a small tangency pad (2 mm) — the guard only
+ * suppresses GENUINE overlaps, not touching boxes. */
+function rectsDisjointP29(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+  pad = 0.002,
+): boolean {
+  return a[0] + pad >= b[2] || b[0] + pad >= a[2] || a[1] + pad >= b[3] || b[1] + pad >= a[3];
+}
+
+const IMMOVABLE_TEXT_BASES = new Set(['A-ROOM', 'A-AXIS-TEXT', 'A-TEXT', 'A-TITLE', 'A-SETBACK']);
+
+/**
+ * P29-B change 2 — room chain-dimension eligibility + geometry, single source
+ * of truth for the emitter and the pre-reserved text slots. An edge is
+ * annotated only when NOTHING lies directly beyond it (no adjacent room): the
+ * 0.18 m dim strip of an interior edge used to be drawn inside the neighbouring
+ * room/corridor, colliding with its labels, swings and furniture. Exterior and
+ * void-facing edges keep their dimensions.
+ */
+function edgeHasAdjacentRoom(spaces: Space[], s: Space, edge: 'bottom' | 'left'): boolean {
+  const r = s.rect;
+  const band = 0.3;
+  const zone = edge === 'bottom'
+    ? { x: r.x, y: r.y - band, w: r.w, h: band }
+    : { x: r.x - band, y: r.y, w: band, h: r.h };
+  for (const o of spaces) {
+    if (o === s || o.type === 'parking' || o.type === 'yard') continue;
+    const ix = Math.min(zone.x + zone.w, o.rect.x + o.rect.w) - Math.max(zone.x, o.rect.x);
+    const iy = Math.min(zone.y + zone.h, o.rect.y + o.rect.h) - Math.max(zone.y, o.rect.y);
+    if (ix > 0.05 && iy > 0.05) return true;
+  }
+  return false;
+}
+
+interface RoomDimSpec {
+  x1: number; y1: number; x2: number; y2: number; // dimension line
+  dx: number; dy: number;                         // tick direction
+  tx: number; ty: number; ttxt: string; thoriz: 1 | 2; // value text
+}
+
+function roomDimSpecs(spaces: Space[], yOff: number): RoomDimSpec[] {
+  const out: RoomDimSpec[] = [];
+  for (const s of spaces) {
+    if (s.type === 'parking' || s.type === 'yard') continue;
+    if (s.rect.w < 2 || s.rect.h < 2) continue;
+    const r = { x: s.rect.x, y: s.rect.y + yOff, w: s.rect.w, h: s.rect.h };
+    const off = 0.18;
+    if (!edgeHasAdjacentRoom(spaces, s, 'bottom')) {
+      out.push({
+        x1: r.x, y1: r.y - off, x2: r.x + r.w, y2: r.y - off, dx: 1, dy: 0,
+        tx: r.x + r.w / 2, ty: r.y - off - 0.16, ttxt: `${r.w.toFixed(2)} m`, thoriz: 1,
+      });
+    }
+    if (!edgeHasAdjacentRoom(spaces, s, 'left')) {
+      out.push({
+        x1: r.x - off, y1: r.y, x2: r.x - off, y2: r.y + r.h, dx: 0, dy: 1,
+        tx: r.x - off - 0.2, ty: r.y + r.h / 2, ttxt: `${r.h.toFixed(2)} m`, thoriz: 2,
+      });
+    }
+  }
+  return out;
+}
+
+/** Grid/axis label geometry — shared by emitGridShifted and the pre-seed. */
+function gridTextSpecs(fr: Rect, yOff: number): Array<{ x: number; y: number; txt: string; h: number; horiz: number; rot: number }> {
+  const cx = fr.x + fr.w / 2;
+  const cy = fr.y + fr.h / 2 + yOff;
+  return [
+    { x: fr.x - 0.7, y: fr.y + fr.h + 0.3 + yOff, txt: 'A', h: 0.25, horiz: 1, rot: 0 },
+    { x: cx, y: fr.y + fr.h + 0.3 + yOff, txt: 'B', h: 0.25, horiz: 1, rot: 0 },
+    { x: fr.x + fr.w + 0.3, y: fr.y + fr.h + 0.3 + yOff, txt: 'C', h: 0.25, horiz: 0, rot: 0 },
+    { x: fr.x - 0.7, y: fr.y - 0.7 + yOff, txt: '1', h: 0.25, horiz: 2, rot: 0 },
+    { x: fr.x - 0.7, y: cy, txt: '2', h: 0.25, horiz: 2, rot: 0 },
+  ];
+}
+
+/** Canonical room annotation layout (label + area text), shared by the emitter
+ * and the pre-seed so the guard and the drawing can never disagree. */
+function roomLabelTextSpecs(
+  fl: Floor, fi: number, multiFloor: boolean,
+): Array<{ x: number; y: number; txt: string; h: number; horiz: 1; rot: number; area: number; primary: boolean }> {
+  const out: Array<{ x: number; y: number; txt: string; h: number; horiz: 1; rot: number; area: number; primary: boolean }> = [];
+  for (const s of fl.spaces) {
+    const poly = s.polygon && s.polygon.length >= 3 ? s.polygon : null;
+    const anchor = roomLabelAnchor(poly, s.rect);
+    const area = polyAreaCalc(s.polygon, s.rect);
+    const lbl = multiFloor ? `${s.label} · F${fi}` : s.label;
+    const areaTxt = `${area.toFixed(1)} m²`;
+    const { h, rot } = fitRoomText(lbl, areaTxt, poly, s.rect, anchor);
+    const cx = anchor.x, cy = anchor.y;
+    if (rot === 90) {
+      out.push({ x: cx + h * 0.62, y: cy, txt: lbl, h, horiz: 1, rot: 90, area, primary: true });
+      out.push({ x: cx - h * 0.62, y: cy, txt: areaTxt, h: h * 0.7, horiz: 1, rot: 90, area, primary: false });
+    } else {
+      out.push({ x: cx, y: cy + h * 0.62, txt: lbl, h, horiz: 1, rot: 0, area, primary: true });
+      out.push({ x: cx, y: cy - h * 0.62, txt: areaTxt, h: h * 0.7, horiz: 1, rot: 0, area, primary: false });
+    }
+  }
+  return out;
+}
+
+/** Canonical polygon area (shoelace) with rectangular fallback — moved to module
+ * scope in P29-B so the room annotation layout helper shares the exact metric. */
+function polyAreaCalc(poly: Vec2[] | undefined, fallback: Rect): number {
+  if (!poly || poly.length < 3) return fallback.w * fallback.h;
+  let acc = 0;
+  for (let i = 0, n = poly.length; i < n; i++) {
+    const p1 = poly[i]; const p2 = poly[(i + 1) % n];
+    acc += p1.x * p2.y - p2.x * p1.y;
+  }
+  return Math.abs(acc) / 2;
+}
+
 export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius Plan', options: DXFOptions = {}): string {
   // P16-D: resolve the layer scheme; includeGenericLayers kept as a legacy alias.
   const scheme: 'none' | 'generic' | 'both' =
@@ -218,6 +355,22 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   // professional result) and refuses zero-length segments. Different layers are a
   // legitimate representation choice, so coincident cross-layer geometry is kept.
   const seenEnt = new Set<string>();
+  // ---- P29-B annotation collision guard state (per export, deterministic) ----
+  // occupiedTextRects — rotation-aware boxes of immovable annotation (room
+  //   labels/areas, axis/grid labels, floor header, title lines) plus every
+  //   admitted dimension text; populated in draw order and by the pre-seed.
+  // pendingDimTextRects — boxes + admission signatures of the room
+  //   chain-dimension texts that emitRoomDims WILL draw (pre-reserved). An
+  //   opening width (emitted earlier in the floor loop) that would land in
+  //   the same strip yields its TEXT; the dimension line and ticks stay.
+  //   The reserved text itself is recognized by signature and admitted
+  //   (consuming its reservation) so a slot never blocks its own text.
+  // admittedDimTextKeys — signatures of admitted dimension texts so the
+  //   by-design mirror-layer repeat (A-DIMS + A-FLOOR-0-A-DIMS) is kept while
+  //   a genuinely different text at the same spot is suppressed.
+  const occupiedTextRects: Array<[number, number, number, number]> = [];
+  const pendingDimTextRects: Array<{ rect: [number, number, number, number]; key: string }> = [];
+  const admittedDimTextKeys = new Set<string>();
   const emitLine = (x1: number, y1: number, x2: number, y2: number, layer: string) => {
     const X1 = mm(x1), Y1 = mm(y1), X2 = mm(x2), Y2 = mm(y2);
     if (X1 === X2 && Y1 === Y2) return; // zero-length line — never emitted
@@ -253,6 +406,30 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     const kt = `T|${layer}|${mm(x)},${mm(y)}|${safeTxt}|${mm(heightM)}|${rotDeg}`;
     if (!safeTxt || !(heightM > 0) || seenEnt.has(kt)) return; // empty/zero-height text is never valid
     seenEnt.add(kt);
+    // P29-B annotation collision guard (change 3): dimension TEXT is
+    // discretionary — suppressed when its rotation-aware box would overlap
+    // immovable annotation, a reserved room-dimension text slot, or an
+    // already-admitted dimension text. Lines/ticks are untouched. Immovable
+    // annotation is never suppressed, only registered.
+    const tBase = layer.replace(/^A-FLOOR-\d+-/, '');
+    if (tBase === 'A-DIMS' || IMMOVABLE_TEXT_BASES.has(tBase)) {
+      const tRect = annotationTextRect(x, y, safeTxt, heightM, horiz, rotDeg);
+      if (tBase === 'A-DIMS') {
+        const dk = `D|${mm(x)},${mm(y)}|${safeTxt}|${mm(heightM)}|${rotDeg}`;
+        const pendIdx = pendingDimTextRects.findIndex(p => p.key === dk);
+        if (pendIdx >= 0) {
+          // This IS a pre-reserved room chain-dimension text — always admit it
+          // and consume the reservation (the mirror repeat hits admittedDimTextKeys).
+          pendingDimTextRects.splice(pendIdx, 1);
+          admittedDimTextKeys.add(dk);
+        } else if (!admittedDimTextKeys.has(dk)) {
+          if (!occupiedTextRects.every(r => rectsDisjointP29(r, tRect))) return;
+          if (pendingDimTextRects.some(p => !rectsDisjointP29(p.rect, tRect))) return;
+          admittedDimTextKeys.add(dk);
+        }
+      }
+      occupiedTextRects.push(tRect);
+    }
     b.push('0', 'TEXT');
     push(8, layer);
     push(10, mm(x)); push(20, mm(y)); push(30, '0');
@@ -302,17 +479,36 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   // ---- Draw all floors — P16-D scheme-routed single emission -----------------------
   // Every discipline resolves through layersFor(): exactly one copy of each entity per
   // layer it belongs to (legacy 'both' mode is the only scheme with a floor-0 alias).
-  const polyArea = (poly: Vec2[] | undefined, fallback: Rect): number => {
-    if (!poly || poly.length < 3) return fallback.w * fallback.h;
-    let acc = 0;
-    for (let i = 0, n = poly.length; i < n; i++) {
-      const p1 = poly[i]; const p2 = poly[(i + 1) % n];
-      acc += p1.x * p2.y - p2.x * p1.y;
-    }
-    return Math.abs(acc) / 2;
-  };
+  const polyArea = polyAreaCalc;
   let siteBox: { x: number; y: number; w: number; h: number } | null = null;
   let totalNetArea = 0;
+
+  // ---- P29-B pre-seed (deterministic): register the immovable annotation
+  // boxes and reserve the room chain-dimension text slots BEFORE any floor
+  // emission, so opening-width texts (drawn first) already yield to the room
+  // dimensions (change 1) and dimension texts yield to labels/axis/title
+  // regardless of draw order (change 3).
+  for (let fi = 0; fi < candidate.floors.length; fi++) {
+    const flP = candidate.floors[fi];
+    const yOffP = floorOffset(fi);
+    for (const t of roomLabelTextSpecs(flP, fi, candidate.floors.length > 1)) {
+      occupiedTextRects.push(annotationTextRect(t.x, t.y + yOffP, dxfSafeText(t.txt), t.h, t.horiz, t.rot));
+    }
+    if (fi === 0) {
+      for (const t of gridTextSpecs(candidate.buildableArea, yOffP)) {
+        occupiedTextRects.push(annotationTextRect(t.x, t.y, dxfSafeText(t.txt), t.h, t.horiz, t.rot));
+      }
+    }
+    const fhTxt = `FLOOR ${fi} — ELEV ${flP.elevation.toFixed(2)} m`;
+    occupiedTextRects.push(annotationTextRect(flP.footprint.x, flP.footprint.y + flP.footprint.h + yOffP + 0.5, dxfSafeText(fhTxt), 0.3, 0, 0));
+    for (const d of roomDimSpecs(flP.spaces, yOffP)) {
+      const pTxt = dxfSafeText(d.ttxt);
+      pendingDimTextRects.push({
+        rect: annotationTextRect(d.tx, d.ty, pTxt, 0.12, d.thoriz, 0),
+        key: `D|${mm(d.tx)},${mm(d.ty)}|${pTxt}|${mm(0.12)}|0`,
+      });
+    }
+  }
 
   for (let fi = 0; fi < candidate.floors.length; fi++) {
     const fl = candidate.floors[fi];
@@ -397,7 +593,14 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
         lineB(e1x + ox * dOff, e1y + oy * dOff, e2x + ox * dOff, e2y + oy * dOff, 'A-DIMS');
         drawTickAt(lineB, e1x + ox * dOff, e1y + oy * dOff, so.wallDir.x, so.wallDir.y);
         drawTickAt(lineB, e2x + ox * dOff, e2y + oy * dOff, so.wallDir.x, so.wallDir.y);
-        textB(so.center.x + ox * (dOff + 0.06), so.center.y + oy * (dOff + 0.06), `${o.width.toFixed(2)} m`, 0.1, 'A-DIMS', 1);
+        // P29-B change 1: the opening-width TEXT yields when the same annotation
+        // strip also receives a room chain-dimension text (pre-reserved
+        // pendingDimTextRects) — the dimension line and ticks above stay.
+        const owTxt = `${o.width.toFixed(2)} m`;
+        const owRect = annotationTextRect(so.center.x + ox * (dOff + 0.06), so.center.y + oy * (dOff + 0.06), dxfSafeText(owTxt), 0.1, 1, 0);
+        if (pendingDimTextRects.every(p => rectsDisjointP29(p.rect, owRect))) {
+          textB(so.center.x + ox * (dOff + 0.06), so.center.y + oy * (dOff + 0.06), owTxt, 0.1, 'A-DIMS', 1);
+        }
       }
     }
 
@@ -451,23 +654,11 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     // the text height is fitted to the room's inscribed chord through that anchor so the
     // label stays within the room, and tall-narrow rooms rotate the block 90° to run
     // along the long axis. All deterministic, geometry-derived placement.
-    for (const s of fl.spaces) {
-      const poly = s.polygon && s.polygon.length >= 3 ? s.polygon : null;
-      const anchor = roomLabelAnchor(poly, s.rect);
-      const area = polyArea(s.polygon, s.rect);
-      totalNetArea += area;
-      const lbl = candidate.floors.length > 1 ? `${s.label} · F${fi}` : s.label;
-      const areaTxt = `${area.toFixed(1)} m²`;
-      const { h, rot } = fitRoomText(lbl, areaTxt, poly, s.rect, anchor);
-      const cx = anchor.x, cy = anchor.y + yOff;
-      if (rot === 90) {
-        // rotated block: lines stack ACROSS the text run — name on the +x side
-        textB(cx + h * 0.62, cy, lbl, h, 'A-ROOM', 1, 90);
-        textB(cx - h * 0.62, cy, areaTxt, h * 0.7, 'A-ROOM', 1, 90);
-      } else {
-        textB(cx, cy + h * 0.62, lbl, h, 'A-ROOM', 1);
-        textB(cx, cy - h * 0.62, areaTxt, h * 0.7, 'A-ROOM', 1);
-      }
+    // P29-B: the layout comes from the shared roomLabelTextSpecs() helper (identical
+    // geometry to the pre-seeded guard slots).
+    for (const t of roomLabelTextSpecs(fl, fi, candidate.floors.length > 1)) {
+      if (t.primary) totalNetArea += t.area;
+      textB(t.x, t.y + yOff, t.txt, t.h, 'A-ROOM', 1, t.rot);
     }
 
     // Annotation infrastructure — grid, dimension chains.
@@ -487,7 +678,7 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
       const ls = floorScoped.has(base) ? layersFor(0, base) : [base];
       for (const L of ls) emitLine(x1, y1, x2, y2, L);
     };
-    drawTitleBlockV2(candidate, projectName, emitLine, emitText, siteBox, polyArea, totalNetArea, lineSw);
+    drawTitleBlockV2(candidate, projectName, emitLine, emitText, siteBox, polyArea, totalNetArea, occupiedTextRects, lineSw);
   }
 
   // Whole-building vertical markers (connect stairs across floors)
@@ -1016,6 +1207,7 @@ function drawTitleBlockV2(
   siteBox: { x: number; y: number; w: number; h: number } | null,
   polyArea: (poly: Vec2[] | undefined, fallback: Rect) => number,
   totalNetArea: number,
+  occupiedTextRects: Array<[number, number, number, number]>,
   swLine?: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
 ): void {
   const fr = cand.floors[0].footprint;
@@ -1069,18 +1261,38 @@ function drawTitleBlockV2(
   // without crossing deep into the title box, the legend flows into the box
   // under the honesty line (very small plans). Roomy plans keep the exact
   // legacy geometry byte-for-byte.
+  // P29-B: (a) before falling into the box, the beside column tries fitted row
+  // heights 0.14 → 0.12 → 0.10 — plans whose widest row missed the legacy fit
+  // by a hair (evidenced: 15×24 RECT overflowed the box rows into the title
+  // lines) keep the full legend beside the box, collision-free; (b) every
+  // legend text is guarded against the occupied annotation boxes (title lines
+  // registered by emitText) — a colliding legend text (and its swatch) is
+  // skipped deterministically.
   const legRow = (i: number) => `${LEG[i][0]} — ${LEG[i][1]}`;
   const maxLegLen = Math.max(...LEG.map((_, i) => legRow(i).length));
   const lx = Math.max(bx0 + 0.3, tx0 - 3.6);
-  const legBeside = lx + 1.15 + maxLegLen * 0.14 * ROOM_TXT_CHAR_W <= tx0 + 0.3;
+  const legFitsOccupied = (x: number, y: number, txt: string, h: number): boolean => {
+    const rect = annotationTextRect(x, y, dxfSafeText(txt), h, 0, 0);
+    return occupiedTextRects.every(r => rectsDisjointP29(r, rect));
+  };
+  let legRowH: number | null = null;
+  // 0.09 m floor matches the P16-D-D small-plan fitTitleH minimum.
+  for (const h of [0.14, 0.12, 0.1, 0.09]) {
+    if (lx + 1.15 + maxLegLen * h * ROOM_TXT_CHAR_W <= tx0 + 0.3) { legRowH = h; break; }
+  }
   const sw = swLine ?? emitLine;
-  if (legBeside) {
+  if (legRowH !== null) {
     const lyTop = ty0 + 0.35;
-    emitText(lx, lyTop + 0.35, 'LEGEND', 0.2, 'A-TITLE');
+    if (legFitsOccupied(lx, lyTop + 0.35, 'LEGEND', 0.2)) {
+      emitText(lx, lyTop + 0.35, 'LEGEND', 0.2, 'A-TITLE');
+      occupiedTextRects.push(annotationTextRect(lx, lyTop + 0.35, dxfSafeText('LEGEND'), 0.2, 0, 0));
+    }
     for (let i = 0; i < LEG.length; i++) {
       const y = lyTop + i * 0.3;
+      if (!legFitsOccupied(lx + 1.15, y - 0.06, legRow(i), legRowH)) continue;
       sw(lx, y, lx + 0.9, y, LEG[i][0]);
-      emitText(lx + 1.15, y - 0.06, legRow(i), 0.14, 'A-TITLE');
+      emitText(lx + 1.15, y - 0.06, legRow(i), legRowH, 'A-TITLE');
+      occupiedTextRects.push(annotationTextRect(lx + 1.15, y - 0.06, dxfSafeText(legRow(i)), legRowH, 0, 0));
     }
     emitLine(lx - 0.2, ty0, lx - 0.2, ty0 + th + 1.3, 'A-TITLE');
   } else {
@@ -1088,11 +1300,16 @@ function drawTitleBlockV2(
     // (ty0+th-0.75) and ABOVE the honesty line — rows never cross the divider.
     const gh = 0.085;
     const gx = tx0 + 0.25;
-    emitText(gx, ty0 + 1.47, 'LEGEND', 0.1, 'A-TITLE');
+    if (legFitsOccupied(gx, ty0 + 1.47, 'LEGEND', 0.1)) {
+      emitText(gx, ty0 + 1.47, 'LEGEND', 0.1, 'A-TITLE');
+      occupiedTextRects.push(annotationTextRect(gx, ty0 + 1.47, dxfSafeText('LEGEND'), 0.1, 0, 0));
+    }
     for (let i = 0; i < LEG.length; i++) {
       const y = ty0 + 0.26 + i * 0.115;
+      if (!legFitsOccupied(gx + 1.05, y - 0.03, legRow(i), gh)) continue;
       sw(gx, y, gx + 0.9, y, LEG[i][0]);
       emitText(gx + 1.05, y - 0.03, legRow(i), gh, 'A-TITLE');
+      occupiedTextRects.push(annotationTextRect(gx + 1.05, y - 0.03, dxfSafeText(legRow(i)), gh, 0, 0));
     }
   }
 }
@@ -1106,7 +1323,7 @@ function emitGrid(
 function emitGridShifted(
   fr: Rect,
   emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
-  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number) => void,
+  emitText: (x: number, y: number, text: string, h: number, layer: string, horiz?: number, rotDeg?: number) => void,
   yOff: number,
 ) {
   const cx = fr.x + fr.w / 2;
@@ -1117,33 +1334,26 @@ function emitGridShifted(
   emitLine(fr.x - 0.5, fr.y + yOff, fr.x + fr.w + 0.5, fr.y + yOff, 'A-GRID');
   emitLine(fr.x - 0.5, cy, fr.x + fr.w + 0.5, cy, 'A-AXIS');
   emitLine(fr.x - 0.5, fr.y + fr.h + yOff, fr.x + fr.w + 0.5, fr.y + fr.h + yOff, 'A-GRID');
-  emitText(fr.x - 0.7, fr.y + fr.h + 0.3 + yOff, 'A', 0.25, 'A-AXIS-TEXT', 1);
-  emitText(cx, fr.y + fr.h + 0.3 + yOff, 'B', 0.25, 'A-AXIS-TEXT', 1);
-  emitText(fr.x + fr.w + 0.3, fr.y + fr.h + 0.3 + yOff, 'C', 0.25, 'A-AXIS-TEXT', 0);
-  emitText(fr.x - 0.7, fr.y - 0.7 + yOff, '1', 0.25, 'A-AXIS-TEXT', 2);
-  emitText(fr.x - 0.7, cy, '2', 0.25, 'A-AXIS-TEXT', 2);
+  // P29-B: label geometry from the shared gridTextSpecs() helper (identical to
+  // the pre-seeded guard slots).
+  for (const t of gridTextSpecs(fr, yOff)) emitText(t.x, t.y, t.txt, t.h, 'A-AXIS-TEXT', t.horiz, t.rot);
 }
 
-/** Room chain dimensions: dim line + 45° ticks + value, bottom and left of each room. */
+/** Room chain dimensions: dim line + 45° ticks + value, bottom and left of each room.
+ * P29-B change 2: an edge is annotated ONLY when nothing lies directly beyond it
+ * (exterior or void-facing) — the eligibility and geometry live in roomDimSpecs(),
+ * shared with the pre-reserved guard slots. */
 function emitRoomDims(
   spaces: Space[],
   yOff: number,
   line: (x1: number, y1: number, x2: number, y2: number, base: string) => void,
   text: (x: number, y: number, txt: string, h: number, base: string, horiz?: number) => void,
 ) {
-  for (const s of spaces) {
-    if (s.type === 'parking' || s.type === 'yard') continue;
-    if (s.rect.w < 2 || s.rect.h < 2) continue;
-    const r = { x: s.rect.x, y: s.rect.y + yOff, w: s.rect.w, h: s.rect.h };
-    const off = 0.18;
-    line(r.x, r.y - off, r.x + r.w, r.y - off, 'A-DIMS');
-    drawTickAt(line, r.x, r.y - off, 1, 0);
-    drawTickAt(line, r.x + r.w, r.y - off, 1, 0);
-    text(r.x + r.w / 2, r.y - off - 0.16, `${r.w.toFixed(2)} m`, 0.12, 'A-DIMS', 1);
-    line(r.x - off, r.y, r.x - off, r.y + r.h, 'A-DIMS');
-    drawTickAt(line, r.x - off, r.y, 0, 1);
-    drawTickAt(line, r.x - off, r.y + r.h, 0, 1);
-    text(r.x - off - 0.2, r.y + r.h / 2, `${r.h.toFixed(2)} m`, 0.12, 'A-DIMS', 2);
+  for (const d of roomDimSpecs(spaces, yOff)) {
+    line(d.x1, d.y1, d.x2, d.y2, 'A-DIMS');
+    drawTickAt(line, d.x1, d.y1, d.dx, d.dy);
+    drawTickAt(line, d.x2, d.y2, d.dx, d.dy);
+    text(d.tx, d.ty, d.ttxt, 0.12, 'A-DIMS', d.thoriz);
   }
 }
 

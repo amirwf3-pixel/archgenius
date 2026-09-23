@@ -675,15 +675,33 @@ describe('P16-D-D title block, legend and stair-note fitting', () => {
     const tw = Math.max(5, fr.w * 0.62);
     const tx0 = fr.x + fr.w + 1.5 - tw, ty0 = fr.y - 1.5 - 4.6 + 0.15;
     const divider = ty0 + 2.4 - 0.75;
-    const rows = entities(dxf).filter(e =>
-      e.type === 'TEXT' && e.codes[8] === 'A-TITLE'
-      && Number(e.codes[10]) / 1000 >= tx0 - 1e-6
+    const texts = entities(dxf).filter(e => e.type === 'TEXT' && e.codes[8] === 'A-TITLE');
+    const rows = texts.filter(e =>
+      Number(e.codes[10]) / 1000 >= tx0 - 1e-6
       && /^A-[A-Z-]+ - /.test(e.codes[1] ?? ''));
-    expect(rows.length).toBe(11); // the full legend lives inside the box now
+    // P29-B: the in-box legend rows used to slice straight through the fitted
+    // title lines (evidenced overlap). The annotation collision guard now
+    // suppresses exactly the overlapping rows — for this fixture 5 of the 11
+    // rows collide and 6 survive, every survivor collision-free.
+    expect(rows.length).toBe(6);
+    const lineRects = texts
+      .filter(e => !/^A-[A-Z-]+ - /.test(e.codes[1] ?? '') && e.codes[1] !== 'LEGEND')
+      .map(e => {
+        const x = Number(e.codes[10]) / 1000, y = Number(e.codes[20]) / 1000;
+        const h = Number(e.codes[40]) / 1000;
+        return [x, y, x + (e.codes[1] ?? '').length * h * 0.72, y + h] as const;
+      });
     for (const r of rows) {
       const y = Number(r.codes[20]) / 1000, h = Number(r.codes[40]) / 1000;
       expect(h).toBeCloseTo(0.085, 6);
       expect(y + h, `"${r.codes[1]}" crosses the divider`).toBeLessThanOrEqual(divider + 1e-6);
+      const rx = Number(r.codes[10]) / 1000;
+      const rr = [rx, y, rx + (r.codes[1] ?? '').length * h * 0.72, y + h] as const;
+      for (const lr of lineRects) {
+        const disjoint = rr[0] + 0.002 >= lr[2] || lr[0] + 0.002 >= rr[2]
+          || rr[1] + 0.002 >= lr[3] || lr[1] + 0.002 >= rr[3];
+        expect(disjoint, `"${r.codes[1]}" overlaps a title line`).toBe(true);
+      }
     }
   });
 
