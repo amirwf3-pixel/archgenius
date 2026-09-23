@@ -38,7 +38,7 @@
  * (caller guards on `shape === 'l-shape'` and `buildableRects.length === 2`).
  */
 import type { Rect } from '../geometry/rect.js';
-import { rArea } from '../geometry/rect.js';
+import { rArea, rOverlapArea } from '../geometry/rect.js';
 import type { Space, SpaceType, Zone } from '../model/space.js';
 import type { CandidateStrategy } from '../model/layout.js';
 import type { AccessSide } from '../model/site.js';
@@ -103,6 +103,74 @@ const aimMainRooms = (list: PlacedSpec[]): PlacedSpec[] =>
     : sp);
 /** Day-wing types that may overflow into the night wing when the day wing is short. */
 const MOVABLE_DAY = new Set<string>(['guest-wc', 'storage', 'utility', 'family-room', 'guest-room', 'dining']);
+
+// ---- P31-P1 circulation connectivity (geometry-level proxy) ---------------------
+// The door pass (generator/openings.ts) turns every adjacent circulation pair
+// into a spine door, so adjacency here is the exact precondition for a door.
+const L_CIRC_TYPES = new Set<string>(['corridor', 'entrance', 'foyer', 'stair-hall', 'elevator-hall']);
+const L_CIRC_LINK = 0.8; // minimum shared edge for a viable door (door width 0.9, adaptive margin)
+const L_CONNECTOR_W = 1.5; // connector corridor width — mirrors CORRIDOR_W
+const L_BAND_H = 1.8; // entry-band height mirror
+
+/** Shared-edge length between two rects (0 when not touching). */
+function sharedEdgeLen(a: Rect, b: Rect): number {
+  const xOverlap = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const yOverlap = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if (xOverlap < -1e-9 || yOverlap < -1e-9) return 0; // separated
+  if (Math.abs(a.y + a.h - b.y) < 1e-6 || Math.abs(b.y + b.h - a.y) < 1e-6) return Math.max(0, xOverlap);
+  if (Math.abs(a.x + a.w - b.x) < 1e-6 || Math.abs(b.x + b.w - a.x) < 1e-6) return Math.max(0, yOverlap);
+  return 0;
+}
+
+/** Circulation component reachable from the entry spaces through circulation
+ * spaces only. Returns the component id set (seeds included). */
+function circulationComponent(spaces: ReadonlyArray<Space>): Set<string> {
+  const seeds = spaces.filter(s => s.type === 'entrance' || s.type === 'foyer');
+  const circ = spaces.filter(s => L_CIRC_TYPES.has(s.type));
+  const comp = new Set<string>(seeds.map(s => s.id));
+  const q = [...seeds];
+  while (q.length) {
+    const cur = q.shift()!;
+    for (const c of circ) {
+      if (comp.has(c.id)) continue;
+      if (sharedEdgeLen(cur.rect, c.rect) >= L_CIRC_LINK) { comp.add(c.id); q.push(c); }
+    }
+  }
+  return comp;
+}
+
+/** Main habitable rooms — a habitable room that does not itself touch the
+ * circulation system would be reachable only THROUGH another room at door
+ * time (through-room), so it counts as not connected. */
+const L_HABITABLE_ATTACH = new Set<string>([
+  'living', 'dining', 'kitchen', 'bedroom', 'master-bedroom', 'family-room', 'guest-room', 'study',
+]);
+
+/** True when every corridor is transitively adjacent-connected to the entry
+ * spaces (entrance/foyer) through circulation spaces only AND every main
+ * habitable room directly touches the connected circulation system — no
+ * habitable or wet room is needed as a bridge. A wet room whose only neighbor
+ * is its own bedroom is an intentional ensuite (the door-level validator
+ * exempts the same topology), so it counts as attached. */
+function circulationConnected(spaces: ReadonlyArray<Space>): boolean {
+  const circ = spaces.filter(s => L_CIRC_TYPES.has(s.type));
+  if (!spaces.some(s => s.type === 'entrance' || s.type === 'foyer')) return true;
+  const comp = circulationComponent(spaces);
+  if (!circ.every(c => comp.has(c.id))) return false;
+  const connectedCirc = circ.filter(c => comp.has(c.id));
+  const L_WET = new Set<string>(['bathroom', 'master-bathroom', 'guest-wc', 'laundry']);
+  const isSuiteHost = (t: string): boolean => t === 'master-bedroom' || t === 'bedroom';
+  return spaces
+    .filter(s2 => L_HABITABLE_ATTACH.has(s2.type))
+    .every(h => {
+      if (connectedCirc.some(c => sharedEdgeLen(h.rect, c.rect) >= L_CIRC_LINK)) return true;
+      if (L_WET.has(h.type)) {
+        return spaces.some(s2 => isSuiteHost(s2.type) && sharedEdgeLen(h.rect, s2.rect) >= L_CIRC_LINK);
+      }
+      return false;
+    });
+}
+
 
 function zoneFor(type: string): Zone {
   switch (type) {
@@ -234,7 +302,7 @@ export function placeSpacesLShape(
   // first (the master suite stays paired with its bathroom while it fits).
   const movableNight = [...nightSpecs].filter(s => s.type !== 'master-bedroom' && s.type !== 'stair-hall').sort(bySmall);
   const dayMovable = daySpecs.filter(s => MOVABLE_DAY.has(s.type)).sort(bySmall);
-  const variants: { day: PlacedSpec[]; night: PlacedSpec[]; note: string }[] = [];
+  const variants: { day: PlacedSpec[]; night: PlacedSpec[]; note: string; connector?: boolean }[] = [];
   for (const [kN, kD] of [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [0, 1], [1, 1], [2, 1], [3, 1], [4, 1]] as const) {
     if (kN > movableNight.length) continue;
     const toDay = movableNight.slice(0, kN);
@@ -253,12 +321,27 @@ export function placeSpacesLShape(
   const covered = (list: PlacedSpec[], res: { spaces: Space[] }): boolean =>
     list.every(sp => res.spaces.some(s => s.id === sp.placedId));
 
+  // P31-P1: connector twins of every standard variant — identical program
+  // split, but the cut-side band of the day wing is pre-reserved for a link
+  // corridor (see the circulation-completion stage at acceptance). Tried
+  // after the standard variants; the geometry gates and the circulation-aware
+  // selection decide whether a twin wins. Scenarios where no twin passes the
+  // gates keep their standard plan unchanged.
+  for (const v of [...variants]) {
+    variants.push({ ...v, note: `${v.note} + corridor-link`, connector: true });
+  }
+
   // Band-tile a SMALL night wing directly from the M4 band solvers (the same
   // primitives that gate the allocation): cells stack perpendicular to the
   // cut so every room keeps a full edge on the bridge strip (connected by
   // construction) and the opposite edge on the wing's exterior wall.
-  const bandTileNight = (rect: Rect, list: PlacedSpec[], verticalCut: boolean): { spaces: Space[]; corridors: Space[]; explanation: string[] } | null => {
-    if (list.length === 0 || list.length > 2) return null;
+  const bandTileNight = (rect: Rect, list: PlacedSpec[], verticalCut: boolean, maxCells?: number): { spaces: Space[]; corridors: Space[]; explanation: string[] } | null => {
+    // P31-P1: a vertical (cut-parallel) stack keeps every cell's full edge on
+    // the bridge strip regardless of cell count, so 3 cells stay
+    // connected-by-construction there; horizontal stacks keep the 2-cell cap
+    // unless the caller raises it (P31-P1 day-row mode: full-width rows in the
+    // carved day region, each row touching the connector corridor).
+    if (list.length === 0 || list.length > (maxCells ?? (verticalCut ? 3 : 2))) return null;
     const cells: BandCellDemand[] = list.map(sp => ({
       type: sp.type,
       minWidth: Math.max(sp.minWidth ?? 2.0, MAIN_FLOOR_AREA.has(sp.type) ? 2.7 : 0),
@@ -270,7 +353,11 @@ export function placeSpacesLShape(
       ? (solveCol(rect.w, rect.h, cells) ?? solveRow(rect.w, rect.h, cells))
       : (solveRow(rect.w, rect.h, cells) ?? solveCol(rect.w, rect.h, cells));
     if (!sol) return null;
-    const verticalStack = verticalCut ? sol.mode === 'col' : sol.mode === 'row';
+    // P31-P1 fix: the stacking axis follows the SOLUTION mode (col → cells
+    // stack along x with full height; row → cells stack along y with full
+    // width). The previous ternary mis-mapped a row fallback under a vertical
+    // cut, feeding row heights in as widths.
+    const verticalStack = sol.mode === 'col';
     const spaces: Space[] = [];
     let flow = verticalStack ? rect.y : rect.x;
     for (let i = 0; i < list.length; i++) {
@@ -280,12 +367,20 @@ export function placeSpacesLShape(
         : { x: flow, y: rect.y, w: cell.flow, h: rect.h };
       flow += cell.flow;
       const sp = list[i];
+      // P31-P1: the solver's cap-growth branch can hand back a flow below the
+      // cell's own minimum (e.g. a guest-WC row squeezed under its usable
+      // floor). The packer must never emit such a sliver — reject the solution
+      // so the caller falls back to the placer.
+      const minW = Math.max(sp.minWidth ?? 2.0, MAIN_FLOOR_AREA.has(sp.type) ? 2.7 : 0);
+      const minH = sp.minLength ?? sp.minWidth ?? 2.0;
+      const minA = Math.max(sp.minArea ?? 6, MAIN_FLOOR_AREA.has(sp.type) ? 12 : 0, 0.25);
+      if (r.w + 1e-6 < minW - 1e-9 || r.h + 1e-6 < minH - 1e-9 || r.w * r.h + 1e-6 < minA - 1e-9) return null;
       spaces.push(mkSpace(sp.type as SpaceType, r, sp.placedLabel, sp.placedId, zoneFor(sp.type)));
     }
     return {
       spaces,
       corridors: [],
-      explanation: [`[night wing] Phase 25 band-tile: ${list.length} room(s) on the bridge edge via M4 ${sol.mode} solver (${sol.cells.map(c => c.flow.toFixed(2)).join('+')} m) — every room keeps a full edge on the bridge strip.`],
+      explanation: [`[wing] Phase 25 band-tile: ${list.length} room(s) via M4 ${sol.mode} solver (${sol.cells.map(c => c.flow.toFixed(2)).join('+')} m) — every room keeps a full edge on the adjacent circulation strip.`],
     };
   };
 
@@ -444,6 +539,7 @@ export function placeSpacesLShape(
     imbalance: number;
     totalResidual: number;
     dimContractOk: boolean;
+    circulationOk: boolean;
   }> = [];
 
   for (const plan of splitPlans) {
@@ -569,9 +665,43 @@ export function placeSpacesLShape(
           } else {
             var dayListEff = v.day;
           }
-          const dayRes = preEntry.length > 0
+          // P31-P1: kitchen-moved variants pre-reserve the cut-side band of
+          // the day wing for the link corridor, so the day placer packs the
+          // remaining width and the connector corridor is guaranteed a free,
+          // gated path between the entry band and the north circulation.
+          let connectorRect: Rect | null = null;
+          if (v.connector === true && preEntry.length > 0
+            && cut!.axis === 'x' && access !== 'east' && access !== 'west') {
+            const stripEastOfDay = Math.abs(cfg.strip.x - (dayRectCfg.x + dayRectCfg.w)) < 0.01;
+            const stripWestOfDay = Math.abs(cfg.strip.x + cfg.strip.w - dayRectCfg.x) < 0.01;
+            if (stripEastOfDay || stripWestOfDay) {
+              const base = dayRectEff;
+              const cand: Rect = stripEastOfDay
+                ? { x: base.x + base.w - L_CONNECTOR_W, y: base.y, w: L_CONNECTOR_W, h: base.h }
+                : { x: base.x, y: base.y, w: L_CONNECTOR_W, h: base.h };
+              if (cand.h >= 1.2) {
+                connectorRect = cand;
+                dayRectEff = stripEastOfDay
+                  ? { x: base.x, y: base.y, w: base.w - L_CONNECTOR_W, h: base.h }
+                  : { x: base.x + L_CONNECTOR_W, y: base.y, w: base.w - L_CONNECTOR_W, h: base.h };
+              }
+            }
+          }
+          // P31-P1: in the carved (connector-twin) region the day content is
+          // placed as full-width rows via the M4 row solver first — every row
+          // then touches the connector corridor on the cut side (door pass
+          // wires room↔connector directly, no in-region spine needed) and the
+          // rows keep their full min-area contract, which the spine-synthesizing
+          // placer could not guarantee in the narrower region. A connector twin
+          // whose rows do not fit is skipped outright — falling back to the
+          // placer in the narrower region would only squeeze rooms below the
+          // unusable floor and pollute the infeasible diagnostics.
+          const dayCarved = v.connector === true && preEntry.length > 0 && dayRectEff.w < dayRectCfg.w - 0.01;
+          const dayRowsRes = dayCarved ? bandTileNight(dayRectEff, dayListEff, false, 6) : null;
+          if (dayCarved && !dayRowsRes) continue;
+          const dayRes = dayRowsRes ?? (preEntry.length > 0
             ? place(dayRectEff, aimMainRooms(dayListEff))
-            : place(dayRectCfg, aimMainRooms(dayListEff));
+            : place(dayRectCfg, aimMainRooms(dayListEff)));
           const nightRes = v.night.length <= 2
             ? (bandTileNight(nightRectCfg, v.night, cut!.axis === 'x') ?? place(nightRectCfg, aimMainRooms(v.night)))
             : place(nightRectCfg, aimMainRooms(v.night));
@@ -587,6 +717,11 @@ export function placeSpacesLShape(
           // placed rectangles are collision-free and nothing leaves the
           // L-shaped buildable polygon (the notch stays empty).
           if (hasOverlappingRooms(all)) continue;
+          // P31-P1: unusable-floor gate — rooms below the Phase-13.2 usable
+          // minimum (0.85 m per edge) never leave this stage, not even as
+          // rejected candidates: the infeasible reporter must keep its
+          // "diagnostics stay ≥ 0.85" promise.
+          if (all.some(sp => sp.rect.w < 0.85 || sp.rect.h < 0.85)) continue;
           if (!all.every(s => rectInsidePolygon(s.rect, buildableBoundary, 1e-3))) {
             const out = all.filter(sp => !rectInsidePolygon(sp.rect, buildableBoundary, 1e-3))
               .map(sp => `${sp.type}@${sp.rect.x.toFixed(1)},${sp.rect.y.toFixed(1)}+${sp.rect.w.toFixed(1)}x${sp.rect.h.toFixed(1)}`);
@@ -597,6 +732,70 @@ export function placeSpacesLShape(
           // other rooms on all four edges can never get an exterior wall —
           // reject the variant so the generic planner gets its turn.
           if (all.some(sp => DAYLIGHT_HABITABLE.has(sp.type) && isFullyInterior(sp.rect, all))) continue;
+          // ---- P31-P1 circulation completion --------------------------------
+          // Geometry-level connectivity proxy (the door pass doors every
+          // adjacent circulation pair). Kitchen-moved variants pre-reserve a
+          // cut-side connector band (connectorRect); other plans fall back to
+          // a deterministic free-strip scan. Either way the connector is
+          // emitted only when it passes every geometry gate and actually
+          // connects the corridor system to the entry spaces.
+          const circSpacesNow = [bridgeSpace, ...dayAll.corridors, ...nightRes.corridors];
+          let circOk = circulationConnected([...all, ...circSpacesNow]);
+          let connectorSpace: Space | null = null;
+          const tryConnector = (cand: Rect): void => {
+            if (cand.h < 1.2 || cand.w < 1.2) return;
+            const occupied = [...all, ...circSpacesNow];
+            if (occupied.some(sp => rOverlapArea(cand, sp.rect) > 1e-3)) return;
+            const candidate = mkSpace('corridor', cand, 'Corridor', 'corridor-link', 'circulation');
+            const allC = [...all, candidate];
+            if (hasOverlappingRooms(allC)) return;
+            if (!allC.every(s2 => rectInsidePolygon(s2.rect, buildableBoundary, 1e-3))) return;
+            connectorSpace = candidate;
+          };
+          if (connectorRect) {
+            tryConnector(connectorRect);
+          } else if (!circOk && preEntry.length > 0 && access !== 'east' && access !== 'west' && cut!.axis === 'x') {
+            const stripEastOfDay = Math.abs(cfg.strip.x - (dayRectCfg.x + dayRectCfg.w)) < 0.01;
+            const stripWestOfDay = Math.abs(cfg.strip.x + cfg.strip.w - dayRectCfg.x) < 0.01;
+            if (stripEastOfDay || stripWestOfDay) {
+              const south = access === 'south';
+              const bandTopY = south
+                ? dayRectCfg.y + L_BAND_H
+                : dayRectCfg.y + dayRectCfg.h - L_BAND_H;
+              const compNow = circulationComponent([...all, ...circSpacesNow]);
+              const disc = circSpacesNow.filter(c => c.type === 'corridor' && !compNow.has(c.id));
+              for (let i = 0; i <= 40 && !connectorSpace; i++) {
+                const x = stripEastOfDay
+                  ? dayRectCfg.x + dayRectCfg.w - L_CONNECTOR_W - i * 0.1
+                  : dayRectCfg.x + i * 0.1;
+                // anchor the connector at the entry band; cap it at the nearest
+                // disconnected-corridor edge so corridors touch, not overlap
+                let bestEdge: number | null = null;
+                for (const d of disc) {
+                  const xOv = Math.min(x + L_CONNECTOR_W, d.rect.x + d.rect.w) - Math.max(x, d.rect.x);
+                  if (xOv < L_CIRC_LINK) continue;
+                  const edge = south ? d.rect.y : d.rect.y + d.rect.h;
+                  const beyond = south ? edge > bandTopY + 1e-6 : edge < bandTopY - 1e-6;
+                  if (!beyond) continue;
+                  if (bestEdge === null || (south ? edge < bestEdge : edge > bestEdge)) bestEdge = edge;
+                }
+                if (bestEdge === null) continue;
+                const cand: Rect = south
+                  ? { x, y: bandTopY, w: L_CONNECTOR_W, h: bestEdge - bandTopY }
+                  : { x, y: bestEdge, w: L_CONNECTOR_W, h: bandTopY - bestEdge };
+                if (!disc.some(d => sharedEdgeLen(cand, d.rect) >= L_CIRC_LINK)) continue;
+                const compSpaces = circSpacesNow.filter(c => compNow.has(c.id));
+                const entrySpaces = all.filter(s2 => s2.type === 'entrance' || s2.type === 'foyer');
+                const compAnchors = [...compSpaces, ...entrySpaces];
+                if (!compAnchors.some(c => sharedEdgeLen(cand, c.rect) >= L_CIRC_LINK)) continue;
+                tryConnector(cand);
+              }
+            }
+          }
+          if (connectorSpace) {
+            circOk = circulationConnected([...all, connectorSpace, ...circSpacesNow]);
+            if (!circOk) connectorSpace = null; // honest: only keep a connector that actually connects
+          }
           // P29-B FIX 2 — wing-residual metrics for the balance ranking (no
           // thresholds changed; purely a selection order among gate-passers).
           // A balanced variant may only displace the ladder-first plan when it
@@ -621,15 +820,16 @@ export function placeSpacesLShape(
           const { imbalance, totalResidual } = wingResidualStats(all, street, other);
           acceptedWingPlans.push({
             spaces: [...dayAll.spaces, ...nightRes.spaces],
-            corridors: [...dayAll.corridors, ...nightRes.corridors, bridgeSpace],
+            corridors: [...dayAll.corridors, ...nightRes.corridors, bridgeSpace, ...(connectorSpace ? [connectorSpace] : [])],
             lines: [
-              `Phase 25 L-wings: plan ACCEPTED (${split.note}; ${orient.note}; ${v.note}; ${cfg.note}) — day ${v.day.length} room(s) on ${dayRectCfg.w.toFixed(1)}x${dayRectCfg.h.toFixed(1)} m, night ${v.night.length} on ${nightRectCfg.w.toFixed(1)}x${nightRectCfg.h.toFixed(1)} m, bridge strip ${cfg.strip.w.toFixed(1)}x${cfg.strip.h.toFixed(1)} m on the shared cut.`,
+              `Phase 25 L-wings: plan ACCEPTED (${split.note}; ${orient.note}; ${v.note}; ${cfg.note}${connectorSpace ? '; corridor-link added' : ''}) — day ${v.day.length} room(s) on ${dayRectCfg.w.toFixed(1)}x${dayRectCfg.h.toFixed(1)} m, night ${v.night.length} on ${nightRectCfg.w.toFixed(1)}x${nightRectCfg.h.toFixed(1)} m, bridge strip ${cfg.strip.w.toFixed(1)}x${cfg.strip.h.toFixed(1)} m on the shared cut.`,
               ...dayAll.explanation.map(e => `[day wing] ${e}`),
               ...nightRes.explanation.map(e => `[night wing] ${e}`),
             ],
             imbalance,
             totalResidual,
             dimContractOk,
+            circulationOk: circOk,
           });
         }
       }
@@ -646,6 +846,12 @@ export function placeSpacesLShape(
     for (const c of acceptedWingPlans) {
       if (c.dimContractOk !== best.dimContractOk) {
         if (c.dimContractOk) best = c;
+        continue;
+      }
+      // P31-P1: a circulation-connected plan always beats a disconnected one
+      // (the door pass turns the connector adjacency into spine doors).
+      if (c.circulationOk !== best.circulationOk) {
+        if (c.circulationOk) best = c;
         continue;
       }
       if (c.imbalance < best.imbalance - 1e-9) best = c;

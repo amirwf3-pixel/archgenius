@@ -146,8 +146,11 @@ describe('Phase 18 — furniture vs door swing', () => {
     // Instead place the door low on the EAST wall? Keep it simple: wardrobe at north-wall (y≈-0.55..-0.05) DOES intersect the sector.
     const withDoor = placeFurniture([room], [swingDoor(0.3)]);
     const withoutDoor = placeFurniture([room], []);
-    // wardrobe (north-wall) intersects the sector → skipped when the door exists
-    expect(withDoor.some(f => f.type === 'wardrobe')).toBe(false);
+    // wardrobe (north-wall) intersects the sector → the north-wall slot is
+    // skipped. P31-P2: the producer now falls back to a clear wall instead of
+    // dropping the piece — but it must never place INTO the sector.
+    expect(withDoor.some(f => f.type === 'wardrobe' && rectBlocksDoorSwing(f.rect, swingDoor(0.3)))).toBe(false);
+    expect(withDoor.some(f => f.type === 'wardrobe')).toBe(true);
     expect(withoutDoor.some(f => f.type === 'wardrobe')).toBe(true);
     // no placed piece enters the sector
     for (const f of withDoor) expect(rectBlocksDoorSwing(f.rect, swingDoor(0.3))).toBe(false);

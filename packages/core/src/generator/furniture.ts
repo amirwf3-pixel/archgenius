@@ -29,44 +29,60 @@ export function placeFurniture(spaces: Space[], openings: Opening[] = []): Furni
   return out;
 }
 
+/** Phase 31-P2 — deterministic ordered fallback slots per piece. Each entry
+ * lists the (type, slot) candidates in strict priority order; the first one
+ * that passes every gate (containment, polygon, overlap, wall clearance,
+ * exact door-swing) wins. A piece whose whole ladder fails is honestly not
+ * placed — never forced into an invalid spot. */
 function placeInRoom(s: Space, doors: Opening[], existing: Furniture[]): Furniture[] {
-  const pieces: Array<{ type: FurnitureType; at: 'nw-corner'|'sw-corner'|'ne-corner'|'se-corner'|'north-wall'|'south-wall'|'east-wall'|'west-wall'|'center' }> = [];
+  const CORNERS_BED = ['sw-corner', 'se-corner', 'nw-corner', 'ne-corner'] as const;
+  const CORNERS_WET = ['ne-corner', 'nw-corner', 'se-corner', 'sw-corner'] as const;
+  const WALLS = ['north-wall', 'south-wall', 'west-wall', 'east-wall'] as const;
+  const pieces: Array<Array<{ type: FurnitureType; at: 'nw-corner'|'sw-corner'|'ne-corner'|'se-corner'|'north-wall'|'south-wall'|'east-wall'|'west-wall'|'center' }>> = [];
   switch (s.type) {
     case 'bedroom':
-      pieces.push({ type: 'bed-double', at: 'sw-corner' });
-      pieces.push({ type: 'wardrobe', at: 'north-wall' });
+      pieces.push(CORNERS_BED.map(at => ({ type: 'bed-double' as const, at })));
+      pieces.push(WALLS.map(at => ({ type: 'wardrobe' as const, at })));
       break;
     case 'master-bedroom':
-      pieces.push({ type: 'bed-king', at: 'sw-corner' });
-      pieces.push({ type: 'wardrobe', at: 'north-wall' });
+      pieces.push(CORNERS_BED.map(at => ({ type: 'bed-king' as const, at })));
+      pieces.push(WALLS.map(at => ({ type: 'wardrobe' as const, at })));
       break;
     case 'living':
-      pieces.push({ type: 'sofa-3seat', at: 'north-wall' });
+      pieces.push(WALLS.map(at => ({ type: 'sofa-3seat' as const, at })));
       break;
     case 'dining':
-      pieces.push({ type: 'dining-table-4', at: 'center' });
+      pieces.push([{ type: 'dining-table-4', at: 'center' }]);
       break;
     case 'kitchen':
-      pieces.push({ type: 'kitchen-counter-l', at: 'sw-corner' });
+      // P30 audit: an L-counter needs 2.6 m of wall — narrow kitchens fall
+      // back to the 2.4×0.6 single counter along a long wall.
+      pieces.push(CORNERS_WET.map(at => ({ type: 'kitchen-counter-l' as const, at })));
+      pieces.push(WALLS.map(at => ({ type: 'kitchen-counter-single' as const, at })));
       break;
     case 'bathroom':
     case 'master-bathroom':
-      pieces.push({ type: 'toilet', at: 'ne-corner' });
-      pieces.push({ type: 'sink', at: 'nw-corner' });
-      pieces.push({ type: 'shower', at: 'se-corner' });
+      pieces.push(CORNERS_WET.map(at => ({ type: 'toilet' as const, at })));
+      pieces.push(CORNERS_WET.map(at => ({ type: 'sink' as const, at })));
+      pieces.push(CORNERS_WET.map(at => ({ type: 'shower' as const, at })));
       break;
     case 'guest-wc':
-      pieces.push({ type: 'toilet', at: 'ne-corner' });
-      pieces.push({ type: 'sink', at: 'nw-corner' });
+      pieces.push(CORNERS_WET.map(at => ({ type: 'toilet' as const, at })));
+      pieces.push(CORNERS_WET.map(at => ({ type: 'sink' as const, at })));
       break;
     default:
       break;
   }
 
   const out: Furniture[] = [];
-  for (const p of pieces) {
-    const f = makePiece(p.type, s, p.at, [...existing, ...out], doors);
-    if (f) out.push(f);
+  for (const ladder of pieces) {
+    for (const p of ladder) {
+      const f = makePiece(p.type, s, p.at, [...existing, ...out], doors);
+      if (f) {
+        out.push(f);
+        break;
+      }
+    }
   }
   return out;
 }

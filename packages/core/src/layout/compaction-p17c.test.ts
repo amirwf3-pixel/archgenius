@@ -169,14 +169,17 @@ describe('P17-C pipeline integration', () => {
     const fl = bc.floors[0];
     const rects = (fl as any).buildableRects as Rect[];
     expect(rects.length).toBeGreaterThan(0);
-    // old declared envelope = buildable bbox (L-bbox); compacted must be a
-    // strict subset in area, still contain every placed room, and the M6
-    // decomposition data must be untouched (polygon-aware placement intact).
+    // old declared envelope = buildable bbox (L-bbox); compacted must never
+    // inflate, still contain every placed room, and the M6 decomposition data
+    // must be untouched (polygon-aware placement intact). P31-P1: the
+    // circulation-connected L plans tile their bbox margins completely, so
+    // compaction can legitimately find no full strip to trim — the strict
+    // subset assertion became "never larger" for those plans.
     const bxs = (fl as any).buildableBoundary.map((p: { x: number; y: number }) => p.x);
     const bys = (fl as any).buildableBoundary.map((p: { x: number; y: number }) => p.y);
     const bx0 = Math.min(...bxs), by0 = Math.min(...bys);
     const bw = Math.max(...bxs) - bx0, bh = Math.max(...bys) - by0;
-    expect(fl.footprint.w * fl.footprint.h).toBeLessThan(bw * bh);
+    expect(fl.footprint.w * fl.footprint.h).toBeLessThanOrEqual(bw * bh);
     expect(fl.footprint.x).toBeGreaterThanOrEqual(bx0 - 1e-6);
     expect(fl.footprint.y).toBeGreaterThanOrEqual(by0 - 1e-6);
     for (const s of fl.spaces) {
