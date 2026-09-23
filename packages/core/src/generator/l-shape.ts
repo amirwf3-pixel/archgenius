@@ -321,6 +321,25 @@ export function placeSpacesLShape(
   const covered = (list: PlacedSpec[], res: { spaces: Space[] }): boolean =>
     list.every(sp => res.spaces.some(s => s.id === sp.placedId));
 
+  // P33-P3: suite-preserving variant — the master bathroom never leaves the
+  // master bedroom's wing; the bedroom(s) overflow to the day wing instead.
+  // The prefix-slice ladder above always moves the (smaller) bathroom first,
+  // which makes the same-wing suite inexpressible there. Pushed last so the
+  // existing ladder order is untouched; the selection tiebreak below is what
+  // prefers it when every existing metric is exactly tied.
+  if (nightSpecs.some(s => s.type === 'master-bedroom') && nightSpecs.some(s => s.type === 'master-bathroom')) {
+    const suite = nightSpecs.filter(s => s.type === 'master-bedroom' || s.type === 'master-bathroom');
+    const overflowBeds = nightSpecs.filter(s => s.type === 'bedroom');
+    if (overflowBeds.length > 0) {
+      const suiteRest = nightSpecs.filter(s => s.type !== 'master-bedroom' && s.type !== 'master-bathroom' && s.type !== 'bedroom' && s.type !== 'stair-hall');
+      variants.push({
+        day: [...daySpecs, ...overflowBeds],
+        night: [...suite, ...suiteRest],
+        note: 'suite same-wing (bedroom → day)',
+      });
+    }
+  }
+
   // P31-P1: connector twins of every standard variant — identical program
   // split, but the cut-side band of the day wing is pre-reserved for a link
   // corridor (see the circulation-completion stage at acceptance). Tried
@@ -842,6 +861,14 @@ export function placeSpacesLShape(
   // ties). With no feasible wing plan the entry-annex fallback below runs
   // exactly as before.
   if (acceptedWingPlans.length > 0) {
+    // P33-P3: same-wing master suite — mirrors the soft p-mb-mbath adjacency
+    // constraint (any positive shared wall edge, the same relationship the
+    // validator's CONSTRAINT_PREFER_ADJACENT pass rewards).
+    const suiteAdjacent = (p: { spaces: Space[] }): boolean => {
+      const mbr = p.spaces.find(s => s.type === 'master-bedroom');
+      const mbath = p.spaces.find(s => s.type === 'master-bathroom');
+      return !!mbr && !!mbath && sharedEdgeLen(mbr.rect, mbath.rect) > 1e-6;
+    };
     let best = acceptedWingPlans[0];
     for (const c of acceptedWingPlans) {
       if (c.dimContractOk !== best.dimContractOk) {
@@ -856,6 +883,12 @@ export function placeSpacesLShape(
       }
       if (c.imbalance < best.imbalance - 1e-9) best = c;
       else if (c.imbalance <= best.imbalance + 1e-9 && c.totalResidual < best.totalResidual - 1e-9) best = c;
+      // P33-P3: on an EXACT tie of every existing metric (dimension contract,
+      // circulation connectivity, imbalance, residual), prefer the plan that
+      // keeps the master suite in one wing. Deterministic; never overrides a
+      // strictly better plan; weights and thresholds untouched.
+      else if (c.imbalance <= best.imbalance + 1e-9 && c.totalResidual <= best.totalResidual + 1e-9
+        && suiteAdjacent(c) && !suiteAdjacent(best)) best = c;
     }
     explanation.push(...best.lines);
     return {

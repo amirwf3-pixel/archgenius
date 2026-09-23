@@ -121,18 +121,18 @@ describe('P29-B: exported DXF annotation TEXT collisions', () => {
     // Evidence (audit): window-0-11 (w 1.515 m, centered on bedroom-0-009's
     // left edge) sat exactly on the room chain-dim text slot. The opening
     // width TEXT must yield; the room dim TEXT, both dim lines and ticks stay.
-    // P31-P1 re-pin: the circulation-connected row plan moved the west-edge
-    // windows — window-0-15 (w 1.26 m, bedroom row west edge, y 17.74) now
-    // occupies the same colliding slot, with the identical kept '3.03 m' room
-    // dim text and the same x=1.68 opening-width dim lines.
+    // P33-P3 re-pin: the suite plan's day rows moved the west-edge windows —
+    // window-0-15 (w 1.435 m, bedroom row west edge, y 17.565) now occupies
+    // the same colliding slot, with the identical kept '2.87 m' room dim text
+    // and the same x=1.68 opening-width dim lines.
     const { bestCandidate } = generate(createProject(lInput()));
     const fl = bestCandidate!.floors[0];
-    const win = fl.openings.find(o => o.type === 'window' && Math.abs(o.center.y - 17.74) < 0.05);
+    const win = fl.openings.find(o => o.type === 'window' && Math.abs(o.center.y - 17.565) < 0.05);
     expect(win).toBeTruthy();
     const dxf = writeDXF(bestCandidate!, 'P25 L');
     const texts = distinctTexts(dxf).map(t => t.txt);
     expect(texts).not.toContain(`${win!.width.toFixed(2)} m`); // suppressed opening text
-    expect(texts).toContain('3.03 m');                          // kept room dim text
+    expect(texts).toContain('2.87 m');                          // kept room dim text
     const ents = entities(dxf);
     // opening-width dim line at x = 2 - 0.32 = 1.68 m (mirror layers → 2 copies)
     const owDimLines = ents.filter(e => e.type === 'LINE'
