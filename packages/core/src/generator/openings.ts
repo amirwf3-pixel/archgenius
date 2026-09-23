@@ -563,5 +563,54 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
     }
   }
 
+  // ---- Phase 25: wing-bridge connectivity repair (bounded, deterministic) ----
+  // When the door graph cannot reach every space from the entrance seeds —
+  // possible on L-shape sites where a wing bridge corridor meets the main
+  // spine only through a room that already spent its one door — add a door on
+  // the longest shared wall between the reached and unreached regions. Uses
+  // the same placeDoorOnWall primitive as the passes above; already-connected
+  // plans (every rectangular site) exit on the first BFS with zero changes.
+  {
+    const seedSpaces = floor.spaces.filter(s => s.type === 'entrance' || s.type === 'foyer');
+    const seeds = seedSpaces.length
+      ? seedSpaces
+      : floor.level > 0
+        ? floor.spaces.filter(s => s.type === 'stair-hall' || s.type === 'elevator-hall')
+        : floor.spaces.filter(s => s.type === 'corridor');
+    if (seeds.length) {
+      for (let pass = 0; pass < 6; pass++) {
+        const reached = new Set<string>(seeds.map(s => s.id));
+        const queue = seeds.map(s => s.id);
+        while (queue.length) {
+          const id = queue.shift()!;
+          for (const o of openings) {
+            if (o.type !== 'door' && o.type !== 'entrance' && o.type !== 'sliding-door') continue;
+            const w = floor.walls.find(x => x.id === o.wallId);
+            if (!w) continue;
+            const [ga, gb] = w.spaceIds;
+            if (ga === id && gb && !reached.has(gb)) { reached.add(gb); queue.push(gb); }
+            if (gb === id && ga && !reached.has(ga)) { reached.add(ga); queue.push(ga); }
+          }
+        }
+        const unreached = floor.spaces.filter(s =>
+          !reached.has(s.id) && s.type !== 'parking' && s.type !== 'yard' && s.type !== 'balcony');
+        if (unreached.length === 0) break;
+        let best: { wall: Wall; into: string } | null = null;
+        let bestLen = 0;
+        for (const w of floor.walls) {
+          const [ga, gb] = w.spaceIds;
+          if (!ga || !gb || w.kind === 'exterior') continue;
+          const aIn = reached.has(ga);
+          const bIn = reached.has(gb);
+          if (aIn === bIn) continue;
+          const L = wallLength(w);
+          if (L > bestLen + 1e-9) { bestLen = L; best = { wall: w, into: aIn ? gb : ga }; }
+        }
+        if (!best) break;
+        placeDoorOnWall(best.wall, best.into, 0.9);
+      }
+    }
+  }
+
   return { openings, entranceWallId, entranceDoorId };
 }

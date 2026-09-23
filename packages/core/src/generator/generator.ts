@@ -55,6 +55,7 @@ import {
 } from '../geometry/polygon-ops.js';
 import { createRectangleRoomPolygon, roomPolygonToBoundingRect } from '../geometry/room-polygon.js';
 import { applyFloorCompaction } from '../layout/compaction.js';
+import { placeSpacesLShape, lAwareParkingEnvelope } from './l-shape.js';
 
 export const ALL_STRATEGIES: CandidateStrategy[] = [
   'area-efficiency',
@@ -305,7 +306,13 @@ function buildFloorSiteAware(
     corridors = result.corridors;
     placeExpl = result.explanation;
   } else {
-    const result = placeSpacesAcrossRects(buildableRects, buildableBoundary, placedSpecs, strategy, access, mkSpace);
+    // Phase 25: dedicated two-rectangle L-shape wing path. Rectangular sites
+    // never reach this branch (guarded above); other polygons keep the
+    // generic M6 planner exactly as before.
+    const lres = input.site.shape === 'l-shape' && buildableRects.length === 2
+      ? placeSpacesLShape(buildableRects, buildableBoundary, placedSpecs, strategy, access, mkSpace)
+      : null;
+    const result = lres ?? placeSpacesAcrossRects(buildableRects, buildableBoundary, placedSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation;
@@ -512,8 +519,13 @@ function buildFloorSiteAware(
       floorLevel: level,
       layoutPref: (input.site.parkingLayout ?? 'auto') as any,
       // P16-A: stalls are permanent slabs — keep them inside the buildable
-      // envelope; setbacks may only carry the drive aisle.
-      buildableRect,
+      // envelope; setbacks may only carry the drive aisle. Phase 25: on
+      // L-shaped lots the envelope is clamped to the lot's front band so a
+      // south-side notch can never host a stall (the notch is not part of the
+      // site); other shapes and rear notches keep the original envelope.
+      buildableRect: input.site.shape === 'l-shape' && input.site.lShape
+        ? lAwareParkingEnvelope(input.site.lShape, buildableRect, access, buildableRect)
+        : buildableRect,
     });
     if (p.fits) {
       parkingStalls = p.stalls;

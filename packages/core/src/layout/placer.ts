@@ -315,7 +315,9 @@ export function buildAccessFrame(footprint: Rect, side: 'north'|'south'|'east'|'
  * M2 hard gate still decides feasibility exactly as before.
  */
 /** Pairwise rect-overlap test over placed rooms (corridors included); O(n²), n ≈ rooms per floor. */
-function hasOverlappingRooms(spaces: Space[]): boolean {
+// Phase 25: exported for the L-shape wing path's geometry-authoritative
+// acceptance gates (same 2 cm tolerance / same collision rule).
+export function hasOverlappingRooms(spaces: Space[]): boolean {
   const rs = spaces.filter(s => s.rect && s.rect.w > 0 && s.rect.h > 0).map(s => s.rect as Rect);
   for (let i = 0; i < rs.length; i++)
     for (let j = i + 1; j < rs.length; j++) {
