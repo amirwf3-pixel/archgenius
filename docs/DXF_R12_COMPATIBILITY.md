@@ -36,6 +36,23 @@ and no VPORT table; AutoCAD fits the view to the drawing extents automatically.
 `validateDXFStructure` now enforces exactly this profile (forbidden: the nine
 view variables, VPORT/*ACTIVE, and the R13+ variables).
 
+## 1.7 Status update (Phase 28-F, 2026-09) — AutoCAD 2027 manual verification PASSED
+
+The Phase 28-E writer output was manually verified in AutoCAD 2027 by the
+product owner:
+
+- File: `outputs/p28e-regenerated/v1.2.1-L-NE-18x22.dxf` (18×22 L-shape,
+  minimal-header profile).
+- Result: **opens correctly → geometry visible → fully editable.**
+- The browser-download READ-ONLY warning appears and is ACCEPTED — it is a
+  Mark-of-the-Web artifact of downloaded files, not a DXF defect.
+
+This closes the 2026-09 AutoCAD-2027 black/blank regression chain: the P22-B
+view-variable/VPORT profile (v1.1.0-format and v1.2.0-format) is replaced by
+the minimal `$ACADVER`-only header proven by the Phase 28-C/28-D isolation
+ladders and confirmed by this manual verification. `validateDXFStructure`
+permanently enforces the proven profile.
+
 ## 2. Root Cause — Why Browser Download Was Black/Empty (diagnosed 2026-09-19)
 
 ### Header R13+ variables in AC1009

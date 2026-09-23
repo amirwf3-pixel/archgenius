@@ -6,6 +6,10 @@ diagnosis see `docs/DXF_R12_COMPATIBILITY.md` (§1.6): after real AutoCAD 2027
 isolation (Phase 28-C/28-D ladders) the header is the MINIMAL proven profile —
 `$ACADVER` only, no VPORT table — replacing the P22-B view-variable/VPORT
 profile, which AutoCAD 2027 rejected (black/blank) in every tested variant.
+**AutoCAD 2027 manual verification PASSED (Phase 28-F)**: the regenerated
+production DXF (`outputs/p28e-regenerated/v1.2.1-L-NE-18x22.dxf`) opens
+correctly, is fully visible and editable; the downloaded-file READ-ONLY
+warning is an accepted Mark-of-the-Web artifact, not a defect.
 
 ## 1. Overview
 
