@@ -130,6 +130,38 @@ Furniture is written to the `A-FURN` DXF layer, alongside `A-WALL-EXT`,
 | `privacySatisfaction`     | 1.0 when no private room directly adjoins entrance/foyer            |
 | `constraintViolations`    | total hard + soft findings                                          |
 
+## L-Shaped Sites (Phase 25 — dedicated two-rectangle path)
+
+When the buildable polygon decomposes into exactly two rectangles
+(`shape: 'l-shape'`, notch area removed by setbacks), placement bypasses the
+generic multi-rect band planner and uses `generator/l-shape.ts`:
+
+- **Split ladder** — the site-decomposition cut plus an exact-area horizontal
+  re-cut are tried (ordered by whether the night wing can host the sleeping
+  program at MBH4 main-room floors).
+- **Bridge strip** — a 1.5 m corridor strip on the shared cut connects the
+  wings; near-first ordering keeps street-spine↔bridge adjacency
+  corridor-to-corridor.
+- **Entry modes** — an entry band (entrance/guest-WC/foyer tiled along the
+  street edge, foyer on the cut) or, on shallow street stubs, a full
+  entry-annex (stub carries the entry sequence; the main block carries
+  living at the cut corner plus a spine with private/public stacks).
+- **Acceptance gates (geometry-authoritative)** — full program coverage, no
+  room collisions, containment inside the L polygon (the notch stays empty),
+  and exterior-wall reachability for every habitable room. A plan that fails
+  any gate is rejected; `null` falls back to the generic planner, and a
+  genuinely unfillable L stays honestly INFEASIBLE
+  (`HARD_CONSTRAINT_INFEASIBLE_DIMENSION`). Nothing is forced.
+- **Parking** — the stall envelope is clamped to the lot's front band so a
+  south-side notch can never host a stall (the notch is not part of the
+  site). Rectangular and rear-notch sites keep the original envelope.
+- **Openings** — a bounded BFS connectivity-repair pass adds a door on the
+  longest shared wall when the door graph cannot reach every space; it is a
+  no-op for already-connected plans (every rectangular scenario).
+
+Deterministic throughout: fixed ladders, no randomness, byte-identical DXF
+across repeated exports.
+
 ## Known Phase-3 Residuals (non-blocking)
 
 - **Stair flight length** (MBH4-STAIR-003): multi-flight L/U stairs with a

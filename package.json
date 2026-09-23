@@ -1,7 +1,7 @@
 {
   "name": "archgenius",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "ArchGenius — AI Architectural Planning & Professional AutoCAD System",
   "workspaces": [
     "packages/*"
