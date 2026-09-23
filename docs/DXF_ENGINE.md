@@ -1,10 +1,11 @@
 # DXF Engine — Architecture, Layers, Annotation, Validation
 
-Status: P16-D-A/B/C/D complete. This document describes the **actual current**
-DXF output pipeline. For the historical R12 black-screen diagnosis see
-`docs/DXF_R12_COMPATIBILITY.md` (the conservative initial-view profile was briefly
-reduced to only `$ACADVER` in 00a6b57; Phase 22-B restored the envelope-derived
-view variables and the VPORT-first table after real-world blank-open reports).
+Status: P16-D-A/B/C/D + Phase 28-E complete. This document describes the
+**actual current** DXF output pipeline. For the historical R12 black-screen
+diagnosis see `docs/DXF_R12_COMPATIBILITY.md` (§1.6): after real AutoCAD 2027
+isolation (Phase 28-C/28-D ladders) the header is the MINIMAL proven profile —
+`$ACADVER` only, no VPORT table — replacing the P22-B view-variable/VPORT
+profile, which AutoCAD 2027 rejected (black/blank) in every tested variant.
 
 ## 1. Overview
 

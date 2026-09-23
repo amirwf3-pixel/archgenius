@@ -134,12 +134,17 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   };
 
   // ---- HEADER SECTION ----
-  // Conservative R12 AC1009 header. $ACADVER is emitted here; the initial-view
-  // profile ($INSBASE, $EXTMIN/$EXTMAX, $LIMMIN/$LIMMAX, $VIEWCTR/$VIEWSIZE,
-  // $VIEWDIR, $LUNITS) is computed from the actual geometry envelope and spliced
-  // in once all entities are emitted (see end of this function). The genuinely
-  // invalid R13+ variables ($DWGCODEPAGE, $SCREENSIZE, $INSUNITS, $MEASUREMENT)
-  // stay forbidden — they triggered Enter prompts / black views when malformed.
+  // Phase 28-E (2026-09): MINIMAL proven-working R12 AC1009 header — $ACADVER
+  // ONLY. Real AutoCAD 2027 isolation (Phase 28-C/28-D ladders) proved:
+  //   G1/G2/H0 ($ACADVER alone + same TABLES/ENTITIES) -> open visible/editable;
+  //   G3 (full v1.2.0 header) and EVERY single-variable removal (H1 $INSBASE,
+  //   H2 EXT/LIM, H3 VIEW, H4 $LUNITS, H5 positive-reals EXT/LIM) -> black/blank.
+  // So EVERY header variable beyond $ACADVER participates in the failure and is
+  // removed. The R13+ variables ($DWGCODEPAGE, $SCREENSIZE, $INSUNITS,
+  // $MEASUREMENT) stay forbidden as before. The P22-B VPORT table is removed
+  // with the same evidence (present in every failing file, absent from every
+  // historically passing fixture T2/W1). AutoCAD scales the view to extents
+  // automatically when no view metadata is present.
   b.push('0', 'SECTION');
   b.push('2', 'HEADER');
   push(9, '$ACADVER'); push(1, 'AC1009'); // R12
@@ -499,97 +504,15 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
     }
   }
 
-  // ---- P22-B: restore initial-view metadata (fixes the 00a6b57 black-screen regression) ----
-  // AutoCAD opens a DXF at $VIEWCTR/$VIEWSIZE (and the *ACTIVE VPORT). With none
-  // present, this millimetre-scale drawing (~50,000 units from the origin) opened
-  // as a black/empty default view near the origin. Compute the emitted-entity
-  // envelope and splice the conservative R12 view profile back in, plus a
-  // VPORT-first table with a *ACTIVE viewport covering the envelope
-  // (profile per docs/DXF_R12_COMPATIBILITY.md). Nothing geometry-related changes.
-  const env = dxfEntityEnvelope(b);
-  const fmtV = (v: number) => String(Math.round(v * 100) / 100);
-  // Initial view height: cover the envelope height, and the width across a
-  // 1024:768 viewport aspect, with a 15% margin so nothing clips the border.
-  const viewH = Math.ceil(Math.max(env.maxY - env.minY, (env.maxX - env.minX) / (1024 / 768)) * 1.15 * 100) / 100;
-  const vcx = Math.round(((env.minX + env.maxX) / 2) * 100) / 100;
-  const vcy = Math.round(((env.minY + env.maxY) / 2) * 100) / 100;
-  // HEADER splice: insert before the HEADER section's terminating ENDSEC pair
-  // (the first ENDSEC in the stream — HEADER is the leading section). indexOf
-  // yields the VALUE element; step back one so the ('0','ENDSEC') pair stays intact.
-  const headerEnd = b.indexOf('ENDSEC') - 1;
-  b.splice(headerEnd, 0,
-    '9', '$INSBASE', '10', '0.0', '20', '0.0', '30', '0.0',
-    '9', '$EXTMIN', '10', fmtV(env.minX), '20', fmtV(env.minY), '30', '0.0',
-    '9', '$EXTMAX', '10', fmtV(env.maxX), '20', fmtV(env.maxY), '30', '0.0',
-    '9', '$LIMMIN', '10', fmtV(env.minX), '20', fmtV(env.minY), '30', '0.0',
-    '9', '$LIMMAX', '10', fmtV(env.maxX), '20', fmtV(env.maxY), '30', '0.0',
-    '9', '$VIEWCTR', '10', fmtV(vcx), '20', fmtV(vcy), '30', '0.0',
-    '9', '$VIEWSIZE', '40', fmtV(viewH),
-    '9', '$VIEWDIR', '10', '0.0', '20', '0.0', '30', '1.0',
-    '9', '$LUNITS', '70', '2');
-  // TABLES splice: VPORT must be the FIRST table (order VPORT → LTYPE → LAYER →
-  // STYLE) so the viewer honours $VIEWCTR/$VIEWSIZE. Profile is the historical
-  // R12 *ACTIVE viewport record.
-  const tablesIdx = b.indexOf('TABLES');
-  b.splice(tablesIdx + 1, 0,
-    '0', 'TABLE', '2', 'VPORT', '70', '1',
-    '0', 'VPORT', '2', '*ACTIVE', '70', '0',
-    '10', '0.0', '20', '0.0',
-    '11', '1.0', '21', '1.0',
-    '12', fmtV(vcx), '22', fmtV(vcy),
-    '40', fmtV(viewH), '41', '1.33333333',
-    '42', '50.0', '43', '0.0', '44', '0.0',
-    '50', '0.0', '51', '0.0',
-    // NOTE: groups 73/74 are intentionally omitted — they collide with the LTYPE
-    // regression guards (49/73/74 whole-TABLES bans) and are optional VPORT flags
-    // whose defaults (fast zoom on, UCS icon off) match the emitted intent.
-    '71', '0', '72', '100', '75', '1', '76', '1', '77', '0', '78', '0',
-    '0', 'ENDTAB');
+  // Phase 28-E: no HEADER view-metadata splice and no VPORT table — see the
+  // HEADER comment above for the real-AutoCAD evidence. AutoCAD 2027 opens the
+  // drawing (visible/editable) with $ACADVER alone; every additional header
+  // variable and the VPORT table reproduced the black/blank open.
 
   b.push('0', 'ENDSEC');
   b.push('0', 'EOF');
 
   return b.join(CR) + CR;
-}
-
-/**
- * P22-B — scan the assembled group-code stream for the emitted-entity envelope
- * (millimetres, deterministic pure function of the stream). Points from LINE/TEXT
- * (10/20 + 11/21) and VERTEX (10/20) are collected; ARC contributes its full disc
- * (centre ± radius — a superset of the arc's true extent, so every emitted
- * coordinate lies inside the reported envelope). POLYLINE header points are the
- * conventional (0,0) dummy and are skipped; the VERTEX sub-entities carry the
- * real geometry.
- */
-function dxfEntityEnvelope(b: string[]): { minX: number; minY: number; maxX: number; maxY: number } {
-  const collectible = new Set(['LINE', 'TEXT', 'ARC', 'VERTEX']);
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  let inEntities = false, curType = '', arcR = 0;
-  const pts: number[] = [];
-  const flush = () => {
-    for (let k = 0; k + 1 < pts.length; k += 2) {
-      minX = Math.min(minX, pts[k] - arcR); maxX = Math.max(maxX, pts[k] + arcR);
-      minY = Math.min(minY, pts[k + 1] - arcR); maxY = Math.max(maxY, pts[k + 1] + arcR);
-    }
-    pts.length = 0; arcR = 0;
-  };
-  for (let i = 0; i + 1 < b.length; i += 2) {
-    const code = b[i], val = b[i + 1];
-    if (code === '0') {
-      flush();
-      if (inEntities && val === 'ENDSEC') break;
-      curType = val;
-      continue;
-    }
-    if (code === '2' && curType === 'SECTION') { inEntities = val === 'ENTITIES'; continue; }
-    if (!inEntities || !collectible.has(curType)) continue;
-    if (code === '10' || code === '11') pts.push(parseFloat(val));
-    else if ((code === '20' || code === '21') && pts.length % 2 === 1) pts.push(parseFloat(val));
-    else if (curType === 'ARC' && code === '40') arcR = parseFloat(val) || 0;
-  }
-  flush();
-  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return { minX: 0, minY: 0, maxX: 1000, maxY: 1000 };
-  return { minX, minY, maxX, maxY };
 }
 
 function shiftRect(r: Rect, yOff: number): Rect { return { x: r.x, y: r.y + yOff, w: r.w, h: r.h }; }
@@ -1303,27 +1226,30 @@ export function validateDXFStructure(dxf: string): { ok: boolean; errors: string
   for (const name of ['A-WALL-EXT', 'A-WALL-INT', 'A-DOOR', 'A-WINDOW', 'A-ROOM', 'A-DIMS', 'A-TEXT', 'A-STAIR', 'A-STAIR-TREAD', 'A-STAIR-DIR', 'A-GRID', 'A-AXIS', 'A-AXIS-TEXT', 'A-NORTH', 'A-TITLE', 'A-PARKING', 'A-FURN', 'A-SANITARY', 'A-SITE', 'A-SETBACK', 'A-BLDG-OUT']) {
     if (!lines.includes(name)) errors.push(`Missing layer entry: ${name}`);
   }
-  // P22-B: R12 conservative profile — $ACADVER plus the initial-view metadata.
-  // AutoCAD opens a drawing at $VIEWCTR/$VIEWSIZE (and the *ACTIVE VPORT); without
-  // them a millimetre-scale drawing opens as a black near-origin default view
-  // (regression introduced in 00a6b57, fixed in P22-B). The genuinely harmful
-  // R13+ variables stay forbidden.
+  // Phase 28-E (2026-09): MINIMAL proven-working profile — $ACADVER AC1009 ONLY.
+  // Real AutoCAD 2027 isolation (Phase 28-C G1/G2/G3 + Phase 28-D H0..H5 ladders)
+  // proved that EVERY header variable beyond $ACADVER ($INSBASE, $EXTMIN/$EXTMAX,
+  // $LIMMIN/$LIMMAX, $VIEWCTR/$VIEWSIZE, $VIEWDIR, $LUNITS) reproduces the
+  // black/blank open, while $ACADVER-alone opens visible/editable. The VPORT
+  // table is equally forbidden (present in every failing file, absent from every
+  // historically passing fixture). The R13+ variables stay forbidden.
   if (!dxf.includes('$ACADVER') || !dxf.includes('AC1009')) errors.push('Missing $ACADVER AC1009 (R12)');
   for (const v of ['$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']) {
-    if (!dxf.includes(v)) errors.push(`Missing initial-view variable ${v} (AutoCAD default-view black-screen regression)`);
+    if (dxf.includes(v)) errors.push(`Forbidden header variable ${v} — AutoCAD 2027 black/blank regression (Phase 28-D ladder); only $ACADVER is proven safe`);
   }
   if (dxf.includes('$SCREENSIZE')) errors.push('$SCREENSIZE is not valid in DXF R12 (AC1009) — remove (prompted Enter in AutoCAD)');
   if (dxf.includes('$DWGCODEPAGE')) errors.push('$DWGCODEPAGE is not valid in DXF R12 (AC1009) — remove');
   if (dxf.includes('$INSUNITS')) errors.push('$INSUNITS is not valid in DXF R12 (AC1009)');
   if (dxf.includes('$MEASUREMENT')) errors.push('$MEASUREMENT is not valid in DXF R12 (AC1009)');
-  // TABLES: VPORT must exist, be the FIRST table (VPORT → LTYPE → LAYER → STYLE),
-  // and carry a *ACTIVE viewport so the initial view is honoured.
+  // TABLES: no VPORT table and no *ACTIVE viewport (Phase 28-E); the first table
+  // must be LTYPE (T2/H0-class conservative profile).
   let firstTable: string | null = null;
   for (let i = 0; i + 3 < lines.length; i++) {
     if (lines[i].trim() === '0' && lines[i + 1] === 'TABLE' && lines[i + 2].trim() === '2') { firstTable = lines[i + 3]; break; }
   }
-  if (firstTable !== 'VPORT') errors.push(`VPORT must be the FIRST TABLE (found: ${firstTable ?? 'no TABLE header'})`);
-  if (!lines.includes('*ACTIVE')) errors.push('Missing VPORT *ACTIVE viewport (AutoCAD initial view)');
+  if (firstTable !== 'LTYPE') errors.push(`First TABLE must be LTYPE (Phase 28-E minimal profile; found: ${firstTable ?? 'no TABLE header'})`);
+  if (lines.includes('VPORT')) errors.push('Forbidden VPORT table — AutoCAD 2027 black/blank regression (Phase 28-C/28-D); remove the VPORT table');
+  if (lines.includes('*ACTIVE')) errors.push('Forbidden *ACTIVE viewport record — AutoCAD 2027 black/blank regression (Phase 28-C/28-D); remove the VPORT table');
 
   // ---- entity-level audit ----
   let entStart = -1;

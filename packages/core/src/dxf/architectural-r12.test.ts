@@ -113,9 +113,9 @@ describe('Full architectural DXF — same valid R12 primitives as minimal refere
       // Same SECTION order as reference
       expect(a.sections).toEqual(ref.sections);
       expect(a.hasEof).toBe(true);
-      // Minimal HEADER: $ACADVER + P22-B initial-view profile
+      // Minimal HEADER: Phase 28-E profile — ONLY $ACADVER
       expect(a.header['$ACADVER'][0].value).toBe('AC1009');
-      expect(Object.keys(a.header)).toEqual(['$ACADVER', '$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']);
+      expect(Object.keys(a.header)).toEqual(['$ACADVER']);
       // No R13+ headers
       for (const bad of ['$SCREENSIZE', '$DWGCODEPAGE', '$INSUNITS', '$MEASUREMENT']) {
         expect(dxf).not.toContain(bad);
@@ -123,15 +123,15 @@ describe('Full architectural DXF — same valid R12 primitives as minimal refere
       // Pure CRLF ASCII
       expect(dxf.split('\r\n').join('')).not.toMatch(/[\r\n]/);
       for (const ch of dxf) expect(ch.charCodeAt(0)).toBeLessThanOrEqual(0x7e);
-      // TABLES: VPORT FIRST (P22-B), then LTYPE/LAYER/STYLE
+      // TABLES: LTYPE FIRST (Phase 28-E), then LAYER/STYLE — no VPORT
       expect(a.tables['LTYPE']).toBe(1);
       expect(a.tables['LAYER']).toBe(1);
       expect(a.tables['STYLE']).toBe(1);
-      expect(a.tables['VPORT']).toBe(1);
+      expect(a.tables['VPORT']).toBeUndefined();
       {
         const firstTbl = a.pairs.findIndex((p: any) => p.code === 0 && p.value.trim() === 'TABLE');
         expect(a.pairs[firstTbl + 1].code).toBe(2);
-        expect(a.pairs[firstTbl + 1].value.trim()).toBe('VPORT');
+        expect(a.pairs[firstTbl + 1].value.trim()).toBe('LTYPE');
       }
       // ENTITIES: only allowed R12 types, same vocabulary as minimal (plus ARC for doors)
       const allowed = new Set(['LINE','ARC','TEXT','POLYLINE','VERTEX','SEQEND']);
@@ -217,9 +217,9 @@ describe('Full architectural DXF — same valid R12 primitives as minimal refere
     const arch = analyze(dxf);
     const allowed = new Set(['LINE','ARC','TEXT','POLYLINE','VERTEX','SEQEND']);
     for (const e of [...ref.entities, ...arch.entities]) expect(allowed.has(e.type)).toBe(true);
-    // Both have the R12 header: $ACADVER + P22-B initial-view profile
-    expect(Object.keys(ref.header)).toEqual(['$ACADVER', '$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']);
-    expect(Object.keys(arch.header)).toEqual(['$ACADVER', '$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']);
+    // Both have the Phase 28-E minimal R12 header: ONLY $ACADVER
+    expect(Object.keys(ref.header)).toEqual(['$ACADVER']);
+    expect(Object.keys(arch.header)).toEqual(['$ACADVER']);
     // Reference has 4 LINE, arch has >100 LINE — same primitive type, scaled
     expect(ref.entities.filter(e=>e.type==='LINE').length).toBe(4);
     expect(arch.entities.filter(e=>e.type==='LINE').length).toBeGreaterThan(100);

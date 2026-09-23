@@ -169,20 +169,16 @@ describe('Phase 6 — Property-based invariants', () => {
     const res = validateDXFStructure(dxf);
     expect(res.ok).toBe(true);
     expect(res.errors.length).toBe(0);
-    // P22-B R12: $ACADVER plus the initial-view profile (AutoCAD default-view fix)
+    // Phase 28-E R12: $ACADVER-only minimal profile (AutoCAD 2027 proven safe);
+    // every variable beyond $ACADVER is forbidden (Phase 28-D ladder evidence)
     expect(dxf).toContain('$ACADVER');
     expect(dxf).toContain('AC1009');
-    expect(dxf).toContain('$EXTMIN');
-    expect(dxf).toContain('$EXTMAX');
-    expect(dxf).toContain('$LIMMIN');
-    expect(dxf).toContain('$LIMMAX');
-    expect(dxf).toContain('$VIEWCTR');
-    expect(dxf).toContain('$VIEWSIZE');
-    expect(dxf).toContain('$VIEWDIR');
-    expect(dxf).toContain('$INSBASE');
-    expect(dxf).toContain('$LUNITS');
+    for (const v of ['$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']) {
+      expect(dxf).not.toContain(v);
+    }
     expect(dxf).not.toContain('$SCREENSIZE');
     expect(dxf).not.toContain('$DWGCODEPAGE');
+    expect(dxf).not.toContain('VPORT');
     expect(dxf).not.toContain('$INSUNITS');
     expect(dxf).not.toContain('$MEASUREMENT');
     // Check layers

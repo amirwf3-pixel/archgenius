@@ -15,6 +15,27 @@ variables ($DWGCODEPAGE, $SCREENSIZE, $INSUNITS, $MEASUREMENT) remain forbidden.
 The VPORT record omits the optional 73/74 flags so the LTYPE dash-X regression
 guards (which ban 49/73/74 across TABLES) stay intact and untouched.
 
+## 1.6 Status update (Phase 28-E, 2026-09) — minimal proven header replaces P22-B
+
+Real AutoCAD 2027 isolation (Phase 28-C G1/G2/G3 + Phase 28-D H0..H5 ladders,
+files preserved under outputs/p28c-autocad-isolation/ and
+outputs/p28d-autocad-header-isolation/) proved:
+
+- G1/G2/H0 — HEADER with ONLY `$ACADVER` — open VISIBLE and EDITABLE
+  (the browser-download READ-ONLY warning is a Mark-of-the-Web artifact and is
+  accepted, not a defect).
+- G3 — the full P22-B header ($INSBASE, $EXTMIN/$EXTMAX, $LIMMIN/$LIMMAX,
+  $VIEWCTR/$VIEWSIZE, $VIEWDIR, $LUNITS) — opens BLACK/BLANK.
+- H1..H5 — removing ANY ONE variable group still opens BLACK/BLANK: every
+  header variable beyond `$ACADVER` participates in the failure.
+- The P22-B VPORT table is equally rejected by AutoCAD 2027 (present in every
+  failing file, absent from every passing fixture T2/W1).
+
+The production writer therefore emits the MINIMAL header ($ACADVER AC1009 only)
+and no VPORT table; AutoCAD fits the view to the drawing extents automatically.
+`validateDXFStructure` now enforces exactly this profile (forbidden: the nine
+view variables, VPORT/*ACTIVE, and the R13+ variables).
+
 ## 2. Root Cause — Why Browser Download Was Black/Empty (diagnosed 2026-09-19)
 
 ### Header R13+ variables in AC1009

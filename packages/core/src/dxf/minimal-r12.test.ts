@@ -15,8 +15,8 @@ import { legacyGenerate } from '../testutil/legacy-generate.js';
  *
  * Reference DXF: packages/core/src/dxf/reference-minimal-r12.dxf
  *   - 4 LINE (square 10m), 1 closed POLYLINE rect (4 VERTEX + SEQEND), 1 TEXT, 1 LAYER (0)
- *   - R12 with the P22-B initial-view profile: $ACADVER + $INSBASE/$EXTMIN/$EXTMAX/$LIMMIN/
- *     $LIMMAX/$VIEWCTR/$VIEWSIZE/$VIEWDIR/$LUNITS in HEADER, VPORT-first table (*ACTIVE),
+ *   - R12 with the Phase 28-E minimal profile: HEADER contains ONLY $ACADVER
+ *     (proven safe in real AutoCAD 2027, Phase 28-D H0 ladder); NO VPORT table;
  *     then LTYPE+LAYER+STYLE, *Model_Space only
  */
 
@@ -93,36 +93,30 @@ describe('Minimal R12 AC1009 — strict conservative reference', () => {
     // Canonical sections: HEADER, TABLES, BLOCKS, ENTITIES in order, no extra
     expect(a.sections).toEqual(['HEADER','TABLES','BLOCKS','ENTITIES']);
     expect(a.hasEof).toBe(true);
-    // HEADER: $ACADVER AC1009 plus the P22-B initial-view profile
+    // HEADER: Phase 28-E minimal profile — ONLY $ACADVER (proven safe in AutoCAD 2027)
     expect(a.header['$ACADVER']).toBeDefined();
     expect(a.header['$ACADVER'][0].value).toBe('AC1009');
-    expect(Object.keys(a.header)).toEqual(['$ACADVER', '$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']);
-    expect(a.header['$INSBASE']).toBeDefined();
-    expect(a.header['$EXTMIN']).toBeDefined();
-    expect(a.header['$EXTMAX']).toBeDefined();
-    expect(a.header['$LIMMIN']).toBeDefined();
-    expect(a.header['$LIMMAX']).toBeDefined();
-    expect(a.header['$VIEWCTR']).toBeDefined();
-    expect(a.header['$VIEWSIZE']).toBeDefined();
-    expect(a.header['$VIEWDIR']).toBeDefined();
-    expect(a.header['$LUNITS'].find((p: any) => p.code === 70).value).toBe('2');
+    expect(Object.keys(a.header)).toEqual(['$ACADVER']);
+    for (const v of ['$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']) {
+      expect(a.header[v], `forbidden header variable ${v}`).toBeUndefined();
+    }
     expect(dxf).not.toContain('$SCREENSIZE');
     expect(dxf).not.toContain('$DWGCODEPAGE');
     expect(dxf).not.toContain('$INSUNITS');
     expect(dxf).not.toContain('$MEASUREMENT');
-    // TABLES: VPORT FIRST (P22-B), then LTYPE, LAYER, STYLE; VIEW/UCS/APPID/DIMSTYLE absent
+    // TABLES: LTYPE FIRST (Phase 28-E), then LAYER, STYLE; NO VPORT; VIEW/UCS/APPID/DIMSTYLE absent
     expect(a.tables['LTYPE']).toBe(1);
     expect(a.tables['LAYER']).toBe(1);
     expect(a.tables['STYLE']).toBe(1);
-    expect(a.tables['VPORT']).toBe(1);
+    expect(a.tables['VPORT']).toBeUndefined();
     expect(a.tables['VIEW']).toBeUndefined();
     expect(a.tables['UCS']).toBeUndefined();
     expect(a.tables['APPID']).toBeUndefined();
     expect(a.tables['DIMSTYLE']).toBeUndefined();
-    // VPORT must be the FIRST table (P22-B: AutoCAD honours the *ACTIVE initial view)
+    // LTYPE must be the FIRST table (Phase 28-E minimal profile)
     const firstTbl = a.pairs.findIndex((p: any, i: number) => p.code === 0 && p.value.trim() === 'TABLE');
     expect(a.pairs[firstTbl + 1].code).toBe(2);
-    expect(a.pairs[firstTbl + 1].value.trim()).toBe('VPORT');
+    expect(a.pairs[firstTbl + 1].value.trim()).toBe('LTYPE');
     // LTYPE: must have 72=65 (R12 alignment 'A')
     // Check raw pairs for 72=65 presence in LTYPE records
     const ltype72 = a.pairs.filter((p,idx) => {
@@ -235,24 +229,24 @@ describe('Minimal R12 AC1009 — strict conservative reference', () => {
     expect(res.candidates.length).toBeGreaterThan(0);
     const { dxf } = exportDXF(res.candidates[0], 'minimal');
     const a = analyze(dxf);
-    // R12 header: $ACADVER + P22-B initial-view profile
+    // R12 header: Phase 28-E minimal profile — ONLY $ACADVER
     expect(a.header['$ACADVER'][0].value).toBe('AC1009');
-    expect(Object.keys(a.header)).toEqual(['$ACADVER', '$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']);
+    expect(Object.keys(a.header)).toEqual(['$ACADVER']);
     // Pure CRLF ASCII
     expect(dxf.split('\r\n').join('')).not.toMatch(/[\r\n]/);
     for (const ch of dxf) expect(ch.charCodeAt(0)).toBeLessThanOrEqual(0x7e);
     // SECTION order
     expect(a.sections).toEqual(['HEADER','TABLES','BLOCKS','ENTITIES']);
     expect(a.hasEof).toBe(true);
-    // TABLES: VPORT first (P22-B), then LTYPE/LAYER/STYLE
+    // TABLES: LTYPE first (Phase 28-E), then LAYER/LAYER/STYLE — no VPORT
     expect(a.tables['LTYPE']).toBe(1);
     expect(a.tables['LAYER']).toBe(1);
     expect(a.tables['STYLE']).toBe(1);
-    expect(a.tables['VPORT']).toBe(1);
+    expect(a.tables['VPORT']).toBeUndefined();
     {
       const firstTbl = a.pairs.findIndex((p: any) => p.code === 0 && p.value.trim() === 'TABLE');
       expect(a.pairs[firstTbl + 1].code).toBe(2);
-      expect(a.pairs[firstTbl + 1].value.trim()).toBe('VPORT');
+      expect(a.pairs[firstTbl + 1].value.trim()).toBe('LTYPE');
     }
     // Entities: only allowed R12 types
     const allowed = new Set(['LINE','ARC','TEXT','POLYLINE','VERTEX','SEQEND']);

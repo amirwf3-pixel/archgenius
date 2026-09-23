@@ -159,23 +159,18 @@ describe('DXF R12 compatibility — writer output (Phase-A hardening)', () => {
       expect(dxf.split('\r\n').join('')).not.toMatch(/[\r\n]/);
       expect(dxf.split('\r\n').length % 2).toBe(1); // pairs + final empty split element
 
-      // Header: R12 AC1009 — $ACADVER plus the P22-B initial-view profile
+      // Header: R12 AC1009 — Phase 28-E minimal profile, ONLY $ACADVER
+      // (real AutoCAD 2027: every variable beyond $ACADVER opens black/blank)
       expect(a.header['$ACADVER'][0].value).toBe('AC1009');
-      expect(a.header['$VIEWCTR']).toBeDefined();
-      expect(a.header['$VIEWSIZE']).toBeDefined();
-      expect(a.header['$EXTMIN']).toBeDefined();
-      expect(a.header['$EXTMAX']).toBeDefined();
-      expect(a.header['$LIMMIN']).toBeDefined();
-      expect(a.header['$LIMMAX']).toBeDefined();
-      expect(a.header['$VIEWDIR']).toBeDefined();
-      expect(a.header['$INSBASE']).toBeDefined();
-      expect(a.header['$LUNITS']).toBeDefined();
+      for (const v of ['$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']) {
+        expect(a.header[v], `forbidden header variable ${v}`).toBeUndefined();
+      }
       expect(a.header['$SCREENSIZE']).toBeUndefined();
       expect(a.header['$DWGCODEPAGE']).toBeUndefined();
       expect(a.header['$INSUNITS']).toBeUndefined();
       expect(a.header['$MEASUREMENT']).toBeUndefined();
-      // Header has exactly the R12 conservative variable set, in order
-      expect(Object.keys(a.header)).toEqual(['$ACADVER', '$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']);
+      // Header has exactly the proven-safe minimal variable set
+      expect(Object.keys(a.header)).toEqual(['$ACADVER']);
     });
 
     it(`tables + text: ${sc.key}`, () => {

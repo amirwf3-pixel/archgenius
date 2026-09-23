@@ -3,21 +3,20 @@ import { createProject, generate, exportDXF } from '../pipeline.js';
 import { writeDXF } from './writer.js';
 
 /**
- * Regression: Downloaded DXF must contain visible modelspace geometry inside sane envelope.
+ * Regression: Downloaded DXF must contain visible modelspace geometry.
  * Verifies that browser Blob download path (via writeDXF) produces same bytes as exportDXF.
  *
- * P22-B contract (restores what commit 00a6b57 wrongly removed — the 2026-09-19
- * black-screen fix profile, see docs/DXF_R12_COMPATIBILITY.md):
- *   - required initial-view HEADER variables exist: $INSBASE, $EXTMIN/$EXTMAX,
- *     $LIMMIN/$LIMMAX, $VIEWCTR/$VIEWSIZE, $VIEWDIR (0,0,1), $LUNITS (2, decimal);
- *   - the view values are derived from the actual emitted-geometry envelope;
- *   - the VPORT table exists, is the FIRST table, and carries a *ACTIVE viewport;
- *   - $VIEWSIZE covers the generated envelope (both axes);
- *   - output stays deterministic (byte-identical across repeated generation);
- *   - the genuinely invalid R13+ variables stay forbidden.
- * Rationale: AutoCAD opens a DXF at $VIEWCTR/$VIEWSIZE (+ *ACTIVE VPORT). Without
- * them a millimetre-scale drawing (~50,000 units from the origin) opens as a
- * black/empty default view near the origin — even though structural validation passes.
+ * Phase 28-E contract (real AutoCAD 2027 evidence, Phase 28-C G1/G2/G3 +
+ * Phase 28-D H0..H5 ladders — the H0/$ACADVER-only profile opens visible and
+ * editable; EVERY additional header variable and the VPORT table reproduce the
+ * black/blank open; see docs/DXF_R12_COMPATIBILITY.md §1.6):
+ *   - the HEADER contains ONLY $ACADVER = AC1009 (proven-safe minimal profile);
+ *   - $INSBASE, $EXTMIN/$EXTMAX, $LIMMIN/$LIMMAX, $VIEWCTR/$VIEWSIZE, $VIEWDIR,
+ *     $LUNITS are FORBIDDEN (each reproduced the failure in the 28-D ladder);
+ *   - no VPORT table / *ACTIVE viewport (forbidden, same evidence);
+ *   - the R13+ variables ($SCREENSIZE/$DWGCODEPAGE/$INSUNITS/$MEASUREMENT)
+ *     stay forbidden;
+ *   - output stays deterministic (byte-identical across repeated generation).
  */
 describe('DXF envelope regression', () => {
   it('Downloaded DXF must contain visible modelspace geometry inside sane envelope', () => {
@@ -39,9 +38,13 @@ describe('DXF envelope regression', () => {
     const dxf3 = writeDXF(generate(createProject(input), { allStrategies: true }).candidates[0], 'envelope');
     expect(dxf3).toBe(dxf);
 
-    // Structural checks — R12 AC1009 with the initial-view profile
+    // Structural checks — R12 AC1009 with the Phase 28-E minimal header
     expect(dxf).toContain('$ACADVER');
     expect(dxf).toContain('AC1009');
+    // Phase 28-D ladder: every variable beyond $ACADVER is forbidden
+    for (const v of ['$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']) {
+      expect(dxf).not.toContain(v);
+    }
     // Genuinely invalid R13+ variables must stay absent
     expect(dxf).not.toContain('$SCREENSIZE');
     expect(dxf).not.toContain('$DWGCODEPAGE');
@@ -54,7 +57,6 @@ describe('DXF envelope regression', () => {
     const pairs: Array<{ code: number; value: string }> = [];
     for (let i = 0; i + 1 < lines.length; i += 2) pairs.push({ code: Number(lines[i]), value: lines[i + 1] });
 
-    // --- Required view variables exist with envelope-derived values ---
     const header: Record<string, Array<{ code: number; value: string }>> = {};
     let currentVar: string | null = null;
     let inHeader = false;
@@ -65,35 +67,11 @@ describe('DXF envelope regression', () => {
       if (inHeader && p.code === 9) { currentVar = p.value.trim(); header[currentVar] = []; continue; }
       if (inHeader && currentVar) header[currentVar].push({ code: p.code, value: p.value.trim() });
     }
+    // --- Header contains ONLY $ACADVER (proven-safe minimal profile) ---
     for (const v of ['$INSBASE', '$EXTMIN', '$EXTMAX', '$LIMMIN', '$LIMMAX', '$VIEWCTR', '$VIEWSIZE', '$VIEWDIR', '$LUNITS']) {
-      expect(header[v], `missing HEADER variable ${v}`).toBeDefined();
+      expect(header[v], `forbidden HEADER variable ${v} present`).toBeUndefined();
     }
-    const g10 = (v: string) => Number(header[v].find(x => x.code === 10)?.value);
-    const g20 = (v: string) => Number(header[v].find(x => x.code === 20)?.value);
-    const g30 = (v: string) => Number(header[v].find(x => x.code === 30)?.value);
-    expect(g10('$INSBASE')).toBe(0);
-    expect(g20('$INSBASE')).toBe(0);
-    expect(g30('$INSBASE')).toBe(0);
-    expect(Number(header['$VIEWDIR'].find(x => x.code === 10)?.value)).toBe(0);
-    expect(Number(header['$VIEWDIR'].find(x => x.code === 20)?.value)).toBe(0);
-    expect(Number(header['$VIEWDIR'].find(x => x.code === 30)?.value)).toBe(1);
-    expect(header['$LUNITS'].find(x => x.code === 70)?.value).toBe('2');
-    // $EXTMIN < $EXTMAX on both axes (sane envelope)
-    const extMinX = g10('$EXTMIN'), extMinY = g20('$EXTMIN'), extMaxX = g10('$EXTMAX'), extMaxY = g20('$EXTMAX');
-    expect(extMinX).toBeLessThan(extMaxX);
-    expect(extMinY).toBeLessThan(extMaxY);
-    // $LIMMIN/$LIMMAX mirror the extents
-    expect(g10('$LIMMIN')).toBe(extMinX);
-    expect(g20('$LIMMIN')).toBe(extMinY);
-    expect(g10('$LIMMAX')).toBe(extMaxX);
-    expect(g20('$LIMMAX')).toBe(extMaxY);
-    // $VIEWCTR is the envelope centre
-    expect(g10('$VIEWCTR')).toBeCloseTo((extMinX + extMaxX) / 2, 1);
-    expect(g20('$VIEWCTR')).toBeCloseTo((extMinY + extMaxY) / 2, 1);
-    const viewSize = Number(header['$VIEWSIZE'].find(x => x.code === 40)?.value);
-    expect(viewSize).toBeGreaterThan(0);
-
-    // --- VPORT table: exists, FIRST table, *ACTIVE present ---
+    // --- Table order: LTYPE first (T2/H0-class), no VPORT anywhere ---
     let firstTable: string | null = null;
     const tablePos: Record<string, number> = {};
     for (let i = 0; i + 3 < pairs.length; i++) {
@@ -103,19 +81,12 @@ describe('DXF envelope regression', () => {
         if (firstTable === null) firstTable = name;
       }
     }
-    expect(firstTable).toBe('VPORT');
-    expect(tablePos['LTYPE']).toBeGreaterThan(tablePos['VPORT']);
-    expect(tablePos['LAYER']).toBeGreaterThan(tablePos['VPORT']);
-    expect(tablePos['STYLE']).toBeGreaterThan(tablePos['VPORT']);
-    const hasActiveVport = pairs.some((p, i) => p.code === 0 && p.value.trim() === 'VPORT' && pairs[i + 1].code === 2 && pairs[i + 1].value.trim() === '*ACTIVE');
-    expect(hasActiveVport).toBe(true);
-    // VPORT view height must match $VIEWSIZE (the initial view is the *ACTIVE viewport)
-    const activeIdx = pairs.findIndex((p, i) => p.code === 0 && p.value.trim() === 'VPORT' && pairs[i + 1].code === 2 && pairs[i + 1].value.trim() === '*ACTIVE');
-    const vportPairs = pairs.slice(activeIdx, activeIdx + 30);
-    const vportH = Number(vportPairs.find(p => p.code === 40)?.value);
-    expect(vportH).toBe(viewSize);
+    expect(firstTable).toBe('LTYPE');
+    expect(tablePos['LTYPE']).toBeLessThan(tablePos['LAYER']);
+    expect(tablePos['LAYER']).toBeLessThan(tablePos['STYLE']);
+    expect(tablePos['VPORT']).toBeUndefined();
+    expect(dxf.includes('*ACTIVE')).toBe(false);
 
-    // --- Entity envelope: every collected coordinate inside the DECLARED envelope ---
     let section = '';
     let curEnt: { type: string; codes: Record<number, string> } | null = null;
     const entities: Array<{ type: string; codes: Record<number, string> }>[] = [];
@@ -134,6 +105,28 @@ describe('DXF envelope regression', () => {
     }
     if (curEnt) allEntities.push(curEnt);
     const linesEnt = allEntities.filter(e => e.type === 'LINE');
+    // Phase 28-E: no DECLARED header envelope (AutoCAD scales the view to the
+    // geometry automatically) — derive the envelope from the emitted geometry
+    // itself and check every point against it below.
+    let geomMinX = Infinity, geomMinY = Infinity, geomMaxX = -Infinity, geomMaxY = -Infinity;
+    for (const e of allEntities) {
+      for (const c of [10, 11]) {
+        if (e.codes[c] !== undefined) {
+          const n = Number(e.codes[c]);
+          if (Number.isFinite(n)) { geomMinX = Math.min(geomMinX, n); geomMaxX = Math.max(geomMaxX, n); }
+        }
+      }
+      for (const c of [20, 21]) {
+        if (e.codes[c] !== undefined) {
+          const n = Number(e.codes[c]);
+          if (Number.isFinite(n)) { geomMinY = Math.min(geomMinY, n); geomMaxY = Math.max(geomMaxY, n); }
+        }
+      }
+    }
+    expect(Number.isFinite(geomMinX) && Number.isFinite(geomMinY)).toBe(true);
+    expect(geomMinX).toBeLessThan(geomMaxX);
+    expect(geomMinY).toBeLessThan(geomMaxY);
+    const extMinX = geomMinX, extMinY = geomMinY, extMaxX = geomMaxX, extMaxY = geomMaxY;
     expect(linesEnt.length).toBeGreaterThan(100);
     // All LINEs must have finite coordinates within sane mm range (site 15.5x22m => 0..~25000 mm, with offset)
     for (const e of linesEnt) {
@@ -175,12 +168,11 @@ describe('DXF envelope regression', () => {
       expect(y).toBeLessThanOrEqual(extMaxY + (e.type === 'ARC' ? Number(e.codes[40]) : 1));
     }
 
-    // --- $VIEWSIZE covers the generated envelope on BOTH axes ---
-    expect(viewSize).toBeGreaterThanOrEqual(extMaxY - extMinY);
-    // Width must fit through the viewport aspect (VPORT 41 = width/height ratio)
-    const aspect = Number(vportPairs.find(p => p.code === 41)?.value) || (1024 / 768);
-    expect(viewSize * aspect).toBeGreaterThanOrEqual(extMaxX - extMinX);
-    // AutoCAD display verification unavailable in CI — this test proves the initial-view
-    // profile is present, envelope-derived and covering, not application rendering.
+
+    // Phase 28-E: no $VIEWSIZE / VPORT — AutoCAD 2027 fits the view to the
+    // drawing extents automatically when no view metadata is present (proven by
+    // the H0 ladder file opening visible/editable). Nothing left to assert here;
+    // display verification in AutoCAD remains the manual acceptance oracle.
   });
 });
+
