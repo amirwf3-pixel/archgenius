@@ -172,6 +172,129 @@ function circulationConnected(spaces: ReadonlyArray<Space>): boolean {
 }
 
 
+// ---- P35 downstream-failure proxy ------------------------------------------
+// P31's circulation preference let a connector-twin plan win this stage while
+// failing the downstream hard validators (MBH4-DYL-001 daylight,
+// CONSTRAINT_DIRECT_ACCESS), displacing the previously downstream-valid plan
+// and turning four L-stress scenarios honestly infeasible. This proxy mirrors
+// those downstream predicates at plan level — its only numeric tolerance is
+// the sub-centimetre gap bound the compaction stage demonstrably closes — so
+// a plan that would fail them downstream can no longer displace one that
+// would not.
+const L_DYL_TYPES = new Set<string>([
+  // MBH4-DYL-001 needsDaylight + closed kitchens (kitchen independence is
+  // mandatory for the villa floor areas this stage plans for).
+  'living', 'bedroom', 'master-bedroom', 'dining', 'family-room', 'guest-room', 'kitchen',
+]);
+
+// Hard DIRECT_ACCESS_REQUIRED / MUST_BE_ADJACENT pairs from
+// DEFAULT_RESIDENTIAL_CONSTRAINTS: EVERY instance of `to` must share a
+// positive wall edge with at least one room of a `from` type (the validator
+// skips the pair when no from-type room exists).
+const L_DIRECT_PAIRS: Array<{ to: string; from: string[] }> = [
+  { to: 'foyer', from: ['entrance'] },
+  { to: 'living', from: ['foyer'] },
+  { to: 'bedroom', from: ['corridor'] },
+  { to: 'master-bedroom', from: ['corridor'] },
+  { to: 'bathroom', from: ['corridor'] },
+  { to: 'master-bathroom', from: ['corridor'] },
+];
+
+/** True when at least one edge segment of `rect` has no other room on the
+ * opposite side — the same one-sided wall rule the generator's wall builder
+ * uses to set hasExteriorWall (MBH4-DYL-001's only daylight predicate). */
+function hasExteriorEdge(rect: Rect, all: ReadonlyArray<Space>): boolean {
+  const eps = 1e-6;
+  const edges: Array<{ axis: 'h' | 'v'; coord: number; lo: number; hi: number }> = [
+    { axis: 'h', coord: rect.y, lo: rect.x, hi: rect.x + rect.w },
+    { axis: 'h', coord: rect.y + rect.h, lo: rect.x, hi: rect.x + rect.w },
+    { axis: 'v', coord: rect.x, lo: rect.y, hi: rect.y + rect.h },
+    { axis: 'v', coord: rect.x + rect.w, lo: rect.y, hi: rect.y + rect.h },
+  ];
+  for (const e of edges) {
+    const covered: Array<[number, number]> = [];
+    for (const o of all) {
+      if (o.rect.x === rect.x && o.rect.y === rect.y && o.rect.w === rect.w && o.rect.h === rect.h) continue;
+      const r = o.rect;
+      const touchesLine = e.axis === 'h'
+        ? (Math.abs(r.y + r.h - e.coord) < eps || Math.abs(r.y - e.coord) < eps)
+        : (Math.abs(r.x + r.w - e.coord) < eps || Math.abs(r.x - e.coord) < eps);
+      if (!touchesLine) continue;
+      const oLo = e.axis === 'h' ? r.x : r.y;
+      const oHi = e.axis === 'h' ? r.x + r.w : r.y + r.h;
+      const ovLo = Math.max(e.lo, oLo);
+      const ovHi = Math.min(e.hi, oHi);
+      if (ovHi - ovLo > eps) covered.push([ovLo, ovHi]);
+    }
+    // merge covered intervals; any uncovered remainder counts as exterior
+    covered.sort((a, b) => a[0] - b[0]);
+    let cursor = e.lo;
+    let exposed = false;
+    for (const [lo, hi] of covered) {
+      if (lo - cursor > eps) exposed = true;
+      if (hi > cursor) cursor = hi;
+    }
+    if (!exposed && e.hi - cursor > eps) exposed = true;
+    if (exposed) return true;
+  }
+  return false;
+}
+
+/** Conservative local mirror of the downstream hard failure modes: daylight
+ * eligibility (MBH4-DYL-001) and the hard direct-access pairs
+ * (CONSTRAINT_DIRECT_ACCESS / MUST_ADJACENT). Sub-centimetre gaps between a
+ * room and its required neighbour count as adjacent — the compaction stage
+ * closes exactly this class of placement-rounding gap (measured 0.005 m on
+ * the L2 stress site), so rejecting those plans would displace downstream
+ * valid ones again. The third failure mode — a room dependent on
+ * living/dining/kitchen as its only access path — stays enforced by the
+ * separate circulationConnected gate (the circulationOk criterion), which any
+ * plan winning on circulation must pass. */
+const L_DA_GAP_TOLERANCE = 0.01;
+
+/** Shared-edge length across a gap (or overlap) of at most `tol` (0 when the
+ * rects are farther apart or overlap substantially). */
+function sharedEdgeNear(a: Rect, b: Rect, tol: number): number {
+  const xOv = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const yOv = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if (xOv < -tol || yOv < -tol) return 0;
+  if (Math.abs(a.y + a.h - b.y) <= tol || Math.abs(b.y + b.h - a.y) <= tol) return Math.max(0, xOv);
+  if (Math.abs(a.x + a.w - b.x) <= tol || Math.abs(b.x + b.w - a.x) <= tol) return Math.max(0, yOv);
+  return 0;
+}
+
+function downstreamProxyOk(spaces: ReadonlyArray<Space>): boolean {
+  const present = new Set<string>(spaces.map(s => s.type));
+  // (0) real overlaps — the ladder's own room gate misses room×corridor
+  // collisions (e.g. a carved-region twin whose dining straddles the
+  // synthesized corridor); downstream these get "repaired" by moving the
+  // room, which orphans its daylight/direct-access geometry. Dedupe by id:
+  // the caller's list can repeat the bridge space across its room and
+  // circulation parts.
+  const seen = new Set<string>();
+  const unique: Space[] = [];
+  for (const s of spaces) {
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    unique.push(s);
+  }
+  if (hasOverlappingRooms(unique)) return false;
+  // (A) daylight eligibility — MBH4-DYL-001
+  for (const s of spaces) {
+    if (!L_DYL_TYPES.has(s.type)) continue;
+    if (!hasExteriorEdge(s.rect, spaces)) return false;
+  }
+  // (B) hard direct-access pairs — CONSTRAINT_DIRECT_ACCESS / MUST_ADJACENT
+  for (const pair of L_DIRECT_PAIRS) {
+    if (!present.has(pair.to)) continue;
+    const sources = spaces.filter(s => pair.from.includes(s.type as string));
+    if (sources.length === 0) continue;
+    const targets = spaces.filter(s => s.type === pair.to);
+    if (!targets.every(t => sources.some(f => f.id !== t.id && sharedEdgeNear(t.rect, f.rect, L_DA_GAP_TOLERANCE) > 1e-6))) return false;
+  }
+  return true;
+}
+
 function zoneFor(type: string): Zone {
   switch (type) {
     case 'entrance': case 'foyer': case 'living': case 'guest-room': case 'guest-wc': case 'yard': case 'balcony': return 'public';
@@ -559,6 +682,7 @@ export function placeSpacesLShape(
     totalResidual: number;
     dimContractOk: boolean;
     circulationOk: boolean;
+    downstreamOk: boolean;
   }> = [];
 
   for (const plan of splitPlans) {
@@ -837,6 +961,10 @@ export function placeSpacesLShape(
             return true;
           });
           const { imbalance, totalResidual } = wingResidualStats(all, street, other);
+          // P35: conservative downstream-failure proxy — the plan may only
+          // outrank others on circulation when it also mirrors downstream
+          // daylight / direct-access validity (see downstreamProxyOk).
+          const downstreamOk = downstreamProxyOk([...all, ...circSpacesNow, ...(connectorSpace ? [connectorSpace] : [])]);
           acceptedWingPlans.push({
             spaces: [...dayAll.spaces, ...nightRes.spaces],
             corridors: [...dayAll.corridors, ...nightRes.corridors, bridgeSpace, ...(connectorSpace ? [connectorSpace] : [])],
@@ -849,6 +977,7 @@ export function placeSpacesLShape(
             totalResidual,
             dimContractOk,
             circulationOk: circOk,
+            downstreamOk,
           });
         }
       }
@@ -869,8 +998,18 @@ export function placeSpacesLShape(
       const mbath = p.spaces.find(s => s.type === 'master-bathroom');
       return !!mbr && !!mbath && sharedEdgeLen(mbr.rect, mbath.rect) > 1e-6;
     };
-    let best = acceptedWingPlans[0];
-    for (const c of acceptedWingPlans) {
+    // P35: a plan that fails the downstream mirror must never displace a
+    // downstream-valid one; when NO accepted plan passes the mirror, yield to
+    // the caller's generic region planner (the same path these sites took
+    // before circulation-preference twins existed) instead of returning a
+    // plan known to violate daylight/direct-access rules downstream.
+    const eligibleWingPlans = acceptedWingPlans.filter(c => c.downstreamOk);
+    if (eligibleWingPlans.length === 0) {
+      explanation.push('Phase 25 L-wings: no wing plan passed the downstream daylight / direct-access mirror — falling back to the generic region planner.');
+      return null;
+    }
+    let best = eligibleWingPlans[0];
+    for (const c of eligibleWingPlans) {
       if (c.dimContractOk !== best.dimContractOk) {
         if (c.dimContractOk) best = c;
         continue;
