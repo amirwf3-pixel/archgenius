@@ -16,7 +16,9 @@ import type { Opening } from '../model/opening.js';
 import type { Space } from '../model/space.js';
 import type { Vec2 } from '../geometry/vec2.js';
 import { MM_PER_M } from '../units.js';
-import { LAYERS } from './layers.js';
+import { LAYERS, SECTION_LAYERS } from './layers.js';
+import { buildSections } from '../section/section.js';
+import type { SectionCut, SectionDrawing } from '../section/section.js';
 import { rCorners } from '../geometry/rect.js';
 import type { Rect } from '../geometry/rect.js';
 import { vSub, vNorm } from '../geometry/vec2.js';
@@ -109,6 +111,17 @@ export interface DXFOptions {
   layerScheme?: 'none' | 'generic' | 'both';
   /** Legacy alias: true = 'both' (default), false = 'none'. layerScheme wins if given. */
   includeGenericLayers?: boolean;
+  /**
+   * Multi-section details (OPT-IN; default off = byte-identical legacy output).
+   *   true          — the deterministic default cuts (defaultSectionCuts).
+   *   SectionCut[]  — explicit cuts.
+   * Sections are derived only from candidate.floors (section/section.ts),
+   * drawn east of the stacked plans on A-SECT-* layers with LINE / POLYLINE /
+   * TEXT only, and cut markers are drawn on the ground plan. A requested
+   * section with a hard section finding throws — an invalid section is never
+   * exported silently.
+   */
+  sections?: boolean | SectionCut[];
 }
 
 // ---- P29-B annotation collision guard (shared model) ---------------------------
@@ -251,6 +264,19 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   // P16-D: resolve the layer scheme; includeGenericLayers kept as a legacy alias.
   const scheme: 'none' | 'generic' | 'both' =
     options.layerScheme ?? (options.includeGenericLayers === false ? 'none' : 'both');
+  // Multi-section details: resolved (and validated) before any output is written.
+  const sectionDrawings: SectionDrawing[] = options.sections === true
+    ? buildSections(candidate)
+    : Array.isArray(options.sections) && options.sections.length > 0
+      ? buildSections(candidate, options.sections)
+      : [];
+  if (options.sections === true && sectionDrawings.length === 0) {
+    throw new Error('writeDXF: sections were requested but no valid default section cut exists for this candidate.');
+  }
+  const sectionHard = sectionDrawings.flatMap((d) => d.findings.filter((f) => f.severity === 'hard'));
+  if (sectionHard.length > 0) {
+    throw new Error(`writeDXF: refusing to export invalid section geometry — ${sectionHard.map((f) => `${f.code}: ${f.message}`).join(' | ')}`);
+  }
   const ENVELOPE_LAYERS = new Set(['A-BLDG-OUT', 'A-SETBACK', 'A-SITE']);
   // Every discipline resolves to the layer name(s) its entities live on. In the default
   // 'both' scheme each floor draws on its own A-FLOOR-{n}-* layers and floor 0 mirrors
@@ -321,7 +347,9 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   writeLtype(b, 'DASHED', 'Dashed __ __ __ __', [12.7, -6.35]);
   b.push('0', 'ENDTAB');
   // LAYER table: base + per-floor + extra meta layers
-  const allLayers = [...LAYERS, ...floorSpecificDefs];
+  const allLayers = sectionDrawings.length > 0
+    ? [...LAYERS, ...floorSpecificDefs, ...SECTION_LAYERS]
+    : [...LAYERS, ...floorSpecificDefs];
   b.push('0', 'TABLE', '2', 'LAYER', '70', String(allLayers.length));
   for (const layer of allLayers) {
     b.push('0', 'LAYER');
@@ -347,6 +375,7 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
   b.push('0', 'ENDSEC');
 
   b.push('0', 'SECTION', '2', 'ENTITIES');
+  const entitiesStart = b.length;
 
   const mm = (m: number) => Math.round(m * MM_PER_M * 100) / 100;
 
@@ -698,6 +727,12 @@ export function writeDXF(candidate: LayoutCandidate, projectName = 'ArchGenius P
       emitLine(cx0, cy0Bottom, cx0, cyTop, 'A-STAIR');
       emitText(cx0 + 0.2, cyTop + 0.2, `STAIR STACK — ${candidate.floors.length} FLOORS — Whole-Building`, 0.25, 'A-TEXT', 0);
     }
+  }
+
+  // Multi-section details (opt-in): cut markers on the ground plan + section
+  // drawings east of everything already drawn. Uses the same R12 emitters.
+  if (sectionDrawings.length > 0) {
+    emitSections(sectionDrawings, candidate, drawnMaxX(b, entitiesStart), emitLine, emitText, emitPolyline);
   }
 
   // Phase 28-E: no HEADER view-metadata splice and no VPORT table — see the
@@ -1431,6 +1466,89 @@ function emitSiteDims(
 }
 
 // legacy no-op aliases removed in P16-D (single implementation per concern)
+
+/**
+ * Rightmost X (metres) of every entity already emitted into the ENTITIES
+ * section (TEXT widths included via the writer's own character metric), so
+ * section drawings are placed clear of the plans, title block and markers.
+ */
+function drawnMaxX(b: string[], start: number): number {
+  let maxX = -Infinity;
+  let type = '';
+  let x = NaN, h = 0, txt = '';
+  const flush = () => {
+    if (type === 'TEXT' && Number.isFinite(x)) maxX = Math.max(maxX, x + txt.length * h * ROOM_TXT_CHAR_W);
+    else if (type === 'ARC' && Number.isFinite(x)) maxX = Math.max(maxX, x + h);
+  };
+  for (let i = start; i + 1 < b.length; i += 2) {
+    const code = b[i], v = b[i + 1];
+    if (code === '0') { flush(); type = v; x = NaN; h = 0; txt = ''; continue; }
+    const n = Number(v) / MM_PER_M;
+    if (code === '10') { x = n; if (type === 'LINE' || type === 'VERTEX') maxX = Math.max(maxX, n); }
+    else if (code === '11' && type === 'LINE') maxX = Math.max(maxX, n);
+    else if (code === '40') h = n;
+    else if (code === '1') txt = v;
+  }
+  flush();
+  return Number.isFinite(maxX) ? maxX : 0;
+}
+
+const SECTION_GAP_M = 8;      // clear gap between the plans and the first section
+const SECTION_STACK_GAP_M = 6; // vertical gap between stacked sections
+const SECTION_MARK_OVERRUN_M = 1.5;
+
+/**
+ * Emit multi-section drawings. Section u maps to X (east of the plans), z maps
+ * to Y; sections stack northwards. Cut markers go on the ground plan
+ * (floorOffset(0) = 0) on A-SECT-MARK. LINE / POLYLINE / TEXT only.
+ */
+function emitSections(
+  drawings: SectionDrawing[],
+  candidate: LayoutCandidate,
+  planMaxX: number,
+  emitLine: (x1: number, y1: number, x2: number, y2: number, layer: string) => void,
+  emitText: (x: number, y: number, text: string, heightM: number, layer: string, horiz?: number, rotDeg?: number) => void,
+  emitPolyline: (pts: Vec2[], layer: string, closed?: boolean) => void,
+): void {
+  const g = candidate.floors[0];
+  const ox = planMaxX + SECTION_GAP_M;
+  let oy = g.footprint.y;
+  const box = (x0: number, y0: number, x1: number, y1: number, layer: string) =>
+    emitPolyline([{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }], layer, true);
+  for (const d of drawings) {
+    if (!d.extent) continue;
+    const { u0: U0, z0: Z0, z1: Z1 } = d.extent;
+    const X = (u: number) => ox + (u - U0);
+    const Y = (z: number) => oy + (z - Z0);
+    const id = d.cut.id;
+
+    // Cut marker on the ground plan, spanning the cut building extent.
+    const mA = d.extent.u0 - SECTION_MARK_OVERRUN_M, mB = d.extent.u1 + SECTION_MARK_OVERRUN_M;
+    if (d.cut.axis === 'x') {
+      emitLine(d.cut.at, mA, d.cut.at, mB, 'A-SECT-MARK');
+      emitText(d.cut.at, mA - 0.5, id, 0.4, 'A-SECT-TEXT', 1);
+      emitText(d.cut.at, mB + 0.2, id, 0.4, 'A-SECT-TEXT', 1);
+    } else {
+      emitLine(mA, d.cut.at, mB, d.cut.at, 'A-SECT-MARK');
+      emitText(mA - 0.3, d.cut.at - 0.2, id, 0.4, 'A-SECT-TEXT', 2);
+      emitText(mB + 0.3, d.cut.at - 0.2, id, 0.4, 'A-SECT-TEXT', 0);
+    }
+
+    for (const w of d.walls) for (const r of w.solids) box(X(r.u0), Y(r.z0), X(r.u1), Y(r.z1), 'A-SECT-WALL');
+    for (const o of d.openings) box(X(o.rect.u0), Y(o.rect.z0), X(o.rect.u1), Y(o.rect.z1), 'A-SECT-OPENING');
+    for (const f of d.flights) emitPolyline(f.points.map((p) => ({ x: X(p.u), y: Y(p.z) })), 'A-SECT-STAIR', false);
+    for (const l of d.landings) emitLine(X(l.u0), Y(l.z), X(l.u1), Y(l.z), 'A-SECT-STAIR');
+    for (const lf of d.lifts) box(X(lf.rect.u0), Y(lf.rect.z0), X(lf.rect.u1), Y(lf.rect.z1), 'A-SECT-LIFT');
+    for (const lv of d.levels) {
+      emitLine(X(lv.u0) - 0.5, Y(lv.z), X(lv.u1) + 0.5, Y(lv.z), 'A-SECT-LEVEL');
+      emitText(X(lv.u1) + 0.8, Y(lv.z) + 0.05, lv.label, 0.25, 'A-SECT-TEXT', 0);
+    }
+    const axisTxt = d.cut.axis === 'x' ? `x = ${d.cut.at.toFixed(2)} m` : `y = ${d.cut.at.toFixed(2)} m`;
+    emitText(X(U0), Y(Z0) - 1.0, `SECTION ${id}-${id}`, 0.4, 'A-SECT-TEXT', 0);
+    emitText(X(U0), Y(Z0) - 1.5, `CUT ${axisTxt} | LEVELS FROM MODEL | NO SLAB/ROOF DATA`, 0.2, 'A-SECT-TEXT', 0);
+    oy += (Z1 - Z0) + SECTION_STACK_GAP_M;
+  }
+}
 
 function writeLtype(b: string[], name: string, desc: string, pattern: number[]) {
   // Minimal R12 fix: 49/74 dash pattern elements cause AutoCAD to open empty (W1 PASS without 49, W2 FAIL with 49 31.75)

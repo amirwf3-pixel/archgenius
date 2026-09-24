@@ -53,6 +53,21 @@ export const LAYERS: LayerDef[] = [
   { name: '0',            color: 7, lineweight: 25, linetype: 'CONTINUOUS', description: 'Default layer' },
 ];
 
+/**
+ * Multi-section detail layers. OPT-IN: these are written to the LAYER table
+ * only when DXFOptions.sections is requested, so the default drawing (and its
+ * pinned golden bytes) is unchanged. Same R12 layer-record fields as LAYERS.
+ */
+export const SECTION_LAYERS: LayerDef[] = [
+  { name: 'A-SECT-WALL',    color: 7, lineweight: 50, linetype: 'CONTINUOUS', description: 'Section: cut walls' },
+  { name: 'A-SECT-OPENING', color: 4, lineweight: 25, linetype: 'CONTINUOUS', description: 'Section: openings in cut walls' },
+  { name: 'A-SECT-STAIR',   color: 6, lineweight: 25, linetype: 'CONTINUOUS', description: 'Section: stair riser/tread profile + landings' },
+  { name: 'A-SECT-LIFT',    color: 5, lineweight: 25, linetype: 'CONTINUOUS', description: 'Section: lift shaft outline' },
+  { name: 'A-SECT-LEVEL',   color: 8, lineweight: 13, linetype: 'CONTINUOUS', description: 'Section: storey level lines' },
+  { name: 'A-SECT-TEXT',    color: 7, lineweight: 18, linetype: 'CONTINUOUS', description: 'Section: titles + level labels' },
+  { name: 'A-SECT-MARK',    color: 1, lineweight: 25, linetype: 'CENTER',     description: 'Section cut markers on the ground plan' },
+];
+
 export function layerByName(name: string): LayerDef {
   return LAYERS.find(l => l.name === name) ?? LAYERS[LAYERS.length - 1];
 }

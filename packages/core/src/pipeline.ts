@@ -9,6 +9,7 @@ import type { ValidationResult } from './validation/types.js';
 import { validateLayout, summarize } from './validation/validator.js';
 import { generateLayouts, validateInput } from './generator/generator.js';
 import { writeDXF, validateDXFStructure } from './dxf/writer.js';
+import type { DXFOptions } from './dxf/writer.js';
 import { computeMetrics } from './optimizer/metrics.js';
 import { buildDocumentationModel } from './documentation/builder.js';
 import { generatePDF } from './documentation/pdf.js';
@@ -337,7 +338,7 @@ export function validateCandidate(candidate: LayoutCandidate): ValidationResult 
  */
 const SITE_ENVELOPE_VIOLATION = /^(?:SITE|GEO)_[A-Z]+_OUTSIDE(?:_BUILDABLE|_SITE|_FOOTPRINT)?$/;
 
-export function exportDXF(candidate: LayoutCandidate, projectName = 'ArchGenius Plan', dxfOptions: { includeGenericLayers?: boolean; layerScheme?: 'none' | 'generic' | 'both' } = {}): { dxf: string; validation: ReturnType<typeof validateDXFStructure> } {
+export function exportDXF(candidate: LayoutCandidate, projectName = 'ArchGenius Plan', dxfOptions: DXFOptions = {}): { dxf: string; validation: ReturnType<typeof validateDXFStructure> } {
   requireUsableCandidate(candidate, 'exportDXF');
   const envelopeViolations = validateLayout(candidate).findings.filter(
     (f) => f.severity === 'hard' && SITE_ENVELOPE_VIOLATION.test(f.code),
