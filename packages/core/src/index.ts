@@ -12,6 +12,7 @@ export * from './regulations/pack-registry.js';
 export * as Validation from './validation/validator.js';
 export * from './validation/types.js';
 export * from './validation/validator.js';
+export * from './validation/accessibility.js';
 export * as Metrics from './optimizer/metrics.js';
 export * from './optimizer/metrics.js';
 export * as DXF from './dxf/index.js';

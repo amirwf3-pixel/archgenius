@@ -403,6 +403,10 @@ export const IR_NATIONAL_MBR_PACK: RegulationPack = {
         min_height: { value: 2.2, unit: 'm', note: '§7-1-1-19 — PDF p101 — 2.20 m over 80% area' },
         min_height_shortest: { value: 2.05, unit: 'm', note: '§7-1-1-19 — PDF p101 — 2.05 m shortest part if sloped' },
         general_small_side: { value: 0.9, unit: 'm', note: '§4-5-6-2-1 — PDF p75 — 0.90 m small side' },
+        // Metadata only — NOT enforced by this rule's evaluator (MIN_W/MIN_L below are unchanged).
+        // Read by the standalone accessibility advisory (validation/accessibility.ts).
+        accessible_sanitary_long: { value: 1.7, unit: 'm', note: '§4-5-6-2-1 — PDF p75 — accessible sanitary space 1.70 m (long side of 1.70×1.50)' },
+        accessible_sanitary_short: { value: 1.5, unit: 'm', note: '§4-5-6-2-1 — PDF p75 — accessible sanitary space 1.50 m (short side of 1.70×1.50)' },
       },
       evaluate: (ctx: RuleContext): RuleResult[] => {
         const out: RuleResult[] = [];

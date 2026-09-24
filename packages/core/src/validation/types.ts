@@ -100,6 +100,11 @@ export type FindingCode =
   | 'ELEV_SHAFT_OVERLAP'
   | 'ELEV_SHAFT_NO_LANDING'
   | 'ELEV_SHAFT_GEOMETRY_INCONSISTENT'
+  // Accessibility — standalone advisory (validateAccessibility), REQUIRES_SOURCE_VERIFICATION
+  | 'ACC_STEP_FREE_NO_ORIGIN'
+  | 'ACC_FLOOR_NOT_STEP_FREE'
+  | 'ACC_SPACE_NOT_STEP_FREE'
+  | 'ACC_ACCESSIBLE_SANITARY_ABSENT'
   | 'NO_FEASIBLE_STAIR_CONFIGURATION';
 
 import type { RuleStatus, SourceRef } from '../regulations/types.js';
