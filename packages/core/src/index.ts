@@ -7,6 +7,8 @@ export * as Programming from './programming/program.js';
 export * from './programming/program.js';
 export * as Regulations from './regulations/engine.js';
 export * from './regulations/engine.js';
+export * as RegulationPacks from './regulations/pack-registry.js';
+export * from './regulations/pack-registry.js';
 export * as Validation from './validation/validator.js';
 export * from './validation/types.js';
 export * from './validation/validator.js';

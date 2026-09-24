@@ -14,6 +14,13 @@ export interface ProjectInput {
   building: BuildingInput;
   /** Regulation packs to apply (ids). */
   regulationPacks?: string[];
+  /**
+   * Pin a specific edition per pack id, e.g. `{ 'ir-national-mbr': '1396 …' }`.
+   * Resolved through the pack registry: an unknown pack, an unknown edition, or
+   * an edition whose primary source is not in `sources/` throws rather than
+   * silently substituting another edition.
+   */
+  regulationPackEditions?: Record<string, string>;
   /** Determinism flag. */
   deterministic?: boolean;
   /** Seed for reproducible generation. */

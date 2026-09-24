@@ -12,6 +12,7 @@ import type { ProjectInput } from '../model/project.js';
 import type { RegulationPack, BuildableFootprint, RegulationRule, RuleContext, RuleResult, SourceTier } from './types.js';
 import type { AccessSide } from '../model/site.js';
 import { IR_NATIONAL_MBR_PACK, IR_TEHRAN_STUB_PACK } from './packs/ir-national-mbr.js';
+import { selectPacks } from './pack-registry.js';
 import { computeBuildableGeometry } from '../site/buildable.js';
 
 /**
@@ -98,7 +99,15 @@ export function buildDefaultPack(): RegulationPack {
   };
 }
 
-/** Select which jurisdiction packs to load based on project input. */
+/**
+ * Select which jurisdiction packs to load based on project input.
+ *
+ * Default behaviour (no `regulationPacks` / `regulationPackEditions` on the
+ * input) is unchanged: default assumption pack + national Mabhas pack + the
+ * local placeholder. An explicit selection or edition pin is resolved through
+ * the pack registry (`./pack-registry.ts`), which refuses unknown packs,
+ * unknown editions, and editions whose primary source is not in `sources/`.
+ */
 export function composePacks(project: ProjectInput): RegulationPack[] {
   const packs: RegulationPack[] = [buildDefaultPack()];
   const country = (project.country ?? 'ir').toLowerCase();
@@ -116,7 +125,7 @@ export function composePacks(project: ProjectInput): RegulationPack[] {
       packs.push(IR_TEHRAN_STUB_PACK);
     }
   }
-  return packs;
+  return selectPacks(packs, project.regulationPacks, project.regulationPackEditions);
 }
 
 /** Compute buildable footprint from site + packs — Phase 10 canonical geometry. */
