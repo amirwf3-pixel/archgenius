@@ -246,6 +246,27 @@ const fa = {
   regNoReference: 'ارجاع ثبت‌نشده',
   regRuleStatus: 'وضعیت قاعده',
 
+  // Project management (Phase 5 roadmap — list / save / load / import / export)
+  pmTitle: 'مدیریت پروژه‌ها',
+  pmHint: 'ذخیره، بازیابی و تبادل JSON پروژه‌ها در حافظهٔ محلی همین مرورگر؛ هیچ داده‌ای به سرور فرستاده نمی‌شود.',
+  pmEmpty: 'پروژهٔ ذخیره‌شده‌ای وجود ندارد.',
+  pmNoStorage: 'حافظهٔ محلی مرورگر در دسترس نیست — ذخیره‌سازی غیرفعال است.',
+  pmSavedCount: '{count} پروژهٔ ذخیره‌شده',
+  pmSave: 'ذخیرهٔ پروژهٔ جاری',
+  pmNeedProject: 'پروژهٔ جاری وجود ندارد؛ ابتدا یک طرح تولید کنید.',
+  pmLoad: 'بازیابی',
+  pmDelete: 'حذف',
+  pmExport: 'خروجی JSON',
+  pmImport: 'ورود از فایل JSON',
+  pmUpdated: 'آخرین تغییر',
+  pmFloors: 'طبقه',
+  pmMsgSaved: 'پروژهٔ جاری ذخیره شد.',
+  pmMsgDeleted: 'پروژه حذف شد.',
+  pmMsgLoaded: 'پروژه بازیابی و ورودی‌ها جای‌گذاری شد — برای تولید دوبارهٔ طرح دکمهٔ تولید را بزنید.',
+  pmMsgImported: 'فایل JSON وارد و در فهرست پروژه‌ها ذخیره شد.',
+  pmImportInvalid: 'فایل JSON نامعتبر است یا ساختار پروژهٔ ArchGenius را ندارد.',
+  pmExportFailed: 'خروجی گرفتن در این مرورگر ممکن نشد.',
+
   // Errors
   errorInfeasible: 'ناممکن (INFEASIBLE) — هیچ گزینهٔ از نظر هندسی معتبری برای این سایت/برنامهٔ داده‌شده وجود ندارد.',
   errorInvalidPolygon: 'JSON چندضلعی نامعتبر است — باید آرایه‌ای از مختصات {x,y} باشد.',

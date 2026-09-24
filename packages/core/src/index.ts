@@ -26,4 +26,6 @@ export * as Intelligence from './intelligence/index.js';
 export * from './intelligence/index.js';
 export * as Editing from './editing/index.js';
 export * from './editing/index.js';
+export * as ProjectStore from './storage/project-store.js';
+export * from './storage/project-store.js';
 export * from './pipeline.js';

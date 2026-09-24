@@ -53,7 +53,7 @@
 - [x] XLSX space schedule (11 sheets incl. site, QA, regulations, intelligence)
 - [x] QA report (structured findings: qa + regulations)
 - [x] Consistency manifest (checksum, cross-output consistency)
-- [ ] Project management dashboard (list, save/load/import/export) — **not built** (core storage module exists)
+- [x] Project management dashboard (list, save/load/import/export) — **built** (core storage module exposed publicly; localStorage-backed list/save/load/import/export)
 - [x] Plan inspection UI (spaces panel: type/area/vertices, click-to-select; findings panel with severity codes) — per-room dimension callouts not built
 - [x] Better canvas preview (panning, zoom, hatch) — **built** (cursor-anchored wheel/button zoom with limits, eased pan with capped inertia, fit-to-view, room-clipped architectural hatch toggle)
 - [x] North symbol, grid lines, axis labels, and title block in DXF — emitted on layers `A-NORTH` (north arrow with "N" label), `A-GRID`, `A-AXIS` (labels A/B/C/1/2), `A-TITLE` (title block), plus dimension entities on `A-DIMS`

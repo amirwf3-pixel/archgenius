@@ -7,6 +7,7 @@ import { PlanCanvas } from './PlanCanvas';
 import { CandidatesBar } from './CandidatesBar';
 import { FindingsPanel, EditFindingsList, ResultStatusCard, PlanLegend } from './FindingsPanel';
 import { RegulationExplorer } from './RegulationExplorer';
+import { ProjectManager, formFromProject } from './ProjectManager';
 import type { ResultState } from './FindingsPanel';
 import {
   Section, Field, NumField, SelectField, CheckField, Collapsible,
@@ -20,7 +21,7 @@ import {
   APP_VERSION,
 } from './i18n';
 
-interface FormState {
+export interface FormState {
   name: string;
   siteShape: 'rectangle' | 'l-shape' | 'polygon';
   siteWidth: number;
@@ -165,6 +166,28 @@ export function App() {
       return false;
     }
   }, [form.siteShape, form.polygonJson]);
+
+  /**
+   * Restore a saved/imported project (Phase 5 project management). Only the
+   * inputs are applied; the previously displayed result belongs to the old
+   * inputs, so it is cleared instead of being shown against the new form.
+   */
+  const onLoadProject = (p: Project) => {
+    setForm(prev => formFromProject(p, prev));
+    setProject(null);
+    setCandidates([]);
+    setEditedCandidate(null);
+    setEditFindings([]);
+    setSelectedIdx(0);
+    setSelectedFloor(0);
+    setSelectedSpaceId(null);
+    setError(null);
+    setSuccessNote(null);
+    setDxfNote(null);
+    setInfeasibleExplanation(null);
+    setInfeasibleAttempts([]);
+    setStage('idle');
+  };
 
   const onGenerate = async () => {
     if (busy) return;
@@ -593,6 +616,11 @@ export function App() {
 
         {/* ------------------------------------------------ results / findings / editing */}
         <aside className="lg:col-span-3 lg:overflow-y-auto p-4 space-y-4 bg-ink-900 min-w-0">
+          {/* Phase 5 roadmap: saved-project list with save/load/import/export. */}
+          <Section id="projects" title={t('pmTitle')}>
+            <ProjectManager project={project} onLoaded={onLoadProject} />
+          </Section>
+
           <Section id="result" title={t('resultTitle')}>
             <ResultStatusCard state={resultState} />
           </Section>
