@@ -45,7 +45,7 @@
 - [x] National pack: Iran MBR (Mabhas-e 4 / Mabhas 15) — sourced from Tier-1 PDFs, 9 rules VERIFIED with SHA-256/page/clause evidence
 - [ ] Jurisdiction packs: Tehran, Karaj, Mashhad, Isfahan, Shiraz — **not built** (jurisdiction/city input exists; municipal rules remain REQUIRES_SOURCE_VERIFICATION)
 - [x] Setbacks with explicit source/status tracking (user design input vs default assumption vs verified) — legal FAR/coverage/density enforcement intentionally out of scope
-- [x] Regulation explorer UI with source references — **built** (read-only pack/rule browser: status badges, reference/edition, source tier, clause/page)
+- [x] Regulation explorer UI with source references — **complete** (read-only pack/rule browser: status badges, reference/edition, source tier, clause/page)
 - [x] Rule traceability via the source registry (digests, pages, snippets); multi-version pack loading **built**
 
 ## Phase 5 — Professional deliverables & UI (mostly complete)
@@ -53,7 +53,7 @@
 - [x] XLSX space schedule (11 sheets incl. site, QA, regulations, intelligence)
 - [x] QA report (structured findings: qa + regulations)
 - [x] Consistency manifest (checksum, cross-output consistency)
-- [x] Project management dashboard (list, save/load/import/export) — **built** (core storage module exposed publicly; localStorage-backed list/save/load/import/export)
+- [x] Project management dashboard (list, save/load/import/export) — **complete** (core storage module exposed publicly; localStorage-backed list/save/load/import/export)
 - [x] Plan inspection UI (spaces panel: type/area/vertices, click-to-select; findings panel with severity codes) — per-room dimension callouts not built
 - [x] Better canvas preview (panning, zoom, hatch) — **built** (cursor-anchored wheel/button zoom with limits, eased pan with capped inertia, fit-to-view, room-clipped architectural hatch toggle)
 - [x] North symbol, grid lines, axis labels, and title block in DXF — emitted on layers `A-NORTH` (north arrow with "N" label), `A-GRID`, `A-AXIS` (labels A/B/C/1/2), `A-TITLE` (title block), plus dimension entities on `A-DIMS`
@@ -63,9 +63,9 @@
 - [x] Apartment typology — **first vertical slice only** (single full unit per floor; no shared cores / multi-unit layouts)
 - [x] Storage rooms (programmed space) — balcony/yard specs exist in programming but are not exposed in the UI
 - [x] Furniture placement (sanitary fixtures, kitchen counters, furniture validation)
-- [ ] Elevator shaft geometry — **not implemented** (LIFT rules exist in the regulation pack; no geometry)
+- [x] Elevator shaft geometry — **complete** (deterministic shaft cell reserved beside the stair core, exactly stacked on every floor with ELEV_* validation; dimensions are design assumptions — MBH15-LIFT-002 remains NOT_IMPLEMENTED)
 - [ ] Multi-section details — **not built**
-- [x] Comprehensive regression suite (613 tests / 27 files, incl. determinism, adversarial matrices, CAD structural validation) — committed golden DXF fixtures not included (outputs gitignored)
+- [x] Comprehensive regression suite (core 959 tests, web 153 tests, incl. determinism, adversarial matrices, CAD structural validation) — committed golden DXF fixtures not included (outputs gitignored)
 - [ ] Accessibility checks — **not built**
 - [x] Bounded performance (bounded search enforced in code and tests; 10-floor generation well under a second in QA runs) — committed benchmark suite not included
 
@@ -96,8 +96,9 @@
 - Independent release QA: `VERIFIED WITH MEDIUM FINDINGS` at V1.0 (M1/M2 still documented);
   final architectural QA at v1.1.0 (P17-F): 0 CRITICAL, 0 HIGH, 5 MEDIUM known limitations
   (see [RELEASE_NOTES.md](RELEASE_NOTES.md) and README §10).
-- Known partial capabilities: elevator (not implemented), apartment (first slice), regulation
-  explorer UI, project dashboard, CI pipeline. Parking is implemented since P16-A.
+- Known partial capabilities: apartment (first slice), CI pipeline. Elevator shaft geometry,
+  regulation explorer UI and project dashboard are complete (MBH15-LIFT-002 elevator dimensions
+  remain NOT_IMPLEMENTED). Parking is implemented since P16-A.
 
 ## Non-goals (for the foreseeable future)
 - Image/PDF/DXF import
