@@ -6,6 +6,7 @@ import type { Space } from '@archgenius/core';
 import { PlanCanvas } from './PlanCanvas';
 import { CandidatesBar } from './CandidatesBar';
 import { FindingsPanel, EditFindingsList, ResultStatusCard, PlanLegend } from './FindingsPanel';
+import { RegulationExplorer } from './RegulationExplorer';
 import type { ResultState } from './FindingsPanel';
 import {
   Section, Field, NumField, SelectField, CheckField, Collapsible,
@@ -599,6 +600,11 @@ export function App() {
           <Section id="validation" title={tf('sectionValidation', { floors: faNum(floorCount) })}>
             {!vr && <StatusNote tone="info">{t('generateToValidate')}</StatusNote>}
             {vr && <FindingsPanel vr={vr} />}
+          </Section>
+
+          {/* Phase 4 roadmap: read-only regulation explorer (packs, rule status, sources). */}
+          <Section id="regulations" title={t('regExplorerTitle')}>
+            <RegulationExplorer input={project?.input ?? null} />
           </Section>
 
           <Section id="editing" title={t('sectionEditing')}>

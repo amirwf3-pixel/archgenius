@@ -229,6 +229,21 @@ const fa = {
   legendStair: 'راه‌پله',
   legendOpenings: 'در و پنجره',
 
+  // Regulation explorer (Phase 4 roadmap — read-only rule browser with source refs)
+  regExplorerTitle: 'کاوشگر مقررات',
+  regExplorerHint: 'فهرست قواعد مقرراتیِ بارگذاری‌شده به‌همراه وضعیت تأیید و ارجاع منبع. صرفِ بودنِ یک قاعده در این فهرست به معنای انطباق طرح نیست.',
+  regExplorerEmpty: 'پس از تولید طرح، بسته‌های مقرراتی اینجا فهرست می‌شوند.',
+  regComplianceNote: 'تنها قواعد «تأییدشده» پشتوانهٔ منبع دست‌اول دارند؛ سایر قواعد هرگز به‌عنوان تأیید انطباق ارائه نمی‌شوند.',
+  regPackCount: '{count} قاعده',
+  regSourceTier: 'سطح منبع',
+  regReference: 'ارجاع',
+  regEdition: 'ویرایش',
+  regClause: 'بند',
+  regPage: 'صفحه',
+  regSourceNone: 'منبع ثبت‌نشده',
+  regNoReference: 'ارجاع ثبت‌نشده',
+  regRuleStatus: 'وضعیت قاعده',
+
   // Errors
   errorInfeasible: 'ناممکن (INFEASIBLE) — هیچ گزینهٔ از نظر هندسی معتبری برای این سایت/برنامهٔ داده‌شده وجود ندارد.',
   errorInvalidPolygon: 'JSON چندضلعی نامعتبر است — باید آرایه‌ای از مختصات {x,y} باشد.',
@@ -271,6 +286,21 @@ export const SEVERITY_FA: Record<string, string> = {
   hard: 'خطای بحرانی',
   soft: 'هشدار',
   advisory: 'نیازمند بررسی',
+};
+
+/**
+ * Regulation rule-verification status (core `RuleStatus`).
+ *
+ * The wording is deliberately non-committal: only VERIFIED means a Tier-1
+ * primary source backs the rule, so no label here may read as "compliant".
+ * Unknown/absent statuses are rendered by the caller as no badge at all —
+ * an unknown status must never look like a verified one.
+ */
+export const RULE_STATUS_FA: Record<string, string> = {
+  VERIFIED: 'تأییدشده (منبع دست‌اول)',
+  REQUIRES_SOURCE_VERIFICATION: 'نیازمند تأیید منبع',
+  NOT_IMPLEMENTED: 'پیاده‌سازی‌نشده (اطلاعی)',
+  DEPRECATED: 'منسوخ',
 };
 
 export const STRATEGY_FA: Record<string, string> = {

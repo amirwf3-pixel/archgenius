@@ -8,7 +8,7 @@
  * states for every component.
  */
 import React from 'react';
-import { SEVERITY_FA, faNum } from './i18n';
+import { SEVERITY_FA, RULE_STATUS_FA, faNum } from './i18n';
 
 // ---------------------------------------------------------------------------
 // Icons (inline SVG, stroke = currentColor)
@@ -165,6 +165,37 @@ export function SeverityBadge({ severity, className }: { severity: string; class
       ? <IconAlert className="w-3 h-3" />
       : <IconInfo className="w-3 h-3" />;
   return <span className={`${cls} ${className ?? ''}`}>{icon}{SEVERITY_FA[severity] ?? severity}</span>;
+}
+
+/**
+ * Regulation rule-verification status badge (Phase 4 regulation explorer).
+ *
+ * Mirrors SeverityBadge's contract: icon + Persian term, never colour alone,
+ * reusing the existing badge CSS classes so no new styling is introduced.
+ * VERIFIED reads as source-backed; the other three are visually distinct and
+ * deliberately not "ok"-coloured, so presence never implies compliance.
+ *
+ * Returns null when `status` is absent or empty — an unknown status must not
+ * be dressed up as a verified one.
+ */
+export function RuleStatusBadge({ status, className }: { status?: string; className?: string }) {
+  if (!status) return null;
+  const cls = status === 'VERIFIED' ? 'badge-ok'
+    : status === 'REQUIRES_SOURCE_VERIFICATION' ? 'badge-soft'
+      : status === 'NOT_IMPLEMENTED' ? 'badge-adv'
+        : 'badge-neutral';
+  const icon = status === 'VERIFIED'
+    ? <IconCheckCircle className="w-3 h-3" />
+    : status === 'REQUIRES_SOURCE_VERIFICATION'
+      ? <IconAlert className="w-3 h-3" />
+      : status === 'NOT_IMPLEMENTED'
+        ? <IconInfo className="w-3 h-3" />
+        : <IconXCircle className="w-3 h-3" />;
+  return (
+    <span className={`${cls} ${className ?? ''}`} data-rule-status={status}>
+      {icon}{RULE_STATUS_FA[status] ?? status}
+    </span>
+  );
 }
 
 /** Segmented control (e.g. floor picker). */

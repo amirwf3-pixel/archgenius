@@ -14,16 +14,21 @@
 import React, { useState } from 'react';
 import type { Finding, ValidationResult } from '@archgenius/core';
 import { t, tf, faNum, findingCodeTitle, findingMessageFa, STRATEGY_FA, SEVERITY_FA } from './i18n';
-import { Collapsible, SeverityBadge, StatusNote, IconCube, IconCheckCircle, IconAlert, IconXCircle, IconInfo } from './components';
+import { Collapsible, SeverityBadge, RuleStatusBadge, StatusNote, IconCube, IconCheckCircle, IconAlert, IconXCircle, IconInfo } from './components';
 
 const INITIAL_VISIBLE = 8;
 
 function TechLine({ f }: { f: Finding }) {
   const parts = [...new Set([f.code ?? f.ruleId ?? '', f.ruleId && f.code ? f.ruleId : ''].filter(Boolean))];
   return (
-    <div className="finding-tech ltr" dir="ltr" title={t('technicalDetails')}>
-      {parts.join(' · ')}
-      {f.entityIds && f.entityIds.length > 0 && ` · ${t('findingEntities')}: ${f.entityIds.join(', ')}`}
+    <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+      <div className="finding-tech ltr" dir="ltr" title={t('technicalDetails')}>
+        {parts.join(' · ')}
+        {f.entityIds && f.entityIds.length > 0 && ` · ${t('findingEntities')}: ${f.entityIds.join(', ')}`}
+      </div>
+      {/* Phase 4: rule-verification status beside the ruleId. Only rendered when
+          the engine actually attached a status — never invented here. */}
+      <RuleStatusBadge status={f.status} />
     </div>
   );
 }
