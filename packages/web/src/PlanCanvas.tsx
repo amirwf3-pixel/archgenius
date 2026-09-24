@@ -2,12 +2,16 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { LayoutCandidate, Floor } from '@archgenius/core';
 import { t, tf, faNum, spaceLabel, PERSIAN_FONT_STACK } from './i18n';
 import { IconPlus, IconMinus, IconFit } from './components';
+import type { View } from './canvas-view';
+import {
+  ANIM_MS, FIT_VIEW, INERTIA_MS, PAN_STEP_PX, WHEEL_ZOOM_STEP, ZOOM_STEP,
+  easeOutCubic, hatchSegments, hatchSpecFor, inertiaTail, interpolateView,
+  isSameView, panViewBy, releaseVelocity, zoomViewAt,
+} from './canvas-view';
 
 /** Canvas font with Persian-capable fallback stack (per-glyph fallback). */
 const fontStr = (px: number) => `${px}px ${PERSIAN_FONT_STACK}`;
 
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 8;
 const PAN_PADDING = 40;
 
 interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
@@ -55,8 +59,6 @@ function fitBounds(b: Bounds, cssW: number, cssH: number) {
   return { scale, ox, oy };
 }
 
-interface View { z: number; px: number; py: number }
-
 /** Build the world↔screen mapping (fit × zoom-around-center × pan). */
 export function makeTransform(b: Bounds, cssW: number, cssH: number, view: View) {
   const { scale, ox, oy } = fitBounds(b, cssW, cssH);
@@ -79,15 +81,86 @@ interface Props {
   onSelectSpace?: (id: string | null) => void;
 }
 
+/** Diagonal-hatch glyph for the pattern toggle (kept local so the shared icon
+ *  set in components.tsx stays untouched). */
+const IconHatch = ({ className }: { className?: string }) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    className={className ?? 'w-4 h-4 shrink-0'}
+  >
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M4 14L14 4" />
+    <path d="M4 20L20 4" />
+    <path d="M10 20L20 10" />
+  </svg>
+);
+
 export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelectSpace }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const [view, setView] = useState<View>({ z: 1, px: 0, py: 0 });
+  const [view, setView] = useState<View>(FIT_VIEW);
   const [panning, setPanning] = useState(false);
+  const [hatchOn, setHatchOn] = useState(true);
   const viewRef = useRef(view);
   viewRef.current = view;
-  const dragRef = useRef<{ sx: number; sy: number; moved: boolean } | null>(null);
+  const dragRef = useRef<{ sx: number; sy: number; t: number; vx: number; vy: number; moved: boolean } | null>(null);
+  /** Where an eased transition is heading — the rendered `view` chases this. */
+  const targetRef = useRef<View>(FIT_VIEW);
+  const rafRef = useRef<number | null>(null);
+
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+  /** Honour the OS "reduce motion" preference (and SSR, where neither exists). */
+  const prefersReducedMotion = () =>
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const stopAnim = () => {
+    if (rafRef.current !== null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  };
+
+  /** Jump straight to a view — used while dragging, where latency must be zero. */
+  const setViewNow = (next: View) => {
+    stopAnim();
+    targetRef.current = next;
+    setView(next);
+  };
+
+  /**
+   * Ease the view to `next`. The TARGET is a pure function of the gesture (see
+   * canvas-view.ts), so the interaction is deterministic; only the intermediate
+   * frames are time-based, and hit-testing always reads the live view.
+   */
+  const animateTo = (next: View, ms: number = ANIM_MS) => {
+    targetRef.current = next;
+    const from = viewRef.current;
+    if (isSameView(from, next) || prefersReducedMotion() || typeof requestAnimationFrame !== 'function') {
+      stopAnim();
+      setView(next);
+      return;
+    }
+    stopAnim();
+    const start = now();
+    const tick = () => {
+      const t = ms <= 0 ? 1 : Math.min(1, (now() - start) / ms);
+      setView(interpolateView(from, targetRef.current, easeOutCubic(t)));
+      rafRef.current = t < 1 ? requestAnimationFrame(tick) : null;
+    };
+    rafRef.current = requestAnimationFrame(tick);
+  };
+
+  useEffect(() => stopAnim, []);
 
   // Responsive sizing — measure the wrapper (no fixed 800×560 stretch).
   useEffect(() => {
@@ -106,17 +179,29 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
   // Reset the view for every NEW candidate (regeneration); edits keep the id
   // (core clones candidates) so the user's zoom/pan survives an edit.
   useEffect(() => {
-    setView({ z: 1, px: 0, py: 0 });
+    setViewNow(FIT_VIEW);
   }, [candidate?.id]);
 
-  const zoomAt = (sx: number, sy: number, factor: number) => {
-    setView(v => {
-      const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.z * factor));
-      if (z === v.z) return v;
-      // keep the world point under the cursor stationary
-      return { z, px: v.px + (sx - size.w / 2) * (1 - z / v.z) * 0 + (v.px * 0) + (sx - size.w / 2 - (sx - size.w / 2 - v.px) * (z / v.z)), py: v.py + (sy - size.h / 2 - (sy - size.h / 2 - v.py) * (z / v.z)) };
-    });
+  /**
+   * Zoom about a canvas point. Always computed from the pending target (not the
+   * mid-animation frame), so rapid wheel notches accumulate correctly.
+   * `animate` is off for the wheel — a notch should land immediately.
+   */
+  const zoomAt = (sx: number, sy: number, factor: number, animate = true) => {
+    const base = targetRef.current;
+    const next = zoomViewAt(base, sx, sy, size.w, size.h, factor);
+    if (isSameView(next, base)) return;
+    if (animate) animateTo(next);
+    else setViewNow(next);
   };
+
+  /** Pan by a screen-space delta, eased. */
+  const panBy = (dxPx: number, dyPx: number) => {
+    animateTo(panViewBy(targetRef.current, dxPx, dyPx));
+  };
+
+  /** Fit-to-view: identity zoom and no pan on top of the fit transform. */
+  const fitToView = () => animateTo(FIT_VIEW);
 
   // Wheel zoom (non-passive so the page does not scroll while zooming).
   useEffect(() => {
@@ -125,7 +210,8 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+      const factor = e.deltaY < 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP;
+      zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor, false);
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
@@ -263,6 +349,47 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
       } else {
         drawRect(s.rect.x, s.rect.y, s.rect.w, s.rect.h, fill, stroke);
       }
+      // Architectural hatch for wet/service/storage spaces, clipped to the room
+      // outline. Line spacing is in SCREEN pixels, so the pattern stays legible
+      // at every zoom level instead of scaling into a solid block.
+      if (hatchOn) {
+        const spec = hatchSpecFor(s.type);
+        if (spec) {
+          const pts = (s.polygon && s.polygon.length >= 4)
+            ? s.polygon
+            : [
+                { x: s.rect.x, y: s.rect.y },
+                { x: s.rect.x + s.rect.w, y: s.rect.y },
+                { x: s.rect.x + s.rect.w, y: s.rect.y + s.rect.h },
+                { x: s.rect.x, y: s.rect.y + s.rect.h },
+              ];
+          const pxs = pts.map(p => tx(p.x));
+          const pys = pts.map(p => ty(p.y));
+          const hx0 = Math.min(...pxs), hx1 = Math.max(...pxs);
+          const hy0 = Math.min(...pys), hy1 = Math.max(...pys);
+          // too small on screen ⇒ hatch would read as noise, skip it
+          if (hx1 - hx0 >= 10 && hy1 - hy0 >= 10) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(pxs[0], pys[0]);
+            for (let i = 1; i < pxs.length; i++) ctx.lineTo(pxs[i], pys[i]);
+            ctx.closePath();
+            ctx.clip();
+            ctx.strokeStyle = spec.strokeStyle;
+            ctx.lineWidth = 1;
+            const strokeSet = (angle: number) => {
+              const segs = hatchSegments(hx0, hy0, hx1 - hx0, hy1 - hy0, angle, spec.spacingPx);
+              if (segs.length === 0) return;
+              ctx.beginPath();
+              for (const g of segs) { ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2); }
+              ctx.stroke();
+            };
+            strokeSet(spec.angleDeg);
+            if (spec.cross) strokeSet(spec.angleDeg + 90);
+            ctx.restore();
+          }
+        }
+      }
       // Locked indicator
       if (s.locked?.position || s.locked?.geometry || s.locked?.size) {
         ctx.fillStyle = '#f59e0b';
@@ -369,14 +496,15 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
     ctx.textAlign = 'center';
     ctx.fillText(`0`, bx, by + 14);
     ctx.fillText(`${barLen}m`, bx + barLen * effScale, by + 14);
-  }, [candidate, floorIndex, selectedSpaceId, size, view]);
+  }, [candidate, floorIndex, selectedSpaceId, size, view, hatchOn]);
 
   // ---------------------------------------------------------------------------
   // Pointer interaction: drag = pan, click (no drag) = select space
   // ---------------------------------------------------------------------------
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!candidate) return;
-    dragRef.current = { sx: e.clientX, sy: e.clientY, moved: false };
+    stopAnim(); // a new gesture cancels any running glide
+    dragRef.current = { sx: e.clientX, sy: e.clientY, t: now(), vx: 0, vy: 0, moved: false };
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
   };
 
@@ -388,14 +516,33 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
     if (!drag.moved && Math.hypot(dx, dy) < 4) return;
     if (!drag.moved) { drag.moved = true; setPanning(true); }
     drag.sx = e.clientX; drag.sy = e.clientY;
-    setView(v => ({ ...v, px: v.px + dx, py: v.py - dy }));
+    // smoothed instantaneous velocity in px per 16.7 ms frame — feeds the glide
+    const dt = Math.max(1, now() - drag.t);
+    drag.t = now();
+    const smooth = 0.6;
+    drag.vx = drag.vx * (1 - smooth) + (dx / dt) * 16.7 * smooth;
+    drag.vy = drag.vy * (1 - smooth) + (dy / dt) * 16.7 * smooth;
+    setViewNow(panViewBy(targetRef.current, dx, dy));
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
     dragRef.current = null;
     setPanning(false);
-    if (!candidate || !onSelectSpace || !drag || drag.moved) return;
+    if (!candidate || !drag) return;
+    if (drag.moved) {
+      // Inertia glide. releaseVelocity() drops the glide when the pointer rested
+      // before release and caps the speed, so even a fast flick travels at most
+      // ≈ 250 px; the destination is a pure function of the release sample.
+      const [vx, vy] = releaseVelocity(drag.vx, drag.vy, now() - drag.t);
+      const glideX = inertiaTail(vx);
+      const glideY = inertiaTail(vy);
+      if (Math.abs(glideX) > 1 || Math.abs(glideY) > 1) {
+        animateTo(panViewBy(targetRef.current, glideX, glideY), INERTIA_MS);
+      }
+      return;
+    }
+    if (!onSelectSpace) return;
     // click-select: hit-test against the same transform used for drawing
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -430,15 +577,15 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
     if (!candidate) return;
-    const pan = 40;
     switch (e.key) {
-      case 'ArrowLeft': setView(v => ({ ...v, px: v.px - pan })); break;
-      case 'ArrowRight': setView(v => ({ ...v, px: v.px + pan })); break;
-      case 'ArrowUp': setView(v => ({ ...v, py: v.py + pan })); break;
-      case 'ArrowDown': setView(v => ({ ...v, py: v.py - pan })); break;
-      case '+': case '=': zoomAt(size.w / 2, size.h / 2, 1.25); break;
-      case '-': case '_': zoomAt(size.w / 2, size.h / 2, 1 / 1.25); break;
-      case '0': setView({ z: 1, px: 0, py: 0 }); break;
+      case 'ArrowLeft': panBy(-PAN_STEP_PX, 0); break;
+      case 'ArrowRight': panBy(PAN_STEP_PX, 0); break;
+      case 'ArrowUp': panBy(0, -PAN_STEP_PX); break; // pointer convention: up is −y
+      case 'ArrowDown': panBy(0, PAN_STEP_PX); break;
+      case '+': case '=': zoomAt(size.w / 2, size.h / 2, ZOOM_STEP); break;
+      case '-': case '_': zoomAt(size.w / 2, size.h / 2, 1 / ZOOM_STEP); break;
+      case '0': fitToView(); break;
+      case 'h': case 'H': setHatchOn(v => !v); break;
       case 'Escape': onSelectSpace?.(null); break;
       default: return;
     }
@@ -473,9 +620,21 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
         style={{ display: 'block' }}
       />
       <div className="absolute bottom-2 left-2 flex gap-1 z-10">
-        {zoomBtn(t('zoomInLabel'), t('zoomInLabel'), <IconPlus className="w-3.5 h-3.5" />, () => zoomAt(size.w / 2, size.h / 2, 1.25))}
-        {zoomBtn(t('zoomOutLabel'), t('zoomOutLabel'), <IconMinus className="w-3.5 h-3.5" />, () => zoomAt(size.w / 2, size.h / 2, 1 / 1.25))}
-        {zoomBtn(t('resetViewLabel'), t('resetViewLabel'), <IconFit className="w-3.5 h-3.5" />, () => setView({ z: 1, px: 0, py: 0 }))}
+        {zoomBtn(t('zoomInLabel'), t('zoomInLabel'), <IconPlus className="w-3.5 h-3.5" />, () => zoomAt(size.w / 2, size.h / 2, ZOOM_STEP))}
+        {zoomBtn(t('zoomOutLabel'), t('zoomOutLabel'), <IconMinus className="w-3.5 h-3.5" />, () => zoomAt(size.w / 2, size.h / 2, 1 / ZOOM_STEP))}
+        {zoomBtn(t('resetViewLabel'), t('resetViewLabel'), <IconFit className="w-3.5 h-3.5" />, fitToView)}
+        <button
+          type="button"
+          title={hatchOn ? t('hatchOnLabel') : t('hatchOffLabel')}
+          aria-label={hatchOn ? t('hatchOnLabel') : t('hatchOffLabel')}
+          aria-pressed={hatchOn}
+          data-canvas-hatch={hatchOn ? 'on' : 'off'}
+          onClick={() => setHatchOn(v => !v)}
+          disabled={!candidate}
+          className="w-7 h-7 flex items-center justify-center rounded-md bg-ink-800/90 border border-ink-600 text-ink-400 hover:text-slate-100 hover:border-accent-400 transition-colors disabled:opacity-40"
+        >
+          <IconHatch className="w-3.5 h-3.5" />
+        </button>
       </div>
     </div>
   );

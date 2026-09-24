@@ -222,6 +222,8 @@ const fa = {
   zoomInLabel: 'بزرگ‌نمایی',
   zoomOutLabel: 'کوچک‌نمایی',
   resetViewLabel: 'بازنشانی نما',
+  hatchOnLabel: 'الگوی هاشور: روشن (کلید H)',
+  hatchOffLabel: 'الگوی هاشور: خاموش (کلید H)',
   legendTitle: 'راهنمای نمای پلان',
   legendRooms: 'فضاها',
   legendBuildable: 'محدودهٔ ساخت',
