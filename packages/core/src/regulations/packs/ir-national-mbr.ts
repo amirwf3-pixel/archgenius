@@ -234,15 +234,18 @@ export const IR_NATIONAL_MBR_PACK: RegulationPack = {
             const w = Math.min(s.rect.w, s.rect.h);
             const ok = s.area + 1e-6 >= th.area && w + 1e-6 >= th.width;
             if (ok) { anyOk = true; continue; }
-            if (s.area + 1e-6 < th.area) {
-              push(out, failVerified('hard', 'MBH4-ROOM-001',
-                `اتاق "${s.label}" با مساحت ${s.area.toFixed(1)} m² کمتر از حد ${th.area} m² مبحث چهار §7-1-1-8 (واحد ≈${unitArea.toFixed(0)} m²).`,
-                'Mabhas 4 §7-1-1-8', [SRC.m4_99], s.area,
-                [s.rect.x, s.rect.y, s.rect.x + s.rect.w, s.rect.y + s.rect.h], [s.id]));
-            } else if (w + 1e-6 < th.width) {
+            // P45: §7-1-1-8 mandates the 12/2.7 (or 9/2.5) floor for AT LEAST ONE
+            // main habitable room, not for every one. An individual undersized room
+            // is therefore advisory; the HARD below fires only when NO room qualifies.
+            if (w + 1e-6 < th.width) {
               push(out, failVerified('soft', 'MBH4-ROOM-001',
                 `اتاق "${s.label}" با عرض ${w.toFixed(2)} m باریک‌تر از حد ${th.width} m مبحث چهار §7-1-1-8.`,
                 'Mabhas 4 §7-1-1-8', [SRC.m4_99], w,
+                [s.rect.x, s.rect.y, s.rect.x + s.rect.w, s.rect.y + s.rect.h], [s.id]));
+            } else if (s.area + 1e-6 < th.area) {
+              push(out, failVerified('soft', 'MBH4-ROOM-001',
+                `اتاق "${s.label}" با مساحت ${s.area.toFixed(1)} m² کمتر از حد ${th.area} m² مبحث چهار §7-1-1-8 — مجاز تنها در صورت وجود حداقل یک فضای اقامت دیگر مطابق حداقل (واحد ≈${unitArea.toFixed(0)} m²).`,
+                'Mabhas 4 §7-1-1-8', [SRC.m4_99], s.area,
                 [s.rect.x, s.rect.y, s.rect.x + s.rect.w, s.rect.y + s.rect.h], [s.id]));
             }
           }

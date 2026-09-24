@@ -274,6 +274,14 @@ function buildFloorSiteAware(
     if (reserve) {
       const remainingArea = reserve.rects.reduce((a, r) => a + r.w * r.h, 0);
       const minDemand = placedSpecs.reduce((a, s) => a + ((s as any).minArea ?? 6), 0);
+      // P45-note: relaxing this gate to `minDemand > remainingArea` REGRESSED the
+      // suite (15 failures): it reserved the full 6 m aisle+stall band on mid-size
+      // sites, leaving a 72 m² remainder the placer cannot pack, turning
+      // rooms-valid plans into HARD_CONSTRAINT_INFEASIBLE_DIMENSION. The genuine
+      // root cause is that `reserveParkingBand` keeps the AISLE fully inside the
+      // buildable even when the south setback/street could serve it; that is a
+      // parking-geometry fix outside this scope, so the conservative headroom gate
+      // is retained.
       if (minDemand > 0.72 * remainingArea) {
         explanations.push(`Parking band reservation REJECTED for level ${level}: program minimums need ${minDemand.toFixed(0)} m², the reduced envelope offers ${remainingArea.toFixed(0)} m² — parking will be reported as unplaced (no sliver buildings for parking).`);
       } else {

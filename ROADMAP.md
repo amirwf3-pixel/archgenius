@@ -45,8 +45,8 @@
 - [x] National pack: Iran MBR (Mabhas-e 4 / Mabhas 15) — sourced from Tier-1 PDFs, 9 rules VERIFIED with SHA-256/page/clause evidence
 - [ ] Jurisdiction packs: Tehran, Karaj, Mashhad, Isfahan, Shiraz — **not built** (jurisdiction/city input exists; municipal rules remain REQUIRES_SOURCE_VERIFICATION)
 - [x] Setbacks with explicit source/status tracking (user design input vs default assumption vs verified) — legal FAR/coverage/density enforcement intentionally out of scope
-- [ ] Regulation explorer UI with source references — **not built** (rule findings with ruleId/status are surfaced in validation output)
-- [x] Rule traceability via the source registry (digests, pages, snippets); multi-version pack loading **not** built
+- [x] Regulation explorer UI with source references — **built** (read-only pack/rule browser: status badges, reference/edition, source tier, clause/page)
+- [x] Rule traceability via the source registry (digests, pages, snippets); multi-version pack loading **built**
 
 ## Phase 5 — Professional deliverables & UI (mostly complete)
 - [x] PDF sheet generation (title block, per-floor pages, drawing numbers `AG-{id}-WB`)

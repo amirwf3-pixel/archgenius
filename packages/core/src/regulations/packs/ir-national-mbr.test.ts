@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { createProject, generate } from '../../pipeline.js';
+import { createProject, generate, validateCandidate } from '../../pipeline.js';
 import { IR_NATIONAL_MBR_PACK } from './ir-national-mbr.js';
 import type { LayoutCandidate } from '../../model/layout.js';
 import type { RuleContext } from '../types.js';
@@ -73,26 +73,92 @@ describe('IR National MBR pack — Phase 5.2 VERIFIED (Tier-1 PDFs present)', ()
       expect(rule.sources![0].sourceId).toBe('t1-mabhas4-96-pdf');
     });
 
-    it('fires when rooms below 12 m² on large unit (>=75)', () => {
-      // Multi-floor reference: with the program correctly distributed (Phase 15 M3) the unit
-      // gross is genuinely >=75 m², and strategies that squeeze the private band below the
-      // 12 m² habitable-room minimum must fire the rule — the check targets the rule, not a
-      // benchmark: we take the FIRST candidate that actually contains a sub-12 m² habitable room.
+    it('at-least-one semantics: a compliant main room shields an undersized sibling (>=75)', () => {
+      // P45: §7-1-1-8 requires the 12/2.7 floor for AT LEAST ONE main habitable room.
+      // With living at 12 m²/3.0 m, a 9.8 m² dining must be advisory (soft), not HARD.
+      const rule = IR_NATIONAL_MBR_PACK.rules.find(r => r.ruleId === 'MBH4-ROOM-001')!;
+      const spaces = [
+        { id: 'living', label: 'Living', type: 'living', area: 12.0, rect: { x: 0, y: 0, w: 3.0, h: 4.0 }, hasExteriorWall: true },
+        { id: 'dining', label: 'Dining', type: 'dining', area: 9.8, rect: { x: 0, y: 0, w: 3.0, h: 3.27 }, hasExteriorWall: true },
+        { id: 'kit', label: 'Kitchen', type: 'kitchen', area: 20, rect: { x: 0, y: 0, w: 4, h: 5 }, hasExteriorWall: true },
+        { id: 'corr', label: 'Corr', type: 'corridor', area: 30, rect: { x: 0, y: 0, w: 3, h: 10 }, hasExteriorWall: false },
+        { id: 'entr', label: 'Entr', type: 'entrance', area: 10, rect: { x: 0, y: 0, w: 2, h: 5 }, hasExteriorWall: false },
+      ];
+      const res = rule.evaluate!(makeCtxWithSpaces(spaces));
+      const hard = res.filter((r: any) => r.severity === 'hard' && r.code === 'MBH4-ROOM-001');
+      expect(hard).toHaveLength(0);
+      const soft = res.filter((r: any) => r.severity === 'soft' && r.code === 'MBH4-ROOM-001');
+      expect(soft.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('fires HARD only when NO main habitable room meets the floor (>=75)', () => {
+      const rule = IR_NATIONAL_MBR_PACK.rules.find(r => r.ruleId === 'MBH4-ROOM-001')!;
+      const spaces = [
+        { id: 'living', label: 'Living', type: 'living', area: 10, rect: { x: 0, y: 0, w: 3, h: 3.33 }, hasExteriorWall: true },
+        { id: 'dining', label: 'Dining', type: 'dining', area: 9, rect: { x: 0, y: 0, w: 3, h: 3 }, hasExteriorWall: true },
+        { id: 'bed', label: 'Bed', type: 'bedroom', area: 10, rect: { x: 0, y: 0, w: 3, h: 3.33 }, hasExteriorWall: true },
+        { id: 'kit', label: 'Kitchen', type: 'kitchen', area: 20, rect: { x: 0, y: 0, w: 4, h: 5 }, hasExteriorWall: true },
+        { id: 'corr', label: 'Corr', type: 'corridor', area: 20, rect: { x: 0, y: 0, w: 3, h: 6.7 }, hasExteriorWall: false },
+        { id: 'entr', label: 'Entr', type: 'entrance', area: 10, rect: { x: 0, y: 0, w: 2, h: 5 }, hasExteriorWall: false },
+      ];
+      const res = rule.evaluate!(makeCtxWithSpaces(spaces));
+      const hard = res.filter((r: any) => r.severity === 'hard' && r.code === 'MBH4-ROOM-001');
+      expect(hard.length).toBeGreaterThanOrEqual(1);
+      expect(hard[0].status).toBe('VERIFIED');
+    });
+
+    it('regression (generated plan): a qualifying room shields an undersized sibling — SOFT, plan not HARD', () => {
+      // P45 on a REAL generated plan (not hand-built rooms): 12x18 single-floor villa,
+      // no parking. Before the at-least-one correction this site was infeasible solely
+      // because an individual undersized habitable room raised HARD MBH4-ROOM-001.
       const prj = createProject({
-        name: 'tight-12x18-4bd',
-        country: 'IR',
-        site: { shape: 'rectangle', width: 12, length: 18, accessSide: 'south', streetWidth: 8 },
-        building: { type: 'villa', floors: 1, bedrooms: 4, masterBedrooms: 1, bathrooms: 2, wc: 1, kitchenType: 'closed', parkingSpaces: 0 },
+        name: 'p45-at-least-one-12x18', country: 'IR',
+        site: { shape: 'rectangle', width: 12, length: 18, accessSide: 'south', streetWidth: 8, northRotationDeg: 0,
+          setbacks: { north: 2, south: 3, east: 2, west: 2 } },
+        building: { type: 'villa', floors: 1, bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1,
+          kitchenType: 'closed', parkingSpaces: 0, hasStair: false },
         deterministic: true, seed: 42,
-      });
-      const { candidates, infeasible } = legacyGenerate(prj, { allStrategies: true });
-      const plans = [...candidates, ...(infeasible?.diagnosticCandidates ?? [])];
-      const target = plans.find(c => c.floors.some(fl => fl.spaces.some(s =>
-        (s.type === 'bedroom' || s.type === 'living' || s.type === 'dining') && s.area > 0 && s.area < 12)));
-      expect(target).toBeTruthy();
-      const hits = findCode(target!, 'MBH4-ROOM-001').filter((f: any) => f.severity === 'hard');
-      expect(hits.length).toBeGreaterThanOrEqual(1);
-      expect(hits[0].status).toBe('VERIFIED');
+      } as any);
+      const { bestCandidate, infeasible } = generate(prj);
+      expect(infeasible).toBeNull();
+      expect(bestCandidate).toBeTruthy();
+      const cand = bestCandidate!;
+
+      // Applicable minimum, derived exactly as the rule derives it (unit area on floor 0).
+      const INDOOR = new Set(['living', 'dining', 'kitchen', 'bedroom', 'master-bedroom', 'bathroom', 'master-bathroom',
+        'guest-wc', 'corridor', 'entrance', 'foyer', 'storage', 'stair-hall', 'family-room', 'guest-room']);
+      const unitArea = cand.floors[0].spaces.filter(s => INDOOR.has(s.type)).reduce((a, s) => a + s.area, 0);
+      const th = unitArea >= 75 ? { area: 12, width: 2.7 } : { area: 9, width: 2.5 };
+      const MAIN = ['living', 'master-bedroom', 'family-room', 'dining', 'bedroom'];
+      const main = cand.floors[0].spaces.filter(s => MAIN.includes(s.type));
+      const width = (s: { rect: { w: number; h: number } }) => Math.min(s.rect.w, s.rect.h);
+      const meets = (s: typeof main[number]) => s.area + 1e-6 >= th.area && width(s) + 1e-6 >= th.width;
+
+      // (1) at least one habitable room meets the applicable minimum
+      const qualifying = main.filter(meets);
+      expect(qualifying.length).toBeGreaterThanOrEqual(1);
+      // (2) another habitable room is undersized — including one on the AREA path
+      //     (width OK, area short), which is exactly the case that used to be HARD
+      const undersized = main.filter(s => !meets(s));
+      expect(undersized.length).toBeGreaterThanOrEqual(1);
+      expect(undersized.some(s => width(s) + 1e-6 >= th.width && s.area + 1e-6 < th.area)).toBe(true);
+
+      // (3) every undersized room is reported SOFT (never HARD), still VERIFIED
+      const vr = validateCandidate(cand);
+      const room001 = vr.findings.filter(f => f.code === 'MBH4-ROOM-001');
+      for (const s of undersized) {
+        const mine = room001.filter(f => (f.entityIds ?? []).includes(s.id));
+        expect(mine.length).toBeGreaterThanOrEqual(1);
+        for (const f of mine) {
+          expect(f.severity).toBe('soft');
+          expect(f.status).toBe('VERIFIED');
+        }
+      }
+      // (4) the plan does not become HARD because of that room — no HARD ROOM-001 at all,
+      //     and no HARD finding of any kind on this plan
+      expect(room001.filter(f => f.severity === 'hard')).toHaveLength(0);
+      expect(vr.hard).toHaveLength(0);
+      expect(vr.ok).toBe(true);
     });
 
     it('compliant case: large villa with >=12 m² and >=2.7 m width', () => {

@@ -329,9 +329,9 @@ describe('Phase13 G: Infeasibility explicit codes', () => {
 // H: Minimum dimensions remain hard — for feasible sites preserve min, for tiny sites preserve 0.9m unusable threshold and report explicit HARD
 describe('Phase13 H: Min dimensions remain hard', () => {
   for (const site of [
-    // Phase 15 M3: 12x18 is no longer artificially feasible — the narrow band cannot host
-    // the full requested entry sequence, so the honest gate returns explicit INFEASIBLE.
-    { w: 12, l: 18, feasible: false },
+    // P45: 12x18 was only "infeasible" via the over-strict per-room MBH4-ROOM-001. With the
+    // corrected at-least-one semantics the site is genuinely feasible (parking=0 here).
+    { w: 12, l: 18, feasible: true },
     { w: 15, l: 20, feasible: true },
     { w: 8, l: 12, feasible: false },
     { w: 10, l: 30, feasible: false },
@@ -501,7 +501,8 @@ describe('Phase13 O: Adversarial matrix', () => {
     { w: 8, l: 12, seed: 42, feasible: false },
     { w: 10, l: 14, seed: 42, feasible: false },
     { w: 10, l: 30, seed: 42, feasible: false },
-    { w: 15, l: 20, seed: 7, shape: 'l-shape' as const, feasible: false },
+    // P45: feasible once MBH4-ROOM-001 uses at-least-one semantics (was hard only via that rule).
+    { w: 15, l: 20, seed: 7, shape: 'l-shape' as const, feasible: true },
     { w: 15, l: 20, seed: 42, shape: 'polygon' as const, feasible: false },
   ];
   for (const c of cases) {
