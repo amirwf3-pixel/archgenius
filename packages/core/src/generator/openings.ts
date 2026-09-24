@@ -203,6 +203,14 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
   // wall exists (otherwise bathroom opens to corridor which is acceptable).
   const circTypes = new Set(['corridor', 'foyer', 'entrance', 'stair-hall', 'elevator-hall']);
   const spacesById = new Map(floor.spaces.map(s => [s.id, s]));
+  // Elevator shaft (elevator-hall) is a TERMINAL: its only door is a landing
+  // door onto floor-level circulation (corridor/foyer/entrance) — never into a
+  // room, never onto the stair hall (whose far end is a mid-landing). Always
+  // true when the floor has no shaft, so shaft-free plans are unaffected.
+  const LIFT_LANDING = new Set(['corridor', 'foyer', 'entrance']);
+  const shaftPairOk = (ta: string | undefined, tb: string | undefined): boolean =>
+    ta !== 'elevator-hall' && tb !== 'elevator-hall' ? true
+      : ta === 'elevator-hall' ? LIFT_LANDING.has(tb ?? '') : LIFT_LANDING.has(ta ?? '');
   function getOther(w: Wall, selfId: string): Space | undefined {
     const oid = w.spaceIds[0] === selfId ? w.spaceIds[1] : w.spaceIds[0];
     return oid ? spacesById.get(oid) : undefined;
@@ -331,6 +339,7 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
     const a = spacesById.get(ida)!, b = spacesById.get(idb)!;
     const aCirc = circTypes.has(a.type), bCirc = circTypes.has(b.type);
     if (!aCirc || !bCirc) continue;
+    if (!shaftPairOk(a.type, b.type)) continue;
     // entrance<->corridor only when the floor has no foyer between them
     if ((a.type === 'entrance' && bCirc && b.type === 'corridor' && floor.spaces.some(s => s.type === 'foyer')) ||
         (b.type === 'entrance' && a.type === 'corridor' && floor.spaces.some(s => s.type === 'foyer'))) continue;
@@ -355,6 +364,7 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
       const [ida, idb] = key.split('|');
       const other = spacesById.get(ida === s.id ? idb : ida)!;
       if (!other || other.type === 'parking' || other.type === 'yard' || other.type === 'balcony') continue;
+      if (!shaftPairOk(s.type, other.type)) continue;
       // primary access must attach to a circulation space (suite links come later)
       if (!circTypes.has(other.type) && !(s.type === 'master-bathroom' && other.type === 'master-bedroom') && !(SERVICE_STORE.has(s.type) && other.type === 'kitchen')) continue;
       const score = primaryAccessScore(s.type, other.type);
@@ -416,6 +426,7 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
           const aIn = inComp.has(ida), bIn = inComp.has(idb);
           if (aIn === bIn) continue;
           const a = spacesById.get(ida)!, b = spacesById.get(idb)!;
+          if (!shaftPairOk(a.type, b.type)) continue;
           const score = (circTypes.has(a.type) && circTypes.has(b.type)) ? 3
             : (circTypes.has(a.type) || circTypes.has(b.type)) ? 2 : 1;
           const pick = bestFreeWall(walls, DOOR_INT_WIDTH);
@@ -600,6 +611,7 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
         for (const w of floor.walls) {
           const [ga, gb] = w.spaceIds;
           if (!ga || !gb || w.kind === 'exterior') continue;
+          if (!shaftPairOk(spacesById.get(ga)?.type, spacesById.get(gb)?.type)) continue;
           const aIn = reached.has(ga);
           const bIn = reached.has(gb);
           if (aIn === bIn) continue;

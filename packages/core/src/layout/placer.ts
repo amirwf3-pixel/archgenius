@@ -20,6 +20,7 @@
 import type { Rect } from '../geometry/rect.js';
 import { rSplitX, rSplitY, rArea, rCorners } from '../geometry/rect.js';
 import type { Space, SpaceSpec, Zone, SpaceType } from '../model/space.js';
+import { elevatorCellSize } from '../model/stairs.js';
 import type { CandidateStrategy } from '../model/layout.js';
 import { buildHardConstraintGraph, placementOrderForTypes, classifyFeasibility, MAX_CONSTRAINT_PLACEMENT_ATTEMPTS, MAX_LOCAL_REPAIR_ITERATIONS, MAX_CANDIDATE_POSITIONS } from './constraint-graph.js';
 import { sharedWallEdges } from '../geometry/room-polygon.js';
@@ -106,6 +107,12 @@ interface ZoneLayout {
   zones: Record<Zone, Rect[]>;
   corridors: Rect[];
   entrancePatch?: Rect;
+  /** Elevator shaft cell reserved next to the stair pocket, only when the program
+   *  carries an elevator-hall spec: horizontal / l-spur spines beside the pocket;
+   *  vertical spines just north of it against the spine (door west), and only when
+   *  the shrunken private band can still host its cells. Never a generic/row cell.
+   *  Kept OUT of zones.service so no kitchen/stair heuristic can pick it. */
+  elevatorPocket?: Rect;
 }
 
 function carveZones(
@@ -149,6 +156,11 @@ function carveZones(
   };
   const corridors: Rect[] = [];
   let entrancePatch: Rect | undefined;
+  // Elevator shaft cell: the fixed DESIGN-ASSUMPTION cell (width along the
+  // landing wall, depth across it), reserved only when the program carries an
+  // elevator-hall spec. Null otherwise — every branch below is then byte-for-byte
+  // the pre-elevator behaviour.
+  const liftCell = specs.some(s => s.type === 'elevator-hall') ? elevatorCellSize() : null;
 
   if (cfg.spine === 'vertical') {
     const vfTest = (f: number, pubCells: BandCellDemand[], privCells: BandCellDemand[]): boolean => {
@@ -184,12 +196,27 @@ function carveZones(
     }
     zones.public.push(publicRect);
     let eastRect: Rect = { x: vx + CORRIDOR_W, y: footprint.y, w: footprint.x + footprint.w - (vx + CORRIDOR_W), h: footprint.h };
+    let vElevatorPocket: Rect | undefined;
     // Stair pocket for vertical spine: at south end of private band (near entrance)
     if (needStair && eastRect.h > 5.5) {
       const pocketH = Math.min(2.9, Math.max(2.6, eastRect.h * 0.20));
       const pocketW = Math.min(4.6, Math.max(4.2, eastRect.w * 0.55));
       zones.service.push({ x: eastRect.x, y: eastRect.y, w: pocketW, h: pocketH });
       eastRect = { x: eastRect.x, y: eastRect.y + pocketH, w: eastRect.w, h: eastRect.h - pocketH };
+      // Elevator shaft cell: directly beside the stair pocket (compact vertical
+      // core), against the vertical corridor so its landing wall faces it. The
+      // door wall runs along the corridor, so the cell is rotated: width (along
+      // the door wall) in y, depth in x. Reserved HERE, during zoning; the stair
+      // pocket and the corridor are unchanged, the private band starts above it.
+      // Reserved only when the shrunken private band can STILL host its cells
+      // (the same band predicate the spine chooser uses) — a shaft must never
+      // squeeze the band into a failed layout that the repair passes then
+      // resolve by displacing the stair hall.
+      if (liftCell && eastRect.w + 1e-9 >= liftCell.depth && eastRect.h - liftCell.width > 2.5
+        && (privCells.length === 0 || bandCanHost(eastRect.w, eastRect.h - liftCell.width, privCells))) {
+        vElevatorPocket = { x: eastRect.x, y: eastRect.y, w: liftCell.depth, h: liftCell.width };
+        eastRect = { x: eastRect.x, y: eastRect.y + liftCell.width, w: eastRect.w, h: eastRect.h - liftCell.width };
+      }
     }
     // Storage pocket east for vertical — compact square, avoid west sliver
     // When no stair, carve a small south-east pocket from private so storage does not overlap private rows
@@ -207,7 +234,7 @@ function carveZones(
       eastRect = { x: eastRect.x, y: eastRect.y + storH, w: eastRect.w, h: eastRect.h - storH };
     }
     zones.private.push(eastRect);
-    return { zones, corridors };
+    return vElevatorPocket ? { zones, corridors, elevatorPocket: vElevatorPocket } : { zones, corridors };
   }
 
   // Horizontal (+ L-spur)
@@ -261,15 +288,24 @@ function carveZones(
   // landing 1.20 m plus margins = ~4.20 m long). Use 2.6 × 4.4 m as the
   // minimum usable core for two-storey buildings.
   let privateMain = privateBand;
+  let elevatorPocket: Rect | undefined;
   if (needStair && privateBand.w > 5.5) {
     const pocketW = Math.min(2.9, Math.max(2.6, privateBand.w * 0.20));
     const pocketH = Math.min(4.6, Math.max(4.2, privateBand.h * 0.55));
     zones.service.push({ x: privateBand.x, y: privateBand.y, w: pocketW, h: pocketH });
     privateMain = { x: privateBand.x + pocketW, y: privateBand.y, w: privateBand.w - pocketW, h: privateBand.h };
+    // Elevator shaft cell: immediately beside the stair pocket (compact vertical
+    // core), on the corridor edge of the private band so its landing wall faces
+    // the corridor. Reserved HERE, during zoning — the private band shrinks by
+    // the cell width. The stair pocket itself is unchanged.
+    if (liftCell && privateBand.h + 1e-9 >= liftCell.depth && privateMain.w - liftCell.width > 1.2) {
+      elevatorPocket = { x: privateMain.x, y: privateBand.y, w: liftCell.width, h: liftCell.depth };
+      privateMain = { x: privateMain.x + liftCell.width, y: privateMain.y, w: privateMain.w - liftCell.width, h: privateMain.h };
+    }
   }
   zones.private.push(privateMain);
   void BATH_STRIP_H;
-  return { zones, corridors, entrancePatch };
+  return { zones, corridors, entrancePatch, elevatorPocket };
 }
 
 /**
@@ -377,11 +413,14 @@ export function placeSpaces(
   // Ties keep the standard orientation, so behavior is strictly additive: a variant
   // wins by earning it, never by assumption. The M2 gate is untouched.
   if ((accessSide === 'east' || accessSide === 'west') && framed.w > framed.h) {
-    const stdAcc = specAccounting(specs, [...standard.spaces, ...standard.corridors]);
+    // The elevator shaft is reservation-only (reported by ELEV_SHAFT_MISSING when
+    // absent) — it must not count as a missing ROOM and flip the row variant.
+    const accSpecs = specs.some(sp => sp.type === 'elevator-hall') ? specs.filter(sp => sp.type !== 'elevator-hall') : specs;
+    const stdAcc = specAccounting(accSpecs, [...standard.spaces, ...standard.corridors]);
     if (stdAcc.missing > 0) {
       const rowOut = placeSpacesFacingSouth(framed, specs, strategy, 'south', mkSpace, true);
       const row = assemble(rowOut, [`P17-E shallow-band row: street-perpendicular depth ${framed.h.toFixed(1)} m — public band tiled side-by-side along the street.`]);
-      const rowAcc = specAccounting(specs, [...row.spaces, ...row.corridors]);
+      const rowAcc = specAccounting(accSpecs, [...row.spaces, ...row.corridors]);
       // Refuse an overlapping row assembly outright — a variant that trades missing
       // rooms for collisions is never an improvement (M2 would reject it anyway).
       if (rowAcc.missing === 0 && rowAcc.deficit <= stdAcc.deficit + 1e-9 &&
@@ -1309,6 +1348,13 @@ function placeSpacesFacingSouth(
       : kitchenRect;
     placed.push(mkSpace('kitchen', kitRect, kitchen.placedLabel, kitchen.placedId, 'service'));
   }
+  // Elevator shaft: the zoning step reserved its cell; place it verbatim. When no
+  // cell could be reserved (vertical spine, narrow band) the spec stays unplaced
+  // and the generator reports ELEV_SHAFT_MISSING — it is never dropped silently.
+  const lift = layout.elevatorPocket ? take('elevator-hall') : undefined;
+  if (lift && layout.elevatorPocket) {
+    placed.push(mkSpace('elevator-hall', layout.elevatorPocket, lift.placedLabel, lift.placedId, 'service'));
+  }
   const stair = take('stair-hall');
   if (stair) {
     if (stairPocket) {
@@ -1754,12 +1800,16 @@ function placeSpacesFacingSouth(
   // are special-cased. If even the row cannot host the list, the partial plan stands
   // and the program-completeness gate reports the shortfall honestly.
   {
-    const missing = specs.filter(sp =>
+    // The elevator shaft is reservation-only: it is never a row cell and never
+    // counts toward the band's room shortfall (ELEV_SHAFT_MISSING reports it).
+    // Shaft-free programs get the identical list.
+    const rowSpecs = specs.some(sp => sp.type === 'elevator-hall') ? specs.filter(sp => sp.type !== 'elevator-hall') : specs;
+    const missing = rowSpecs.filter(sp =>
       !placed.some(s => s.id === sp.placedId) && !corridors.some(s => s.id === sp.placedId));
     // Fire only where banding is STRUCTURALLY impossible for this list in this rect
     /// (column stacking cannot host either) and the majority of rooms were lost —
     /// a shallow full-width band. Normal rects keep their banded composition.
-    const columnViable = solveCol(footprint.w, footprint.h, specs.map(sp => ({
+    const columnViable = solveCol(footprint.w, footprint.h, rowSpecs.map(sp => ({
       type: sp.type,
       minWidth: sp.minWidth ?? 2.0,
       minHeight: sp.minLength ?? sp.minWidth ?? 1.5,
@@ -1767,7 +1817,7 @@ function placeSpacesFacingSouth(
       target: Math.max(sp.targetArea ?? 0, sp.minArea ?? 2, 0.25),
     }))) !== null;
     if (missing.length >= 2 && missing.length > placed.length && !columnViable) {
-      const rowCells: BandCellDemand[] = specs.map(sp => ({
+      const rowCells: BandCellDemand[] = rowSpecs.map(sp => ({
         type: sp.type,
         minWidth: sp.minWidth ?? 2.0,
         minHeight: sp.minLength ?? sp.minWidth ?? 1.5,
@@ -1779,8 +1829,8 @@ function placeSpacesFacingSouth(
         placed.length = 0;
         corridors.length = 0;
         let rx = footprint.x;
-        for (let i = 0; i < specs.length; i++) {
-          const sp = specs[i];
+        for (let i = 0; i < rowSpecs.length; i++) {
+          const sp = rowSpecs[i];
           const c = rowSol.cells[i];
           const r: Rect = { x: rx, y: footprint.y, w: Math.max(0.9, c.flow), h: Math.min(c.cross, footprint.h) };
           rx += r.w;
@@ -1790,7 +1840,7 @@ function placeSpacesFacingSouth(
             placed.push(mkSpace(sp.type as any, r, sp.placedLabel, sp.placedId, sp.zone ?? 'public'));
           }
         }
-        explanation.push(`Phase15 M6 full-row retile: ${specs.length} cells side by side across ${footprint.w.toFixed(1)} m (band could not place ${missing.length} of them as bands)`);
+        explanation.push(`Phase15 M6 full-row retile: ${rowSpecs.length} cells side by side across ${footprint.w.toFixed(1)} m (band could not place ${missing.length} of them as bands)`);
       } else {
         explanation.push(`Phase15 M6: band dropped ${missing.length} room(s) [${missing.map(m => m.type).join(',')}] and full-row tiling cannot host the list either — reported via program completeness gate`);
       }

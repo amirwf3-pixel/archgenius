@@ -5,6 +5,7 @@ import { validateGeometric } from './geometric.js';
 import { validateCirculation } from './circulation.js';
 import { validateFurniture } from './furniture.js';
 import { validateStairs, validateVerticalCirculation } from './stair.js';
+import { validateElevators } from './elevator.js';
 import { validateArchitecturalQA } from './architectural-qa.js';
 import { validateSite } from './site.js';
 import { validateProgramCompleteness } from './program-completeness.js';
@@ -60,6 +61,9 @@ export function validateLayout(candidate: LayoutCandidate): ValidationResult {
   }
   // v1.0.1 (AGX-02/AGX-05): multi-floor vertical-circulation invariants.
   findings.push(...validateVerticalCirculation(candidate.floors));
+  // Elevator shaft geometry invariants (existence / stacking / containment /
+  // collisions / landing). Emits nothing for shaft-free plans.
+  findings.push(...validateElevators(candidate.floors));
 
   findings.push(...validateSite(candidate));
 

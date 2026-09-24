@@ -25,7 +25,8 @@ import {
   makeCoreAnchor, solveStairOrientations, inspectAnchorPlacement, sameRect,
   type CoreAnchor, type HallSide,
 } from './vertical-core.js';
-import { DEFAULT_STAIR_CONFIG, type Stair } from '../model/stairs.js';
+import { DEFAULT_STAIR_CONFIG, type Stair, type Elevator, type ElevatorDoorSide } from '../model/stairs.js';
+import { buildElevator, cellFitsShaft, elevatorLandingSide, findCoreAdjacentShaftCell, rigidShaftCell } from './elevator-shaft.js';
 import { generateWalls } from './walls.js';
 import { placeOpenings } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
@@ -301,6 +302,9 @@ function buildFloorSiteAware(
   let placedRooms: Space[] = [];
   let corridors: Space[] = [];
   let placeExpl: string[] = [];
+  // True when the floor was laid out by the multi-rect / L-wing planners, which
+  // cannot carry the fixed shaft cell (see the elevator stage below).
+  let multiRectPlan = false;
 
   if (buildableRects.length === 0) {
     explanations.push(`Decomposition failure for ${buildableBoundary.length}-vertex buildable polygon — cannot decompose safely into rectangles (bounded failure, no bbox fallback as canonical). Candidate will be marked SITE_GEOM_INVALID HARD.`);
@@ -317,10 +321,19 @@ function buildFloorSiteAware(
     // Phase 25: dedicated two-rectangle L-shape wing path. Rectangular sites
     // never reach this branch (guarded above); other polygons keep the
     // generic M6 planner exactly as before.
+    // Elevator shaft (task-27 bounded scope): the shaft is reserved only by the
+    // single-rectangle band zoning beside the stair pocket. The multi-rect / L-shape
+    // planners would re-frame (rotate) that pocket per region, so the elevator
+    // spec is withheld here and ELEV_SHAFT_MISSING reports it deterministically —
+    // never placed generically, never dropped silently. No-lift input is unchanged.
+    multiRectPlan = true;
+    const multiSpecs = placedSpecs.some(sp => sp.type === 'elevator-hall')
+      ? placedSpecs.filter(sp => sp.type !== 'elevator-hall')
+      : placedSpecs;
     const lres = input.site.shape === 'l-shape' && buildableRects.length === 2
-      ? placeSpacesLShape(buildableRects, buildableBoundary, placedSpecs, strategy, access, mkSpace)
+      ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace)
       : null;
-    const result = lres ?? placeSpacesAcrossRects(buildableRects, buildableBoundary, placedSpecs, strategy, access, mkSpace);
+    const result = lres ?? placeSpacesAcrossRects(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation;
@@ -348,7 +361,23 @@ function buildFloorSiteAware(
   const corridorTrim = trimCorridorsToServedExtent(repaired.spaces);
   if (corridorTrim.length > 0) explanations.push(...corridorTrim);
 
-  snapCorridorsToRoomsSiteAware(repaired.spaces, buildableBoundary, sliceRect, buildableRects);
+  // The elevator shaft is a rigid cell: keep it OUT of the corridor weld /
+  // welded-grid clustering so its edges can never shift the canonical weld
+  // coordinates of rooms, corridors or the stair hall (shaft-free plans pass
+  // the identical array). The shaft is made flush with its landing below.
+  snapCorridorsToRoomsSiteAware(
+    repaired.spaces.some(s => s.type === 'elevator-hall') ? repaired.spaces.filter(s => s.type !== 'elevator-hall') : repaired.spaces,
+    buildableBoundary, sliceRect, buildableRects,
+  );
+  // The weld pass is also where every space's polygon is rebuilt from its rect
+  // (placement frames map only rects back for north/east/west access). The
+  // shaft skipped it, so rebuild its polygon the same way — walls and doors are
+  // generated from polygons and must sit on the shaft's actual rect.
+  for (const sp of repaired.spaces) {
+    if (sp.type !== 'elevator-hall') continue;
+    sp.polygon = createRectangleRoomPolygon(sp.rect);
+    sp.area = polygonArea(sp.polygon);
+  }
 
   // Phase 15 M3: entrance recovery is a GROUND-floor program repair. A floor whose
   // allocation contains no entrance spec must never synthesize one — upper floors get
@@ -456,6 +485,15 @@ function buildFloorSiteAware(
     const insp = inspectAnchorPlacement(anchor, hall, other);
     explanations.push(...insp.explanation.map(m => `Level ${level}: ${m}`));
     if (insp.aligned) return hall;
+    // Elevator shaft only: never relocate CIRCULATION to free the anchor — moving
+    // a corridor/foyer/entrance/stair hall would redesign circulation. The floor
+    // then keeps no shaft and ELEV_SHAFT_MISSING reports it. (Stair behaviour
+    // is unchanged.)
+    if (hallType === 'elevator-hall'
+      && insp.blockers.some(b => b.type === 'corridor' || b.type === 'foyer' || b.type === 'entrance' || b.type === 'stair-hall')) {
+      explanations.push(`Level ${level}: elevator anchor cell is occupied by circulation (${insp.blockers.map(b => b.type).join(', ')}) — circulation is never relocated for the shaft; ELEV_SHAFT_MISSING flags this floor.`);
+      return hall;
+    }
     if (insp.blockers.length <= 2) {
       let freed = true;
       for (const blk of insp.blockers) {
@@ -492,19 +530,71 @@ function buildFloorSiteAware(
       return true;
     },
   );
-  // Elevator-hall: rect coherence only (no shaft geometry is generated by this
-  // engine — the hall is the contract the existing system already requires).
-  let elevatorHall = alignHallToAnchor(
+  // Elevator shaft (elevator-hall = the shaft cell the placer reserved beside the
+  // stair core). Requested only on 2+ floor buildings. Level 0 fixes the building
+  // anchor; upper floors reuse the SAME rect through the same bounded relocation
+  // pass as the stair hall, and a dropped cell is re-created on the anchor. When
+  // coherence cannot be achieved the validator says so (ELEV_SHAFT_MISSING /
+  // ELEV_SHAFT_MISALIGNED) — the elevator is never dropped silently.
+  const elevatorRequested = !!input.building.hasElevator && !isOnlyFloor;
+  // Multi-rect / L-wing plans: the planners could not carry the fixed cell, so
+  // on the origin floor look for the exact cell in FREE space beside the stair
+  // hall with an exact landing edge, inside the buildable polygon and the
+  // building slice. No room is moved or shrunk; upper floors reuse the anchor
+  // below. No such cell → nothing is invented and ELEV_SHAFT_MISSING reports it.
+  if (elevatorRequested && level === 0 && multiRectPlan && stairSpace
+    && !finalSpaces.some(s => s.type === 'elevator-hall')) {
+    const found = findCoreAdjacentShaftCell({
+      stairHall: stairSpace.rect,
+      spaces: finalSpaces,
+      inside: (r) => rectInsidePolygon(r, buildableBoundary, 1e-3)
+        && r.x >= sliceRect.x - 1e-6 && r.y >= sliceRect.y - 1e-6
+        && r.x + r.w <= sliceRect.x + sliceRect.w + 1e-6 && r.y + r.h <= sliceRect.y + sliceRect.h + 1e-6,
+    });
+    if (found) {
+      finalSpaces.push(mkSpace('elevator-hall', found.rect, labelFor('elevator-hall'), nextId('elevator-hall'), 'service'));
+      explanations.push(`Level 0: multi-rectangle plan — elevator shaft cell placed in free space beside the stair hall at (${found.rect.x.toFixed(2)},${found.rect.y.toFixed(2)}), landing on its ${found.side} side (no room moved).`);
+    } else {
+      explanations.push(`Level 0: multi-rectangle plan — no free cell beside the stair hall can host the shaft with an exact circulation landing inside the building.`);
+    }
+  }
+  // The shaft is a RIGID cell: undo the cm nudges the generic room passes
+  // (snapping / corridor welding) applied, keeping its landing edge flush.
+  if (elevatorRequested) {
+    const cell = finalSpaces.find(s => s.type === 'elevator-hall');
+    if (cell) {
+      const rigid = rigidShaftCell(cell.rect, finalSpaces);
+      if (rigid !== cell.rect) rePinHall(cell, rigid);
+    }
+  }
+  const elevatorHall = alignHallToAnchor(
     'elevator-hall',
     () => finalSpaces.find(s => s.type === 'elevator-hall') ?? null,
-    () => false,
+    (r) => {
+      if (!elevatorRequested) return false;
+      finalSpaces.push(mkSpace('elevator-hall', r, labelFor('elevator-hall'), nextId('elevator-hall'), 'service'));
+      return true;
+    },
   );
-  void elevatorHall;
-  if (!coreAnchors.has('elevator-hall') && elevatorHall && level === 0) {
-    coreAnchors.set('elevator-hall', {
-      hallType: 'elevator-hall', rect: { ...elevatorHall.rect },
-      corridorSide: 'south', originLevel: 0,
-    });
+  // Exact vertical reuse: the anchor inspection tolerates cm noise, a shaft may
+  // not — pin a near-match onto the anchor rect verbatim.
+  {
+    const anchor = coreAnchors.get('elevator-hall');
+    if (elevatorRequested && anchor && elevatorHall && level > anchor.originLevel
+      && sameRect(elevatorHall.rect, anchor.rect)
+      && (elevatorHall.rect.x !== anchor.rect.x || elevatorHall.rect.y !== anchor.rect.y
+        || elevatorHall.rect.w !== anchor.rect.w || elevatorHall.rect.h !== anchor.rect.h)) {
+      rePinHall(elevatorHall, anchor.rect);
+    }
+  }
+  if (elevatorRequested && level === 0 && !coreAnchors.has('elevator-hall')) {
+    const landing = elevatorHall ? elevatorLandingSide(elevatorHall.rect, finalSpaces) : null;
+    if (elevatorHall && landing && rectInsidePolygon(elevatorHall.rect, buildableBoundary, 1e-3)) {
+      coreAnchors.set('elevator-hall', makeCoreAnchor('elevator-hall', elevatorHall.rect, landing.side, null, 0));
+      explanations.push(`Vertical-core: elevator shaft cell ${elevatorHall.rect.w.toFixed(2)}×${elevatorHall.rect.h.toFixed(2)} m anchored at (${elevatorHall.rect.x.toFixed(2)},${elevatorHall.rect.y.toFixed(2)}), landing on its ${landing.side} side — reused on every upper floor (DESIGN-ASSUMPTION dimensions, no compliance claimed).`);
+    } else {
+      explanations.push(`Level 0: elevator shaft ${elevatorHall ? 'cell has no usable landing edge or leaves the buildable area' : 'cell could not be reserved by placement'} — no shaft anchor; ELEV_SHAFT_MISSING will flag this candidate.`);
+    }
   }
 
   const stairRect = stairSpace ? stairSpace.rect : null;
@@ -578,7 +668,10 @@ function buildFloorSiteAware(
       }
     }
     if (!stair) {
-      const res = solveStairOrientations(stairSpace.rect, cfg, finalSpaces, 'core-main', level);
+      // The elevator shaft is not walkable circulation: it must never make a
+      // stair entry side look "circulation-adjacent". Without a shaft this is
+      // exactly the previous space list.
+      const res = solveStairOrientations(stairSpace.rect, cfg, finalSpaces.filter(s => s.type !== 'elevator-hall'), 'core-main', level);
       stair = res.stair;
       chosenSide = res.side;
       explanations.push(...res.explanation.map(m => `Level ${level}: ${m}`));
@@ -600,14 +693,37 @@ function buildFloorSiteAware(
     }
   }
 
+  // ---------- Elevator shaft record (explicit geometry) ----------
+  const elevators: Elevator[] = [];
+  if (elevatorRequested) {
+    const hall = finalSpaces.find(s => s.type === 'elevator-hall') ?? null;
+    const anchor = coreAnchors.get('elevator-hall');
+    if (hall) {
+      const landing = elevatorLandingSide(hall.rect, finalSpaces);
+      // Keep the anchor's door side when this floor still lands there, so the
+      // shaft, clear zone and cabin are identical on every floor.
+      let side: ElevatorDoorSide | null = null;
+      if (anchor && cellFitsShaft(hall.rect, anchor.corridorSide)) side = anchor.corridorSide;
+      else if (landing) side = landing.side;
+      if (side) {
+        elevators.push(buildElevator({ hall, doorSide: side, level }));
+      } else {
+        explanations.push(`Level ${level}: elevator-hall ${hall.rect.w.toFixed(2)}×${hall.rect.h.toFixed(2)} m cannot host the shaft in any landing orientation — no elevator emitted; ELEV_SHAFT_MISSING flags this floor.`);
+      }
+    } else {
+      explanations.push(`Level ${level}: elevator shaft requested but no elevator-hall cell exists on this floor — ELEV_SHAFT_MISSING flags it (never dropped silently).`);
+    }
+  }
+
   const floor: Floor = {
     level, floorHeight: DEFAULT_FLOOR_HEIGHT,
     elevation: level * DEFAULT_FLOOR_HEIGHT,
     footprint: buildableRect,
     accessSide: input.site.accessSide,
     spaces: finalSpaces, walls, openings: [],
-    stairs, elevators: [], furniture: [] as Furniture[], parkingStalls, parkingArea,
+    stairs, elevators, furniture: [] as Furniture[], parkingStalls, parkingArea,
     parkingRequested: parkingRequested > 0 ? parkingRequested : undefined,
+    ...(elevatorRequested ? { elevatorRequested: true } : {}),
   };
   (floor as any).siteBoundary = siteBoundary;
   (floor as any).buildableBoundary = buildableBoundary;

@@ -379,6 +379,7 @@ const ROOM_LABEL_EN_FA: Record<string, string> = {
   'Corridor': 'راهرو',
   'Stair Hall': 'هال راه‌پله',
   'Elevator Hall': 'هال آسانسور',
+  'Elevator Shaft': 'چاه آسانسور',
   'Entrance': 'ورودی',
   'Foyer': 'لابی ورودی',
   'Storage': 'انباری',

@@ -158,12 +158,104 @@ export const DEFAULT_STAIR_CONFIG: StairConfig = {
   minLandingDepth: 1.00,
 };
 
+/** Side of the shaft that carries the landing door (plan axis convention). */
+export type ElevatorDoorSide = 'north' | 'south' | 'east' | 'west';
+
+/**
+ * Elevator shaft geometry configuration.
+ *
+ * DESIGN ASSUMPTIONS — NOT REGULATORY VALUES. Every number below is a plain
+ * geometry input chosen so the generator can reserve a deterministic shaft
+ * cell. None of them is sourced from, verified against, or evidence of
+ * compliance with Mabhas 15 (or any other code):
+ *  - The Mabhas 15 shaft plan dimensions (Appendix 2, b3 × d2) are not
+ *    machine-readable in the attached PDF (Table 1 is a raster image that
+ *    carries heights only) and have not been transcribed or verified.
+ *  - cabinWidth/cabinDepth equal the wheelchair-cabin figures recorded under
+ *    MBH15-LIFT-002, which stays NOT_IMPLEMENTED; they are used here only as
+ *    the footprint to draw around, never as a checked requirement.
+ *  - Clearances and the enclosure allowance are engineering placeholders.
+ * Pit depth, headroom, machine room, fire rating and cabin selection are NOT
+ * modelled.
+ */
+export interface ElevatorConfig {
+  /** Marker carried onto every generated Elevator. */
+  basis: 'DESIGN_ASSUMPTION';
+  /** Cabin footprint, width along the door wall (m). */
+  cabinWidth: number;
+  /** Cabin footprint, depth perpendicular to the door wall (m). */
+  cabinDepth: number;
+  /** Clear gap cabin → shaft wall on EACH side along the door wall (m). */
+  sideClearance: number;
+  /** Clear gap cabin → door-side shaft wall (door/sill zone) (m). */
+  frontClearance: number;
+  /** Clear gap cabin → rear shaft wall (m). */
+  rearClearance: number;
+  /** Per-side allowance between the shaft cell edge and the clear shaft.
+   *  Walls are drawn centred on space edges, so this must cover half the
+   *  THICKEST wall that can bound the cell (exterior walls). */
+  enclosureAllowance: number;
+}
+
+/** Default shaft geometry — DESIGN ASSUMPTIONS (see ElevatorConfig). */
+export const DEFAULT_ELEVATOR_CONFIG: ElevatorConfig = {
+  basis: 'DESIGN_ASSUMPTION',
+  cabinWidth: 1.10,
+  cabinDepth: 1.40,
+  sideClearance: 0.25,
+  frontClearance: 0.20,
+  rearClearance: 0.30,
+  // = WALL_EXT_THK / 2 (units.ts): the cell survives an exterior edge.
+  enclosureAllowance: 0.175,
+};
+
+/**
+ * One elevator shaft on one floor. The shaft is the `elevator-hall` space of
+ * that floor: `rect` IS that space's rect, so walls/DXF/validation reach it
+ * through the existing space pipeline. Same `coreId` + same `rect` on every
+ * floor = one vertically continuous shaft.
+ */
 export interface Elevator {
   id: string;
-  /** Shaft rectangle (m). */
+  /** Shaft / core cell rectangle (m) — equals the elevator-hall space rect. */
   rect: Rect;
+  /** Guaranteed clear shaft inside `rect` (rect inset by enclosureAllowance). */
+  clearRect: Rect;
+  /** Cabin footprint inside `clearRect` (door side at frontClearance). */
+  cabinRect: Rect;
   /** Cabin width x depth. */
   cabinWidth: number;
   cabinDepth: number;
+  /** Side of `rect` that faces the landing circulation (door wall). */
+  doorSide: ElevatorDoorSide;
+  /** Vertical core this shaft belongs to — identical on every floor. */
+  coreId: string;
+  /** Id of the elevator-hall space this shaft occupies on this floor. */
+  hallSpaceId: string;
+  /** Provenance of the dimensions — always a design assumption. */
+  basis: 'DESIGN_ASSUMPTION';
   floor: number;
+}
+
+/** Clear shaft (inside the enclosure allowance): width along the door wall
+ *  × depth perpendicular to it. */
+export function elevatorClearSize(cfg: ElevatorConfig = DEFAULT_ELEVATOR_CONFIG): { width: number; depth: number } {
+  return {
+    width: round3e(cfg.cabinWidth + 2 * cfg.sideClearance),
+    depth: round3e(cfg.cabinDepth + cfg.frontClearance + cfg.rearClearance),
+  };
+}
+
+/** Shaft/core CELL the placer must reserve: clear shaft + enclosure
+ *  allowance on every side. `width` runs along the door wall. */
+export function elevatorCellSize(cfg: ElevatorConfig = DEFAULT_ELEVATOR_CONFIG): { width: number; depth: number } {
+  const c = elevatorClearSize(cfg);
+  return {
+    width: round3e(c.width + 2 * cfg.enclosureAllowance),
+    depth: round3e(c.depth + 2 * cfg.enclosureAllowance),
+  };
+}
+
+function round3e(v: number): number {
+  return Math.round(v * 1000) / 1000;
 }

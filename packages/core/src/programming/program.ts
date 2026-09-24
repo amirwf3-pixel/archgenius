@@ -15,6 +15,7 @@
  */
 import type { BuildingInput } from '../model/building.js';
 import type { SpaceSpec, SpaceType, AdjacencyRequirement } from '../model/space.js';
+import { elevatorCellSize } from '../model/stairs.js';
 
 interface AreaProfile {
   target: number;
@@ -54,6 +55,28 @@ const ADJ_CORRIDOR_BED: AdjacencyRequirement = { spaceType: 'corridor', adjacent
 const ADJ_CORRIDOR_STAIR: AdjacencyRequirement = { spaceType: 'stair-hall', adjacent: true, weight: 3, doorRequired: true };
 const ADJ_MASTER_BATH: AdjacencyRequirement = { spaceType: 'master-bathroom', adjacent: true, weight: 3, doorRequired: true };
 const ADJ_KITCHEN_SERVICE: AdjacencyRequirement = { spaceType: 'utility', adjacent: true, weight: 1 };
+
+/**
+ * Elevator-hall spec sized to the elevator shaft CELL (DESIGN ASSUMPTION
+ * dimensions from DEFAULT_ELEVATOR_CONFIG — not regulatory values). The cell is
+ * a fixed rectangle, so min = target: minWidth runs along the landing door wall,
+ * minLength across it. The placer reserves exactly this cell next to the stair
+ * core during placement (never carved from leftover space afterwards).
+ */
+function elevatorShaftSpec(): SpaceSpec {
+  const cell = elevatorCellSize();
+  const area = Math.round(cell.width * cell.depth * 10000) / 10000;
+  return makeSpec('elevator-hall', {
+    privacy: 'service', priority: 10,
+    targetArea: area, minArea: area,
+    // Orientation-neutral minimums: the generic geometry gates compare
+    // rect.w/rect.h to minWidth/minLength in WORLD axes, and the cell is rotated
+    // for east/west landings. The exact cell (width × depth) is reserved by the
+    // placer from elevatorCellSize() and verified by ELEV_SHAFT_GEOMETRY_INCONSISTENT.
+    minWidth: cell.width, minLength: Math.min(cell.width, cell.depth),
+    targetWidth: cell.width, targetLength: cell.depth,
+  });
+}
 
 function makeSpec(type: SpaceType, overrides: Partial<SpaceSpec> = {}): SpaceSpec {
   const base = TYPICAL_AREAS[type];
@@ -246,13 +269,13 @@ export function programForFloor(
     if (building.hasStair && !isOnlyFloor) {
       specs.push(makeSpec('stair-hall', { privacy: 'service', priority: 10, adjacencies: [ADJ_CORRIDOR_STAIR], targetArea: 6.0, minArea: 4.5 }));
     }
-    if (building.hasElevator) {
-      specs.push(makeSpec('elevator-hall', { privacy: 'service', priority: 10 }));
-    }
+    // Elevator shaft: reserved only on 2+ floor buildings (a 1-floor building
+    // ignores hasElevator for shaft generation).
+    if (building.hasElevator && !isOnlyFloor) specs.push(elevatorShaftSpec());
   } else {
     // Upper private floor(s)
     if (building.hasStair) specs.push(makeSpec('stair-hall', { privacy: 'service', priority: 10, targetArea: 6.0, minArea: 4.5 }));
-    if (building.hasElevator) specs.push(makeSpec('elevator-hall', { privacy: 'service', priority: 10 }));
+    if (building.hasElevator) specs.push(elevatorShaftSpec());
     specs.push(makeSpec('corridor', { privacy: 'service', priority: 9 }));
     if (alloc.familyRoomHere) specs.push(makeSpec('family-room', { privacy: 'semi-private', priority: 6, orientation: 'south', daylightRequired: true }));
   }
@@ -320,7 +343,7 @@ export function labelFor(type: SpaceType, idx?: number): string {
     case 'foyer': return 'Foyer';
     case 'corridor': return 'Corridor';
     case 'stair-hall': return 'Stair Hall';
-    case 'elevator-hall': return 'Elevator Hall';
+    case 'elevator-hall': return 'Elevator Shaft';
     case 'storage': return 'Storage';
     case 'balcony': return 'Balcony';
     case 'yard': return 'Yard';

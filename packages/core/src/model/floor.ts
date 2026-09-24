@@ -33,6 +33,11 @@ export interface Floor {
   /** P16-A: stalls the program requested on this floor (ground floor only);
    *  the plan must place exactly this many or surface a HARD finding. */
   parkingRequested?: number;
+  /** Elevator shaft geometry requested on this floor (generator stamped only
+   *  when hasElevator is set on a 2+ floor building). The plan must carry an
+   *  Elevator on this floor or surface a HARD ELEV_SHAFT_MISSING finding.
+   *  Undefined on hand-built fixtures and whenever no shaft is requested. */
+  elevatorRequested?: boolean;
   /** P16-B: street side this floor's entrance must face (generator stamped;
    *  validator enforces for ground floors). Undefined on hand-built fixtures. */
   accessSide?: 'north'|'south'|'east'|'west';
