@@ -334,6 +334,12 @@ function buildFloorSiteAware(
   const movedCount = repaired.movedCount;
   if (movedCount > 0) explanations.push(`Site-aware repair: ${movedCount} room(s) moved to fit inside buildable polygon ${input.site.shape} — buildableArea ${buildableGeom.buildableArea.toFixed(1)} m²`);
 
+  // P46: trim the spine's unserved tail BEFORE snapping/welding, so the trimmed
+  // corridor is welded against the rooms it serves and the P17-C envelope
+  // compaction sees the honest extent. Runs ahead of wall/opening derivation.
+  const corridorTrim = trimCorridorsToServedExtent(repaired.spaces);
+  if (corridorTrim.length > 0) explanations.push(...corridorTrim);
+
   snapCorridorsToRoomsSiteAware(repaired.spaces, buildableBoundary, sliceRect, buildableRects);
 
   // Phase 15 M3: entrance recovery is a GROUND-floor program repair. A floor whose
@@ -990,6 +996,129 @@ function repairSpacesToBuildable(
     }
   }
   return { spaces: result, movedCount };
+}
+
+/** Rects touch when they overlap OR abut (shared edge) within `e`. */
+function rectsTouchOrAbut(a: Rect, b: Rect, e: number): boolean {
+  return (
+    Math.min(a.x + a.w, b.x + b.w) + e > Math.max(a.x, b.x) &&
+    Math.min(a.y + a.h, b.y + b.h) + e > Math.max(a.y, b.y)
+  );
+}
+
+/**
+ * P46 — a corridor's extent follows the geometry it actually serves.
+ *
+ * The placer emits its spine across the whole band (placer.ts:
+ * `corridors.push({ x: footprint.x, y: cy, w: footprint.w, h: CORRIDOR_W })`),
+ * which is right whenever rooms line the spine for its full length. When the
+ * served rooms stop short of the band end — an upper floor whose bedrooms end
+ * before the site's east line, say — the spine keeps a tail that touches no
+ * room and no other circulation space. That tail is dead circulation area, and
+ * because P17-C declares the floor envelope as the bounding box of the placed
+ * geometry, the tail also drags the envelope outward, so the empty corner it
+ * covers gets reported as inside-the-building residual.
+ *
+ * This pass re-derives each corridor's extent ALONG ITS LONG AXIS from the
+ * spaces it genuinely serves, using only the placer's existing rect/polygon
+ * conventions:
+ *   - a space is served when it touches one of the corridor's two long faces
+ *     (north/south for a horizontal spine, east/west for a vertical one) and
+ *     overlaps the corridor along that axis; its contact interval is kept;
+ *   - a space touching a corridor END face pins that end, because it is reached
+ *     through the end — trimming there would disconnect it;
+ *   - the new extent is the union of those intervals, clamped to the original
+ *     and never shorter than the corridor's own cross dimension.
+ *
+ * Nothing is site-specific: the result is a pure function of the placed
+ * geometry, so a fully-lined spine is left byte-identical and a tail of any
+ * length is handled the same way. The cross axis (corridor width) is never
+ * touched, so CORRIDOR_MIN_WIDTH semantics are unaffected.
+ *
+ * Safety: the trim is applied only where no space touches the removed area, and
+ * it is REVERTED for that corridor if the set of spaces touching it would
+ * shrink — an honest fallback rather than a silent connectivity change.
+ * Deterministic: arithmetic over `spaces` in array order, no iteration order or
+ * time dependence.
+ *
+ * @returns one explanation line per trimmed corridor.
+ */
+function trimCorridorsToServedExtent(spaces: Space[]): string[] {
+  const eps = 0.02;
+  const notes: string[] = [];
+  for (const c of spaces) {
+    if (c.type !== 'corridor') continue;
+    const r = c.rect;
+    const horizontal = r.w >= r.h; // the long axis is the trim axis
+    const cLo = horizontal ? r.x : r.y;
+    const cHi = horizontal ? r.x + r.w : r.y + r.h;
+    const cross = horizontal ? r.h : r.w;
+    /** Position of a rect's low/high edge on the trim (long) axis. */
+    const lo = (s: Rect) => (horizontal ? s.x : s.y);
+    const hi = (s: Rect) => (horizontal ? s.x + s.w : s.y + s.h);
+    /** Position of a rect's low/high edge on the CROSS axis — the two long faces. */
+    const crossLoEdge = (s: Rect) => (horizontal ? s.y : s.x);
+    const crossHiEdge = (s: Rect) => (horizontal ? s.y + s.h : s.x + s.w);
+    const cCrossLo = horizontal ? r.y : r.x;
+    const cCrossHi = horizontal ? r.y + r.h : r.x + r.w;
+    /** Overlap with the corridor on the CROSS axis. */
+    const crossOverlap = (s: Rect) => (horizontal
+      ? Math.min(r.y + r.h, s.y + s.h) - Math.max(r.y, s.y)
+      : Math.min(r.x + r.w, s.x + s.w) - Math.max(r.x, s.x));
+
+    let needLo = Infinity;
+    let needHi = -Infinity;
+    let contacts = 0;
+    let pinLo = false;
+    let pinHi = false;
+    for (const s of spaces) {
+      if (s === c) continue;
+      const oLo = Math.max(cLo, lo(s.rect));
+      const oHi = Math.min(cHi, hi(s.rect));
+      if (oHi - oLo <= eps) {
+        // No overlap along the long axis — this can only be an END contact.
+        if (crossOverlap(s.rect) > eps) {
+          if (Math.abs(hi(s.rect) - cLo) < eps) pinLo = true;
+          if (Math.abs(lo(s.rect) - cHi) < eps) pinHi = true;
+        }
+        continue;
+      }
+      // Overlaps along the long axis: served only if it touches a long face,
+      // i.e. it sits directly against the corridor's cross-axis boundary.
+      const touchesHiFace = Math.abs(crossLoEdge(s.rect) - cCrossHi) < eps;
+      const touchesLoFace = Math.abs(crossHiEdge(s.rect) - cCrossLo) < eps;
+      if (!touchesHiFace && !touchesLoFace) continue;
+      contacts++;
+      needLo = Math.min(needLo, oLo);
+      needHi = Math.max(needHi, oHi);
+    }
+    if (contacts === 0) continue; // nothing is known to be served — leave as generated
+    if (pinLo) needLo = cLo;
+    if (pinHi) needHi = cHi;
+    const newLo = Math.max(needLo, cLo);
+    const newHi = Math.min(needHi, cHi);
+    const cutLo = newLo - cLo;
+    const cutHi = cHi - newHi;
+    if (cutLo <= eps && cutHi <= eps) continue; // already tight — no tail
+    if (newHi - newLo < cross - 1e-6) continue; // never shorter than its own width
+
+    const before = spaces.filter(s => s !== c && rectsTouchOrAbut(c.rect, s.rect, eps)).map(s => s.id);
+    const trimmed: Rect = horizontal
+      ? { x: newLo, y: r.y, w: newHi - newLo, h: r.h }
+      : { x: r.x, y: newLo, w: r.w, h: newHi - newLo };
+    const after = spaces.filter(s => s !== c && rectsTouchOrAbut(trimmed, s.rect, eps)).map(s => s.id);
+    const lost = before.filter(id => !after.includes(id));
+    if (lost.length > 0) {
+      notes.push(`Corridor "${c.label}" trim SKIPPED — would drop contact with ${lost.join(', ')} (connectivity preserved as generated).`);
+      continue;
+    }
+    const prevArea = c.area;
+    c.rect = trimmed;
+    c.polygon = createRectangleRoomPolygon(trimmed);
+    c.area = polygonArea(c.polygon);
+    notes.push(`Corridor "${c.label}" extent trimmed to the served boundary: ${horizontal ? `${r.w.toFixed(2)}→${trimmed.w.toFixed(2)} m long` : `${r.h.toFixed(2)}→${trimmed.h.toFixed(2)} m long`} (removed ${cutLo.toFixed(2)} m + ${cutHi.toFixed(2)} m of unserved tail, ${(prevArea - c.area).toFixed(2)} m²) — P46.`);
+  }
+  return notes;
 }
 
 function snapCorridorsToRoomsSiteAware(
