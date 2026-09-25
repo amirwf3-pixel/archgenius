@@ -16,7 +16,7 @@ function hasStair(floor: Floor): boolean {
   return floor.stairs.length > 0 && floor.stairs.some(s => (s as any).valid !== false);
 }
 
-function stairFootprintOverlap(a: Floor, b: Floor): number {
+export function stairFootprintOverlap(a: Floor, b: Floor): number {
   // Compute overlap area of stair footprints between floors
   if (a.stairs.length === 0 || b.stairs.length === 0) return 0;
   let maxOverlap = 0;
