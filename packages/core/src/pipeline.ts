@@ -62,6 +62,16 @@ export interface GenerateOptions {
    * access / daylight finding. Omitted or false = legacy output.
    */
   galleryDaylightAware?: boolean;
+  /**
+   * Phase 5.4B (opt-in, default OFF): an upper-floor stair hall with no corridor
+   * contact is joined to the nearest corridor by a connector filling the smallest
+   * clean empty gap (≥ 1.1 m wide, inside the buildable area, overlapping nothing);
+   * adopted only when the validator confirms strictly fewer
+   * CONSTRAINT_MUST_ADJACENT and CIRC_INACCESSIBLE_SPACE findings with no lost
+   * validity and no added HARD / circulation / access / daylight finding.
+   * Omitted or false = legacy output.
+   */
+  connectStairCore?: boolean;
 }
 
 /**
@@ -184,6 +194,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.preferDiningKitchenAdjacency === true ? { preferDiningKitchenAdjacency: true } : {}),
     ...(opts.preferLShapeProgrammeAdjacency === true ? { preferLShapeProgrammeAdjacency: true } : {}),
     ...(opts.galleryDaylightAware === true ? { galleryDaylightAware: true } : {}),
+    ...(opts.connectStairCore === true ? { connectStairCore: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

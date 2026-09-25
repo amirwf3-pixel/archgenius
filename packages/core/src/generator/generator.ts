@@ -92,6 +92,14 @@ export interface GenerateLayoutsOptions {
    * only through the validator-guarded comparison (adoptGalleryDaylightVariant).
    */
   galleryDaylightAware?: boolean;
+  /**
+   * Phase 5.4B opt-in (default OFF): on upper floors, a stair hall with no corridor
+   * contact is joined to the nearest corridor by a corridor connector filling the
+   * smallest clean empty gap between them (see connectStairCoreToCorridor). Adopted
+   * per candidate only through the validator-guarded comparison
+   * (adoptStairCoreConnectorVariant).
+   */
+  connectStairCore?: boolean;
 }
 
 export function generateLayouts(
@@ -103,6 +111,7 @@ export function generateLayouts(
   const preferDiningKitchenAdjacency = options.preferDiningKitchenAdjacency === true;
   const preferLShapeProgrammeAdjacency = options.preferLShapeProgrammeAdjacency === true;
   const galleryDaylightAware = options.galleryDaylightAware === true;
+  const connectStairCore = options.connectStairCore === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -147,7 +156,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -155,7 +164,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -206,9 +215,16 @@ export function generateLayouts(
       : legacy;
     // Phase 5.4A (opt-in): the daylight-aware gallery variant is adopted ONLY when the
     // full validator confirms strictly fewer MBH4-DYL-001 failures at no other cost.
-    candidates.push(galleryDaylightAware
-      ? adoptGalleryDaylightVariant(base, buildCandidate(strategy, base !== legacy, true))
-      : base);
+    const lAdjUsed = base !== legacy;
+    const withGallery = galleryDaylightAware
+      ? adoptGalleryDaylightVariant(base, buildCandidate(strategy, lAdjUsed, true))
+      : base;
+    // Phase 5.4B (opt-in): the stair-core connector variant (built on the same adopted
+    // options) is adopted ONLY when the validator confirms strictly fewer
+    // corridor↔stair-hall and inaccessible-space findings at no other cost.
+    candidates.push(connectStairCore
+      ? adoptStairCoreConnectorVariant(withGallery, buildCandidate(strategy, lAdjUsed, withGallery !== base, true))
+      : withGallery);
   }
 
   sortCandidates(candidates);
@@ -286,6 +302,103 @@ export function adoptGalleryDaylightVariant(base: LayoutCandidate, variant: Layo
   return variant;
 }
 
+/**
+ * Phase 5.4B validated adoption. The stair-core connector variant replaces the base
+ * candidate only when, under the full validator, it:
+ *   - keeps validity (never valid → invalid),
+ *   - adds no HARD finding (per-code HARD counts never increase),
+ *   - adds no circulation / access / daylight finding of any severity (per code),
+ *   - has strictly fewer CONSTRAINT_MUST_ADJACENT AND strictly fewer
+ *     CIRC_INACCESSIBLE_SPACE findings.
+ * Otherwise the base candidate is returned untouched. Deterministic.
+ */
+export function adoptStairCoreConnectorVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (JSON.stringify(variant.floors) === JSON.stringify(base.floors)) return base;
+  if (base.valid && !variant.valid) return base;
+  const counts = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const guarded = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const bc = counts(base, guarded), vc = counts(variant, guarded);
+  for (const [k, n] of vc) if (n > (bc.get(k) ?? 0)) return base;
+  const n = (c: LayoutCandidate, code: string) => c.findings.filter(f => f.code === code).length;
+  const adjB = n(base, 'CONSTRAINT_MUST_ADJACENT'), adjV = n(variant, 'CONSTRAINT_MUST_ADJACENT');
+  const inB = n(base, 'CIRC_INACCESSIBLE_SPACE'), inV = n(variant, 'CIRC_INACCESSIBLE_SPACE');
+  if (!(adjV < adjB) || !(inV < inB)) return base;
+  variant.explanations.push(`Phase 5.4B: stair-core connector variant adopted (CONSTRAINT_MUST_ADJACENT ${adjB}→${adjV}, CIRC_INACCESSIBLE_SPACE ${inB}→${inV}) — validator confirmed no lost validity, no added HARD / circulation / access / daylight finding.`);
+  return variant;
+}
+
+/** Minimum clear width of a stair-core connector (m) — the programme corridor minWidth used by the engine (1.1 m). */
+export const STAIR_CONNECTOR_MIN_W = 1.1;
+/** Preferred connector width: the placer's standard corridor width (CORRIDOR_W). */
+const STAIR_CONNECTOR_PREF_W = 1.5;
+
+type Side = 'north' | 'south' | 'east' | 'west';
+const SIDE_ORDER: Side[] = ['north', 'east', 'south', 'west'];
+
+/** Length of the shared boundary between two axis-aligned rects (0 when not edge-adjacent). */
+function sharedEdge(a: Rect, b: Rect, tol = 1e-3): number {
+  const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if ((Math.abs(a.x + a.w - b.x) < tol || Math.abs(b.x + b.w - a.x) < tol) && oy > tol) return oy;
+  if ((Math.abs(a.y + a.h - b.y) < tol || Math.abs(b.y + b.h - a.y) < tol) && ox > tol) return ox;
+  return 0;
+}
+const rectsOverlap = (a: Rect, b: Rect, tol = 1e-3) =>
+  Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > tol &&
+  Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > tol;
+
+/**
+ * Phase 5.4B — pure geometric search for a stair-core connector.
+ *
+ * Returns null when the hall already shares ≥ STAIR_CONNECTOR_MIN_W of wall with a
+ * corridor. Otherwise, for every corridor lying wholly beyond one side of the hall
+ * with a cross overlap ≥ STAIR_CONNECTOR_MIN_W, the gap between them is a candidate
+ * connector (cross width = min(overlap, 1.5 m), aligned to either end of the overlap,
+ * or the full overlap). A candidate must have BOTH sides ≥ STAIR_CONNECTOR_MIN_W (a
+ * corridor's clear width is its short side — thinner gaps are rejected, never filled
+ * with a sliver), lie inside the buildable geometry and overlap no other space. Ordering is deterministic: the stair entry
+ * side first, then smallest area, then side order N/E/S/W, then x, then y.
+ */
+export function findStairCoreConnector(
+  hall: Rect,
+  spaces: readonly { type: string; rect: Rect }[],
+  inside: (r: Rect) => boolean,
+  entrySide: Side | null,
+): { rect: Rect; side: Side } | null {
+  const corridors = spaces.filter(s => s.type === 'corridor');
+  if (corridors.some(k => sharedEdge(hall, k.rect) >= STAIR_CONNECTOR_MIN_W - 1e-6)) return null;
+  const E = 1e-6;
+  const r2 = (v: number) => Math.round(v * 1000) / 1000;
+  const cands: { rect: Rect; side: Side }[] = [];
+  for (const k of corridors) {
+    const K = k.rect;
+    const oy0 = Math.max(hall.y, K.y), oy1 = Math.min(hall.y + hall.h, K.y + K.h);
+    const ox0 = Math.max(hall.x, K.x), ox1 = Math.min(hall.x + hall.w, K.x + K.w);
+    const push = (side: Side, lo: number, hi: number, mk: (a: number, b: number) => Rect) => {
+      if (hi - lo < STAIR_CONNECTOR_MIN_W - E) return;
+      const w = Math.min(hi - lo, STAIR_CONNECTOR_PREF_W);
+      for (const [a, b] of [[lo, lo + w], [hi - w, hi], [lo, hi]]) cands.push({ side, rect: mk(a, b) });
+    };
+    if (K.x + K.w <= hall.x + E) push('west', oy0, oy1, (a, b) => ({ x: K.x + K.w, y: a, w: hall.x - (K.x + K.w), h: b - a }));
+    if (hall.x + hall.w <= K.x + E) push('east', oy0, oy1, (a, b) => ({ x: hall.x + hall.w, y: a, w: K.x - (hall.x + hall.w), h: b - a }));
+    if (K.y + K.h <= hall.y + E) push('south', ox0, ox1, (a, b) => ({ x: a, y: K.y + K.h, w: b - a, h: hall.y - (K.y + K.h) }));
+    if (hall.y + hall.h <= K.y + E) push('north', ox0, ox1, (a, b) => ({ x: a, y: hall.y + hall.h, w: b - a, h: K.y - (hall.y + hall.h) }));
+  }
+  const ok = cands
+    .map(c => ({ side: c.side, rect: { x: r2(c.rect.x), y: r2(c.rect.y), w: r2(c.rect.w), h: r2(c.rect.h) } }))
+    .filter(c => Math.min(c.rect.w, c.rect.h) >= STAIR_CONNECTOR_MIN_W - 1e-6 && inside(c.rect) && !spaces.some(s => rectsOverlap(s.rect, c.rect)));
+  ok.sort((a, b) =>
+    ((a.side === entrySide ? 0 : 1) - (b.side === entrySide ? 0 : 1)) ||
+    (a.rect.w * a.rect.h - b.rect.w * b.rect.h) ||
+    (SIDE_ORDER.indexOf(a.side) - SIDE_ORDER.indexOf(b.side)) ||
+    (a.rect.x - b.rect.x) || (a.rect.y - b.rect.y));
+  return ok[0] ?? null;
+}
+
 function buildFloorSiteAware(
   input: ProjectInput,
   buildableGeom: ReturnType<typeof computeBuildableGeometry>,
@@ -300,6 +413,7 @@ function buildFloorSiteAware(
   preferDiningKitchenAdjacency = false,
   preferLShapeProgrammeAdjacency = false,
   galleryDaylightAware = false,
+  connectStairCore = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -725,6 +839,18 @@ function buildFloorSiteAware(
       explanations.push(`Vertical-core: elevator shaft cell ${elevatorHall.rect.w.toFixed(2)}×${elevatorHall.rect.h.toFixed(2)} m anchored at (${elevatorHall.rect.x.toFixed(2)},${elevatorHall.rect.y.toFixed(2)}), landing on its ${landing.side} side — reused on every upper floor (DESIGN-ASSUMPTION dimensions, no compliance claimed).`);
     } else {
       explanations.push(`Level 0: elevator shaft ${elevatorHall ? 'cell has no usable landing edge or leaves the buildable area' : 'cell could not be reserved by placement'} — no shaft anchor; ELEV_SHAFT_MISSING will flag this candidate.`);
+    }
+  }
+
+  // Phase 5.4B (opt-in): join an isolated upper-floor stair hall to the corridor
+  // network through the smallest clean empty gap. Never moves the anchor or any
+  // existing space; no clean gap → geometry unchanged.
+  if (connectStairCore && level > 0 && stairSpace) {
+    const entrySide = coreAnchors.get('stair-hall')?.corridorSide ?? null;
+    const conn = findStairCoreConnector(stairSpace.rect, finalSpaces, (r) => rectInsidePolygon(r, buildableBoundary, 1e-3), entrySide);
+    if (conn) {
+      finalSpaces.push(mkSpace('corridor', conn.rect, 'Stair connector', nextId('corridor'), 'circulation'));
+      explanations.push(`Level ${level}: Phase 5.4B stair-core connector ${conn.rect.w.toFixed(2)}×${conn.rect.h.toFixed(2)} m on the hall's ${conn.side} side joins the stair hall to the corridor network.`);
     }
   }
 
