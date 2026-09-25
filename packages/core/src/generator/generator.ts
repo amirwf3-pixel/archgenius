@@ -41,7 +41,7 @@ import { placeFurniture } from './furniture.js';
 import type { Rect } from '../geometry/rect.js';
 import { rArea, rCorners, rIntersects } from '../geometry/rect.js';
 import { polygonArea } from '../geometry/polygon.js';
-import { EPS, CORRIDOR_MIN_WIDTH } from '../units.js';
+import { EPS, CORRIDOR_MIN_WIDTH, DOOR_INT_WIDTH, DOOR_BATH_WIDTH } from '../units.js';
 import { computeBuildableGeometry } from '../site/buildable.js';
 import type { Polygon } from '../geometry/polygon-ops.js';
 import type { AccessSide } from '../model/site.js';
@@ -117,6 +117,14 @@ export interface GenerateLayoutsOptions {
    * comparison (adoptThinStairGapBridgeVariant).
    */
   bridgeThinStairGap?: boolean;
+  /**
+   * Phase 5.4E opt-in (default OFF): on upper floors, a room with no wall contact to
+   * a corridor / foyer / entrance / stair hall long enough for its door is joined to
+   * the circulation by a corridor connector filling a clean empty gap, found with the
+   * unchanged 5.4B search (see findRoomAccessConnectors). Adopted per candidate only
+   * through the validator-guarded comparison (adoptRoomAccessConnectorVariant).
+   */
+  connectIsolatedRooms?: boolean;
 }
 
 export function generateLayouts(
@@ -131,6 +139,7 @@ export function generateLayouts(
   const connectStairCore = options.connectStairCore === true;
   const stackPublicForDaylight = options.stackPublicForDaylight === true;
   const bridgeThinStairGap = options.bridgeThinStairGap === true;
+  const connectIsolatedRooms = options.connectIsolatedRooms === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -175,7 +184,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -183,7 +192,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -254,10 +263,17 @@ export function generateLayouts(
     // Phase 5.4D (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C → 5.4D. The
     // thin-gap stair bridge is a post-placement repair built on the options already
     // adopted; it never fires where a 5.4B connector already joined the hall.
-    candidates.push(bridgeThinStairGap
+    const withBridge = bridgeThinStairGap
       ? adoptThinStairGapBridgeVariant(withStack,
         buildCandidate(strategy, lAdjUsed, withGallery !== base, withConnector !== withGallery, withStack !== withConnector, true))
-      : withStack);
+      : withStack;
+    // Phase 5.4E (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C → 5.4D → 5.4E.
+    // Isolated-room access connectors are a post-placement repair built on the options
+    // already adopted.
+    candidates.push(connectIsolatedRooms
+      ? adoptRoomAccessConnectorVariant(withBridge,
+        buildCandidate(strategy, lAdjUsed, withGallery !== base, withConnector !== withGallery, withStack !== withConnector, withBridge !== withStack, true))
+      : withBridge);
   }
 
   sortCandidates(candidates);
@@ -567,6 +583,112 @@ export function findThinStairGapBridge(
   return out[0] ?? null;
 }
 
+/** Circulation a room's primary door may open onto (openings.ts circTypes minus the elevator hall, which its LIFT_LANDING rule bars to rooms). */
+const ROOM_ACCESS_CIRC = new Set(['corridor', 'foyer', 'entrance', 'stair-hall']);
+/** Spaces that never need an access connector: circulation itself and exterior spaces (openings.ts needsDoor). */
+const ROOM_ACCESS_EXEMPT = new Set(['corridor', 'foyer', 'entrance', 'stair-hall', 'elevator-hall', 'parking', 'yard', 'balcony']);
+/** openings.ts WET set — these rooms take DOOR_BATH_WIDTH doors. */
+const ROOM_ACCESS_WET = new Set(['bathroom', 'master-bathroom', 'guest-wc']);
+/** openings.ts bestFreeWall minimum jamb margin (each side) on a short shared wall. */
+const DOOR_MIN_JAMB = 0.02;
+
+/**
+ * Phase 5.4E — pure search for isolated-room access connectors.
+ *
+ * A room (any space except circulation / parking / yard / balcony) is isolated when
+ * no corridor / foyer / entrance / stair-hall shares a wall with it at least as long
+ * as its door needs (openings.ts: DOOR_BATH_WIDTH for wet rooms, else DOOR_INT_WIDTH,
+ * plus the placer's minimum jamb margins). Exempt: a master-bathroom served by an
+ * adjoining master-bedroom (en-suite), and storage / utility served by an adjoining
+ * kitchen — the door placer's own non-circulation primary-access cases.
+ *
+ * Rooms are processed in id order. For each isolated room the unchanged 5.4B search
+ * (findStairCoreConnector, room as source, every access-circulation space and every
+ * connector already accepted as target) returns the smallest clean empty gap; the
+ * result is kept only when its short side ≥ CORRIDOR_MIN_WIDTH, it lies on the 1 cm
+ * grid and overlaps nothing. Accepted connectors become obstacles AND targets for the
+ * rooms that follow. Pure and deterministic; spaces never move.
+ */
+export function findRoomAccessConnectors(
+  spaces: readonly { id: string; type: string; rect: Rect }[],
+  inside: (r: Rect) => boolean,
+): { roomId: string; side: Side; rect: Rect }[] {
+  const fits = (a: Rect, b: Rect, width: number) => sharedEdge(a, b) >= width + 2 * DOOR_MIN_JAMB - 1e-6;
+  const onGrid = (v: number) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6;
+  const work: { type: string; rect: Rect }[] = spaces.map(s => ({ type: s.type, rect: s.rect }));
+  const out: { roomId: string; side: Side; rect: Rect }[] = [];
+  const rooms = spaces.filter(s => !ROOM_ACCESS_EXEMPT.has(s.type))
+    .slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const room of rooms) {
+    const width = ROOM_ACCESS_WET.has(room.type) ? DOOR_BATH_WIDTH : DOOR_INT_WIDTH;
+    if (work.some(s => ROOM_ACCESS_CIRC.has(s.type) && fits(room.rect, s.rect, width))) continue;
+    if (room.type === 'master-bathroom' && work.some(s => s.type === 'master-bedroom' && fits(room.rect, s.rect, width))) continue;
+    if ((room.type === 'storage' || room.type === 'utility') && work.some(s => s.type === 'kitchen' && fits(room.rect, s.rect, width))) continue;
+    const view = work.filter(s => s.rect !== room.rect)
+      .map(s => ({ type: ROOM_ACCESS_CIRC.has(s.type) ? 'corridor' : s.type, rect: s.rect }));
+    const conn = findStairCoreConnector(room.rect, view, inside, null);
+    if (!conn) continue;
+    const r = conn.rect;
+    if (Math.min(r.w, r.h) < CORRIDOR_MIN_WIDTH - 1e-6) continue;
+    if (![r.x, r.y, r.w, r.h].every(onGrid)) continue;
+    if (work.some(s => rectsOverlap(s.rect, r))) continue;
+    out.push({ roomId: room.id, side: conn.side, rect: r });
+    work.push({ type: 'corridor', rect: r });
+  }
+  return out;
+}
+
+/**
+ * Phase 5.4E validated adoption. The isolated-room connector variant replaces the
+ * base candidate only when, under the full validator, it:
+ *   - keeps validity (never valid → invalid),
+ *   - introduces no HARD finding code absent from the base,
+ *   - has strictly fewer circulation HARD findings (^CIRC codes + CONSTRAINT_DIRECT_ACCESS),
+ *   - does not increase the total HARD count,
+ *   - keeps every base space unchanged (same type, rect and area — rooms, halls,
+ *     stair and corridors never move) and adds only corridor connectors whose short
+ *     side is ≥ CORRIDOR_MIN_WIDTH and which overlap no other space.
+ * Otherwise the base candidate is returned untouched. Deterministic.
+ */
+export function adoptRoomAccessConnectorVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (JSON.stringify(variant.floors) === JSON.stringify(base.floors)) return base;
+  if (base.valid && !variant.valid) return base;
+  const hard = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard');
+  const hb = hard(base), hv = hard(variant);
+  const baseCodes = new Set(hb.map(f => f.code));
+  if (hv.some(f => !baseCodes.has(f.code))) return base;
+  const circ = (fs: Finding[]) => fs.filter(f => /^CIRC/.test(f.code) || f.code === 'CONSTRAINT_DIRECT_ACCESS').length;
+  const cb = circ(hb), cv = circ(hv);
+  if (!(cv < cb)) return base;
+  if (hv.length > hb.length) return base;
+  if (variant.floors.length !== base.floors.length) return base;
+  let added = 0;
+  for (let i = 0; i < base.floors.length; i++) {
+    const key = (s: Space) => `${s.type}|${s.rect.x}|${s.rect.y}|${s.rect.w}|${s.rect.h}|${s.area}`;
+    const pool = new Map<string, number>();
+    for (const s of variant.floors[i].spaces) pool.set(key(s), (pool.get(key(s)) ?? 0) + 1);
+    for (const s of base.floors[i].spaces) {
+      const k = key(s), m = pool.get(k) ?? 0;
+      if (m <= 0) return base;
+      pool.set(k, m - 1);
+    }
+    const baseKeys = new Map<string, number>();
+    for (const s of base.floors[i].spaces) baseKeys.set(key(s), (baseKeys.get(key(s)) ?? 0) + 1);
+    const seen = new Map<string, number>();
+    for (const s of variant.floors[i].spaces) {
+      const k = key(s), c = (seen.get(k) ?? 0) + 1;
+      seen.set(k, c);
+      if (c <= (baseKeys.get(k) ?? 0)) continue;
+      if (s.type !== 'corridor' || Math.min(s.rect.w, s.rect.h) < CORRIDOR_MIN_WIDTH - 1e-6) return base;
+      if (variant.floors[i].spaces.some(o => o !== s && rectsOverlap(o.rect, s.rect))) return base;
+      added++;
+    }
+  }
+  if (added === 0) return base;
+  variant.explanations.push(`Phase 5.4E: isolated-room connector variant adopted (${added} connector(s); circulation HARD ${cb}→${cv}, HARD ${hb.length}→${hv.length}) — validator confirmed no lost validity, no new HARD code, no moved space, no overlap.`);
+  return variant;
+}
+
 function buildFloorSiteAware(
   input: ProjectInput,
   buildableGeom: ReturnType<typeof computeBuildableGeometry>,
@@ -584,6 +706,7 @@ function buildFloorSiteAware(
   connectStairCore = false,
   stackPublicForDaylight = false,
   bridgeThinStairGap = false,
+  connectIsolatedRooms = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -1040,6 +1163,18 @@ function buildFloorSiteAware(
       };
       finalSpaces.splice(br.corridorIndex, 1, piece(br.bridge, K.id), ...br.remainders.map(r => piece(r, nextId('corridor'))));
       explanations.push(`Level ${level}: Phase 5.4D thin-gap stair bridge ${br.bridge.w.toFixed(2)}×${br.bridge.h.toFixed(2)} m on the hall's ${br.side} side closes a ${br.gap.toFixed(2)} m gap to the corridor (${br.remainders.length} remainder piece(s) kept).`);
+    }
+  }
+
+  // Phase 5.4E (opt-in): join upper-floor rooms with no door-capable circulation wall
+  // to the circulation through clean empty gaps (unchanged 5.4B search). Rooms, halls,
+  // stair, anchor and corridors never move; no clean gap → geometry unchanged.
+  if (connectIsolatedRooms && level > 0) {
+    const conns = findRoomAccessConnectors(finalSpaces, (r) => rectInsidePolygon(r, buildableBoundary, 1e-3));
+    for (const c of conns) {
+      finalSpaces.push(mkSpace('corridor', c.rect, 'Room access connector', nextId('corridor'), 'circulation'));
+      const room = finalSpaces.find(s => s.id === c.roomId);
+      explanations.push(`Level ${level}: Phase 5.4E room-access connector ${c.rect.w.toFixed(2)}×${c.rect.h.toFixed(2)} m on the ${c.side} side of ${room?.label ?? c.roomId} joins it to the circulation.`);
     }
   }
 

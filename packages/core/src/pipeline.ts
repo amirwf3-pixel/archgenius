@@ -91,6 +91,15 @@ export interface GenerateOptions {
    * legacy output.
    */
   bridgeThinStairGap?: boolean;
+  /**
+   * Phase 5.4E (opt-in, default OFF): on upper floors, a room with no door-capable wall
+   * to a corridor / foyer / entrance / stair hall is joined to the circulation by a
+   * corridor connector filling a clean empty gap (≥ CORRIDOR_MIN_WIDTH); adopted only
+   * when the validator confirms strictly fewer circulation HARD findings, no new HARD
+   * code, no HARD increase, no lost validity and no moved or overlapping space.
+   * Omitted or false = legacy output.
+   */
+  connectIsolatedRooms?: boolean;
 }
 
 /**
@@ -216,6 +225,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.connectStairCore === true ? { connectStairCore: true } : {}),
     ...(opts.stackPublicForDaylight === true ? { stackPublicForDaylight: true } : {}),
     ...(opts.bridgeThinStairGap === true ? { bridgeThinStairGap: true } : {}),
+    ...(opts.connectIsolatedRooms === true ? { connectIsolatedRooms: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)
