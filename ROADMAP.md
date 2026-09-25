@@ -43,7 +43,7 @@
 
 ## Phase 4 — Regulation packs (partially complete)
 - [x] National pack: Iran MBR (Mabhas-e 4 / Mabhas 15) — sourced from Tier-1 PDFs, 9 rules VERIFIED with SHA-256/page/clause evidence
-- [ ] Jurisdiction packs: Tehran, Karaj, Mashhad, Isfahan, Shiraz — **not built** (jurisdiction/city input exists; municipal rules remain REQUIRES_SOURCE_VERIFICATION)
+- [x] Jurisdiction packs: Tehran, Karaj, Mashhad, Isfahan, Shiraz — **infrastructure complete** (deterministic municipality resolver over jurisdiction/city input with English/Persian variants; per-city placeholder packs `ir-tehran-stub`, `ir-karaj-stub`, `ir-mashhad-stub`, `ir-isfahan-stub`, `ir-shiraz-stub`, each a single advisory NOT_IMPLEMENTED notice; municipal sources NOT OBTAINED — no municipal rules or thresholds are shipped, and actual municipal rules remain REQUIRES_SOURCE_VERIFICATION)
 - [x] Setbacks with explicit source/status tracking (user design input vs default assumption vs verified) — legal FAR/coverage/density enforcement intentionally out of scope
 - [x] Regulation explorer UI with source references — **complete** (read-only pack/rule browser: status badges, reference/edition, source tier, clause/page)
 - [x] Rule traceability via the source registry (digests, pages, snippets); multi-version pack loading **built**
