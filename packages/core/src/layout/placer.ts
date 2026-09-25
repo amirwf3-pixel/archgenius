@@ -114,6 +114,8 @@ interface ZoneLayout {
    *  the shrunken private band can still host its cells. Never a generic/row cell.
    *  Kept OUT of zones.service so no kitchen/stair heuristic can pick it. */
   elevatorPocket?: Rect;
+  /** Phase 5.5B: set only when the horizontal / L-spur stair pocket was rotated. */
+  stairPocketRotated?: Rect;
 }
 
 function carveZones(
@@ -123,6 +125,7 @@ function carveZones(
   hasKitchen: boolean,
   hasStorage: boolean = false,
   specs: PlacedSpec[] = [],
+  rotateShallowStairPocket = false,
 ): ZoneLayout {
   // Phase 15 M4: demand-aware band partitioning. The two resident bands (public+semi
   // vs private) must be able to HOST their assigned program at real minimums and sane
@@ -290,9 +293,14 @@ function carveZones(
   // minimum usable core for two-storey buildings.
   let privateMain = privateBand;
   let elevatorPocket: Rect | undefined;
+  let stairPocketRotated: Rect | undefined;
   if (needStair && privateBand.w > 5.5) {
-    const pocketW = Math.min(2.9, Math.max(2.6, privateBand.w * 0.20));
-    const pocketH = Math.min(4.6, Math.max(4.2, privateBand.h * 0.55));
+    // Phase 5.5B (opt-in): a band too shallow for the 4.2 m pocket depth would clip the
+    // pocket to a hall no U-stair fits; rotate it along the corridor instead.
+    const rotate = rotateShallowStairPocket && stairPocketRotationApplies(privateBand.w, privateBand.h);
+    const pocketW = rotate ? STAIR_POCKET_ROTATED_LENGTH : Math.min(2.9, Math.max(2.6, privateBand.w * 0.20));
+    const pocketH = rotate ? privateBand.h : Math.min(4.6, Math.max(4.2, privateBand.h * 0.55));
+    if (rotate) stairPocketRotated = { x: privateBand.x, y: privateBand.y, w: pocketW, h: pocketH };
     zones.service.push({ x: privateBand.x, y: privateBand.y, w: pocketW, h: pocketH });
     privateMain = { x: privateBand.x + pocketW, y: privateBand.y, w: privateBand.w - pocketW, h: privateBand.h };
     // Elevator shaft cell: immediately beside the stair pocket (compact vertical
@@ -306,7 +314,9 @@ function carveZones(
   }
   zones.private.push(privateMain);
   void BATH_STRIP_H;
-  return { zones, corridors, entrancePatch, elevatorPocket };
+  return stairPocketRotated
+    ? { zones, corridors, entrancePatch, elevatorPocket, stairPocketRotated }
+    : { zones, corridors, entrancePatch, elevatorPocket };
 }
 
 /**
@@ -429,6 +439,32 @@ export interface PlacerOptions {
    * 5.4A geometry is used unchanged (see diningFacadeRowLayout).
    */
   diningFacadeRow?: boolean;
+  /**
+   * Phase 5.5B: in the horizontal / L-spur zoning, when the private band is too shallow
+   * for the stair pocket's 4.2 m depth (the pocket would be clipped to a hall no U-stair
+   * fits) but at least the pocket's 2.6 m minimum, carve the pocket as
+   * STAIR_POCKET_ROTATED_LENGTH along the corridor × the full band depth instead (see
+   * stairPocketRotationApplies). Stair solver and validation are unchanged.
+   */
+  rotateShallowStairPocket?: boolean;
+}
+
+/**
+ * Phase 5.5B: rotated stair-pocket length along the corridor — the "2.6 × 4.4 m minimum
+ * usable core" of the horizontal-spine stair pocket (carveZones), inside its 4.2–4.6 m
+ * depth range.
+ */
+export const STAIR_POCKET_ROTATED_LENGTH = 4.4;
+
+/**
+ * Phase 5.5B — pure predicate: rotate the horizontal / L-spur stair pocket when the
+ * private band depth is at least the pocket's 2.6 m minimum but below its 4.2 m minimum
+ * depth, and the band keeps more than 1.2 m (the elevator-cell residual rule) beside the
+ * rotated pocket.
+ */
+export function stairPocketRotationApplies(bandW: number, bandH: number): boolean {
+  const E = 1e-9;
+  return bandH >= 2.6 - E && bandH < 4.2 - E && bandW - STAIR_POCKET_ROTATED_LENGTH > 1.2;
 }
 
 /**
@@ -627,13 +663,19 @@ function placeSpacesFacingSouth(
   };
   const mainPref = mainPrefH;
   const hasStorage = specs.some(s => s.type === 'storage');
-  const layout = carveZones(footprint, cfg, needStair, hasKitchen, hasStorage, specs);
+  const layout = opts.rotateShallowStairPocket === true
+    ? carveZones(footprint, cfg, needStair, hasKitchen, hasStorage, specs, true)
+    : carveZones(footprint, cfg, needStair, hasKitchen, hasStorage, specs);
   const explanation: string[] = [
     `Strategy ${strategy}: ${cfg.spine} spine, corridor @ ${Math.round(cfg.corridorOffsetFraction*100)}% depth.`,
     `Phase13 generic graph: ${graph.hardEdges.length} hard edges, ${graph.clusters.length} hard clusters, ${graph.nodes.size} types — canonical source DEFAULT_RESIDENTIAL_CONSTRAINTS`,
     `Phase13 clusters: ${graph.clusters.map(c=>`[${c.join(',')}]`).join(' | ')}`,
     `Phase13 placement order: ${placementOrderForTypes([...new Set(specs.map(s=>s.type))], graph).join(' > ')}`,
   ];
+  if (layout.stairPocketRotated) {
+    const r = layout.stairPocketRotated;
+    explanation.push(`Phase 5.5B stair pocket rotated: ${r.w.toFixed(2)} m along the corridor × ${r.h.toFixed(2)} m band depth (band too shallow for the 4.2 m pocket depth)`);
+  }
 
   const byType = new Map<SpaceType, PlacedSpec[]>();
   for (const s of specs) {

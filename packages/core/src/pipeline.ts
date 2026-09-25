@@ -107,6 +107,15 @@ export interface GenerateOptions {
    * unchanged 5.4A guard. Omitted or false = legacy output.
    */
   diningFacadeRow?: boolean;
+  /**
+   * Phase 5.5B (opt-in, default OFF): a horizontal / L-spur stair pocket that a shallow
+   * private band (2.6–4.2 m) would clip below any U-stair's footprint is carved 4.4 m
+   * along the corridor × the band depth instead (rectangular and L-shape wings); adopted
+   * only when STAIR_MISSING and total HARD strictly decrease with no other HARD /
+   * circulation / access / daylight finding added and no lost validity.
+   * Omitted or false = legacy output.
+   */
+  rotateShallowStairPocket?: boolean;
 }
 
 /**
@@ -234,6 +243,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.bridgeThinStairGap === true ? { bridgeThinStairGap: true } : {}),
     ...(opts.connectIsolatedRooms === true ? { connectIsolatedRooms: true } : {}),
     ...(opts.diningFacadeRow === true ? { diningFacadeRow: true } : {}),
+    ...(opts.rotateShallowStairPocket === true ? { rotateShallowStairPocket: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

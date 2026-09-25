@@ -407,6 +407,11 @@ export interface LShapePlacementOptions {
    * to the legacy imbalance / residual / suite order.
    */
   preferProgrammeAdjacency?: boolean;
+  /**
+   * Phase 5.5B: forwarded to every wing placeSpaces() call as
+   * PlacerOptions.rotateShallowStairPocket (default OFF — wings placed exactly as before).
+   */
+  rotateShallowStairPocket?: boolean;
 }
 
 /**
@@ -482,7 +487,9 @@ export function placeSpacesLShape(
   const place = (rect: Rect, list: PlacedSpec[]) =>
     list.length === 0
       ? { spaces: [] as Space[], corridors: [] as Space[], explanation: [] as string[] }
-      : placeSpaces(rect, list, strategy, access, mkSpace);
+      : (opts.rotateShallowStairPocket === true
+        ? placeSpaces(rect, list, strategy, access, mkSpace, { rotateShallowStairPocket: true })
+        : placeSpaces(rect, list, strategy, access, mkSpace));
   const covered = (list: PlacedSpec[], res: { spaces: Space[] }): boolean =>
     list.every(sp => res.spaces.some(s => s.id === sp.placedId));
 

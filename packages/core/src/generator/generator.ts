@@ -133,6 +133,13 @@ export interface GenerateLayoutsOptions {
    * candidate only through the unchanged 5.4A guard (adoptGalleryDaylightVariant).
    */
   diningFacadeRow?: boolean;
+  /**
+   * Phase 5.5B opt-in (default OFF): rectangular and L-shape-wing horizontal / L-spur
+   * zoning rotates a stair pocket that a shallow private band would clip below any
+   * U-stair's footprint (see PlacerOptions.rotateShallowStairPocket). Adopted per
+   * candidate only through the validator-guarded comparison (adoptStairPocketVariant).
+   */
+  rotateShallowStairPocket?: boolean;
 }
 
 export function generateLayouts(
@@ -149,6 +156,7 @@ export function generateLayouts(
   const bridgeThinStairGap = options.bridgeThinStairGap === true;
   const connectIsolatedRooms = options.connectIsolatedRooms === true;
   const diningFacadeRow = options.diningFacadeRow === true;
+  const rotateShallowStairPocket = options.rotateShallowStairPocket === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -193,7 +201,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -201,7 +209,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -295,10 +303,29 @@ export function generateLayouts(
     // Phase 5.4E (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C → 5.4D → 5.4E.
     // Isolated-room access connectors are a post-placement repair built on the options
     // already adopted.
-    candidates.push(connectIsolatedRooms
+    const withRooms = connectIsolatedRooms
       ? adoptRoomAccessConnectorVariant(withBridge,
         buildCandidate(strategy, lAdjUsed, galleryUsed, withConnector !== withFacade, withStack !== withConnector, withBridge !== withStack, true, facadeUsed))
-      : withBridge);
+      : withBridge;
+    // Phase 5.5B (opt-in): after the whole 5.3B–5.5A chain — the rotated stair-pocket
+    // variant (built on every option already adopted) is adopted ONLY through its own
+    // guard, and only when the placer actually rotated a pocket.
+    // A pocket rotation can create the stair the base never had; the base's adopted
+    // post-placement repairs (5.4B / 5.4D / 5.4E) were decided without it. If the first
+    // variant fails the guard, one fallback also runs every repair the caller enabled —
+    // still adopted only through the same 5.5B guard. Deterministic order.
+    let withPocket = withRooms;
+    if (rotateShallowStairPocket) {
+      const flags = [withConnector !== withFacade, withBridge !== withStack, withRooms !== withBridge] as const;
+      withPocket = adoptStairPocketVariant(withRooms,
+        buildCandidate(strategy, lAdjUsed, galleryUsed, flags[0], withStack !== withConnector, flags[1], flags[2], facadeUsed, true));
+      const repairs = [flags[0] || connectStairCore, flags[1] || bridgeThinStairGap, flags[2] || connectIsolatedRooms] as const;
+      if (withPocket === withRooms && repairs.some((r, i) => r !== flags[i])) {
+        withPocket = adoptStairPocketVariant(withRooms,
+          buildCandidate(strategy, lAdjUsed, galleryUsed, repairs[0], withStack !== withConnector, repairs[1], repairs[2], facadeUsed, true));
+      }
+    }
+    candidates.push(withPocket);
   }
 
   sortCandidates(candidates);
@@ -322,6 +349,34 @@ function programmeAdjacencyKeyOf(c: LayoutCandidate, input: ProjectInput): [numb
 const FACADE_ROW_PLACED = 'Phase 5.5A dining façade row';
 
 const WATCHED_FINDING = /^CIRC|DIRECT_ACCESS|INACCESSIBLE|DAYLIGHT|DYL/;
+
+/** Placer explanation prefix proving the Phase 5.5B stair pocket was actually rotated. */
+const STAIR_POCKET_ROTATED = 'Phase 5.5B stair pocket rotated';
+
+/**
+ * Phase 5.5B guard: adopt the rotated stair-pocket variant only when the placer really
+ * rotated a pocket, STAIR_MISSING strictly decreases, total HARD findings strictly
+ * decrease, no other HARD code increases, no circulation / access / daylight finding
+ * (WATCHED_FINDING, any severity) increases, and a valid candidate stays valid.
+ */
+export function adoptStairPocketVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (!variant.explanations.some(e => e.includes(STAIR_POCKET_ROTATED))) return base;
+  const missing = (c: LayoutCandidate) => c.findings.filter(f => f.code === 'STAIR_MISSING').length;
+  const hard = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard').length;
+  if (!(missing(variant) < missing(base))) return base;
+  if (!(hard(variant) < hard(base))) return base;
+  if (base.valid && !variant.valid) return base;
+  const count = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const pick = (f: Finding) => (f.severity === 'hard' && f.code !== 'STAIR_MISSING') || WATCHED_FINDING.test(f.code);
+  const b = count(base, pick);
+  for (const [k, n] of count(variant, pick)) if (n > (b.get(k) ?? 0)) return base;
+  variant.explanations.push('Phase 5.5B: rotated stair-pocket variant adopted (STAIR_MISSING and HARD strictly reduced, no other HARD / circulation / access / daylight finding added).');
+  return variant;
+}
 
 /**
  * Phase 5.3B validated adoption. The adjacency-preferring variant replaces the
@@ -736,6 +791,7 @@ function buildFloorSiteAware(
   bridgeThinStairGap = false,
   connectIsolatedRooms = false,
   diningFacadeRow = false,
+  rotateShallowStairPocket = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -877,6 +933,7 @@ function buildFloorSiteAware(
       ...(galleryDaylightAware ? { galleryDaylightAware: true } : {}),
       ...(stackPublicForDaylight ? { stackPublicForDaylight: true } : {}),
       ...(galleryDaylightAware && diningFacadeRow ? { diningFacadeRow: true } : {}),
+      ...(rotateShallowStairPocket ? { rotateShallowStairPocket: true } : {}),
     };
     const result = Object.keys(placerOpts).length > 0
       ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, placerOpts)
@@ -898,8 +955,11 @@ function buildFloorSiteAware(
       ? placedSpecs.filter(sp => sp.type !== 'elevator-hall')
       : placedSpecs;
     const lres = input.site.shape === 'l-shape' && buildableRects.length === 2
-      ? (preferLShapeProgrammeAdjacency
-        ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace, { preferProgrammeAdjacency: true })
+      ? (preferLShapeProgrammeAdjacency || rotateShallowStairPocket
+        ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace, {
+          ...(preferLShapeProgrammeAdjacency ? { preferProgrammeAdjacency: true } : {}),
+          ...(rotateShallowStairPocket ? { rotateShallowStairPocket: true } : {}),
+        })
         : placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace))
       : null;
     const result = lres ?? placeSpacesAcrossRects(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace);
