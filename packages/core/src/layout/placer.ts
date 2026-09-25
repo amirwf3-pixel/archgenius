@@ -387,15 +387,40 @@ function specAccounting(specs: PlacedSpec[], spaces: Space[]): { missing: number
   return { missing, deficit };
 }
 
+/**
+ * Opt-in placer preferences. Every field defaults to OFF; with no options (or all
+ * false) the placer is byte-for-byte the legacy behaviour.
+ */
+export interface PlacerOptions {
+  /**
+   * Phase 5.3A: when the programme requires a dining↔kitchen door adjacency
+   * (spec.adjacencies doorRequired) and the floor has a kitchen, host the guest WC
+   * in the entry column (entrance → foyer → guest WC, the existing M3 stack) by
+   * sizing the entrance down to its programme minimum — instead of letting the
+   * public band carve it between dining and the kitchen strip. Applied only when
+   * the column fits every room's programme minimum; otherwise legacy placement.
+   */
+  preferDiningKitchenAdjacency?: boolean;
+}
+
+/** True when the programme carries a dining↔kitchen doorRequired adjacency (either direction). */
+function programmeRequiresDiningKitchenDoor(specs: PlacedSpec[]): boolean {
+  if (!specs.some(s => s.type === 'dining') || !specs.some(s => s.type === 'kitchen')) return false;
+  return specs.some(s =>
+    (s.type === 'dining' && (s.adjacencies ?? []).some(a => a.spaceType === 'kitchen' && a.adjacent && a.doorRequired === true)) ||
+    (s.type === 'kitchen' && (s.adjacencies ?? []).some(a => a.spaceType === 'dining' && a.adjacent && a.doorRequired === true)));
+}
+
 export function placeSpaces(
   footprint: Rect,
   specs: PlacedSpec[],
   strategy: CandidateStrategy,
   accessSide: 'north'|'south'|'east'|'west',
   mkSpace: (type: SpaceType, r: Rect, label: string, id: string, zone: Zone) => Space,
+  opts: PlacerOptions = {},
 ): { spaces: Space[]; corridors: Space[]; explanation: string[] } {
   const frame = buildAccessFrame(footprint, accessSide);
-  if (!frame) return placeSpacesFacingSouth(footprint, specs, strategy, accessSide, mkSpace);
+  if (!frame) return placeSpacesFacingSouth(footprint, specs, strategy, accessSide, mkSpace, false, opts);
   const framed = frame.to(footprint);
   const back = (s: Space): Space => ({ ...s, rect: frame.from(s.rect) });
   const assemble = (out: { spaces: Space[]; corridors: Space[]; explanation: string[] }, note: string[]) => ({
@@ -403,7 +428,7 @@ export function placeSpaces(
     corridors: out.corridors.map(back),
     explanation: [`P16-B orientation frame: "${accessSide}" access normalized to frame-south; layout mapped back after placement.`, ...note, ...out.explanation],
   });
-  const standard = assemble(placeSpacesFacingSouth(framed, specs, strategy, 'south', mkSpace), []);
+  const standard = assemble(placeSpacesFacingSouth(framed, specs, strategy, 'south', mkSpace, false, opts), []);
 
   // P17-E — EAST/WEST depth-dominant sites: the rotated frame is wide-shallow
   // (street-perpendicular depth = the site's short side), the regime where the stacked
@@ -418,7 +443,7 @@ export function placeSpaces(
     const accSpecs = specs.some(sp => sp.type === 'elevator-hall') ? specs.filter(sp => sp.type !== 'elevator-hall') : specs;
     const stdAcc = specAccounting(accSpecs, [...standard.spaces, ...standard.corridors]);
     if (stdAcc.missing > 0) {
-      const rowOut = placeSpacesFacingSouth(framed, specs, strategy, 'south', mkSpace, true);
+      const rowOut = placeSpacesFacingSouth(framed, specs, strategy, 'south', mkSpace, true, opts);
       const row = assemble(rowOut, [`P17-E shallow-band row: street-perpendicular depth ${framed.h.toFixed(1)} m — public band tiled side-by-side along the street.`]);
       const rowAcc = specAccounting(accSpecs, [...row.spaces, ...row.corridors]);
       // Refuse an overlapping row assembly outright — a variant that trades missing
@@ -437,6 +462,7 @@ function placeSpacesFacingSouth(
   accessSide: 'north'|'south'|'east'|'west',
   mkSpace: (type: SpaceType, r: Rect, label: string, id: string, zone: Zone) => Space,
   shallowBand = false,
+  opts: PlacerOptions = {},
 ): { spaces: Space[]; corridors: Space[]; explanation: string[] } {
   void accessSide;
 
@@ -485,17 +511,55 @@ function placeSpacesFacingSouth(
   // --- Entrance spur — satisfies MUST_BE_ADJACENT entrance-foyer via graph cluster ---
   if (layout.entrancePatch) {
     const patch = layout.entrancePatch;
-    const entH = Math.min(1.8, patch.h * 0.4);
+    let entH = Math.min(1.8, patch.h * 0.4);
+    // Phase 5.3A (opt-in, preferDiningKitchenAdjacency): when the legacy column is too
+    // shallow for the M3 stack below, the guest WC returns to the pool and the public
+    // band may carve it between dining and the kitchen strip — breaking a programme
+    // dining↔kitchen doorRequired adjacency. Size the entrance down (never below its
+    // programme minimum, never above the legacy depth) so the existing M3 stack fits
+    // with every room at or above its programme minimum. Infeasible → legacy path.
+    let compactWcH: number | null = null;
+    {
+      const entPeek = byType.get('entrance')?.[0];
+      const foyPeek = byType.get('foyer')?.[0];
+      const wcPeek = byType.get('guest-wc')?.[0];
+      const legacyFoyerH = patch.h - entH;
+      const legacyStacks = legacyFoyerH >= 3.9 && legacyFoyerH - Math.min(2.1, Math.max(1.5, legacyFoyerH * 0.33)) >= 2.4;
+      if (opts.preferDiningKitchenAdjacency === true && entPeek && foyPeek && wcPeek && !legacyStacks
+        && programmeRequiresDiningKitchenDoor(specs)) {
+        const need = (sp: PlacedSpec, floor: number) =>
+          Math.max(floor, sp.minLength ?? sp.minWidth ?? 0, (sp.minArea ?? 0) / patch.w);
+        const wcNeed = need(wcPeek, 1.5);
+        const foyNeed = need(foyPeek, 2.4);
+        const entNeed = need(entPeek, 0);
+        const entFit = Math.min(entH, patch.h - foyNeed - wcNeed);
+        const widthOk = [entPeek, foyPeek, wcPeek].every(sp => patch.w + 1e-9 >= (sp.minWidth ?? 0));
+        if (widthOk && entFit + 1e-9 >= entNeed && entFit > 0) {
+          entH = entFit;
+          compactWcH = wcNeed;
+        }
+      }
+    }
     const ent = take('entrance'); if (ent)
       placed.push(mkSpace('entrance', { x: patch.x, y: patch.y, w: patch.w, h: entH }, ent.placedLabel, ent.placedId, 'public'));
     const foy = take('foyer');
     let foyerRect: Rect | null = foy ? { x: patch.x, y: patch.y + entH, w: patch.w, h: patch.h - entH } : null;
+    if (compactWcH !== null && foy && foyerRect) {
+      const wcSpec = take('guest-wc')!;
+      const foyerH = foyerRect.h - compactWcH;
+      placed.push(mkSpace('foyer', { ...foyerRect, h: foyerH }, foy.placedLabel, foy.placedId, 'public'));
+      placed.push(mkSpace('guest-wc', { x: foyerRect.x, y: foyerRect.y + foyerH, w: foyerRect.w, h: compactWcH }, wcSpec.placedLabel, wcSpec.placedId, 'public'));
+      explanation.push(`Phase5.3A entry column: entrance sized to ${entH.toFixed(2)} m (programme minimum respected) so guest-wc stacks below foyer — keeps it out of the programme dining↔kitchen door adjacency`);
+      foyerRect = null;
+    }
     // Phase 15 M3: guest-wc stacks under the foyer inside the front column when the column
     // is tall enough (classic entrance→foyer→WC sequence; satisfies the foyer-guest-wc
     // adjacency). Otherwise the public band's own conditions may place it — or the program
     // completeness check surfaces it honestly. Never a silent drop on this path.
-    const wcSpec = take('guest-wc');
-    if (wcSpec && foyerRect && foyerRect.h >= 3.9) {
+    const wcSpec = compactWcH !== null ? undefined : take('guest-wc');
+    if (compactWcH !== null) {
+      // entry column already stacked by Phase 5.3A above
+    } else if (wcSpec && foyerRect && foyerRect.h >= 3.9) {
       const wcH = Math.min(2.1, Math.max(1.5, foyerRect.h * 0.33));
       const foyerH = foyerRect.h - wcH;
       if (foyerH >= 2.4) {

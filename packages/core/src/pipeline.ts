@@ -40,6 +40,13 @@ export interface GenerateOptions {
    * Omitted or false = legacy output, byte-identical.
    */
   programmeDoorCompletion?: boolean;
+  /**
+   * Phase 5.3A (opt-in, default OFF): the rectangular placer hosts the guest WC in
+   * the entry column (entrance sized down to its programme minimum) instead of
+   * between dining and the kitchen strip, when the programme requires a
+   * dining↔kitchen door and the column fits. Omitted or false = legacy output.
+   */
+  preferDiningKitchenAdjacency?: boolean;
 }
 
 /**
@@ -157,8 +164,12 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     'daylight-orientation',
     'alternative-zoning',
   ];
-  const all = opts.programmeDoorCompletion === true
-    ? generateLayouts(project.input, strategies, { programmeDoorCompletion: true })
+  const genOpts = {
+    ...(opts.programmeDoorCompletion === true ? { programmeDoorCompletion: true } : {}),
+    ...(opts.preferDiningKitchenAdjacency === true ? { preferDiningKitchenAdjacency: true } : {}),
+  };
+  const all = Object.keys(genOpts).length > 0
+    ? generateLayouts(project.input, strategies, genOpts)
     : generateLayouts(project.input, strategies);
   // Phase 13.1: final feasibility gate — filter out geometrically invalid candidates (w<=0,h<=0,area<=0,below min)
   // Phase 13.2: when NO valid candidate exists, return an explicit INFEASIBLE result —

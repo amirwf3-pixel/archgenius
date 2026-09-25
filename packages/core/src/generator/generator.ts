@@ -72,6 +72,12 @@ export interface GenerateLayoutsOptions {
    * where a programme `doorRequired` pair already shares a wall but has no door.
    */
   programmeDoorCompletion?: boolean;
+  /**
+   * Phase 5.3A opt-in (default OFF): rectangular placer keeps the guest WC out of
+   * the dining↔kitchen gap when the programme requires a dining↔kitchen door and
+   * the entry column can host it at programme minimums (see PlacerOptions).
+   */
+  preferDiningKitchenAdjacency?: boolean;
 }
 
 export function generateLayouts(
@@ -80,6 +86,7 @@ export function generateLayouts(
   options: GenerateLayoutsOptions = {},
 ): LayoutCandidate[] {
   const programmeDoorCompletion = options.programmeDoorCompletion === true;
+  const preferDiningKitchenAdjacency = options.preferDiningKitchenAdjacency === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -132,7 +139,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -189,6 +196,7 @@ function buildFloorSiteAware(
   alloc: FloorProgramAllocation,
   coreAnchors: Map<'stair-hall' | 'elevator-hall', CoreAnchor>,
   programmeDoorCompletion = false,
+  preferDiningKitchenAdjacency = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -325,7 +333,9 @@ function buildFloorSiteAware(
     corridors = result.corridors;
     placeExpl = result.explanation.map(e => `[DECOMPOSITION-FAILURE-FALLBACK bounding] ${e}`);
   } else if (buildableRects.length === 1 || input.site.shape === 'rectangle') {
-    const result = placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace);
+    const result = preferDiningKitchenAdjacency
+      ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, { preferDiningKitchenAdjacency: true })
+      : placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation;
