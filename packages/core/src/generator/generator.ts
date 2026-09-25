@@ -15,6 +15,7 @@ import type { Wall } from '../model/wall.js';
 import type { Furniture } from '../model/furniture.js';
 import type { LayoutCandidate, CandidateStrategy, LayoutMetadata } from '../model/layout.js';
 import type { Finding } from '../validation/types.js';
+import { computeAdjacencyMetrics, programAdjacencyByType } from '../quality/metrics-v1.js';
 import { programForFloor, allocateBuildingProgram, labelFor } from '../programming/program.js';
 import type { FloorProgramAllocation } from '../programming/program.js';
 import { composePacks, computeBuildableArea, runPackRules, runPackRulesOnCandidate } from '../regulations/engine.js';
@@ -78,6 +79,12 @@ export interface GenerateLayoutsOptions {
    * the entry column can host it at programme minimums (see PlacerOptions).
    */
   preferDiningKitchenAdjacency?: boolean;
+  /**
+   * Phase 5.3B opt-in (default OFF): L-shape wing selection prefers the plan with
+   * more satisfied programme adjacency — only among plans that already pass every
+   * mandatory gate (see LShapePlacementOptions).
+   */
+  preferLShapeProgrammeAdjacency?: boolean;
 }
 
 export function generateLayouts(
@@ -87,6 +94,7 @@ export function generateLayouts(
 ): LayoutCandidate[] {
   const programmeDoorCompletion = options.programmeDoorCompletion === true;
   const preferDiningKitchenAdjacency = options.preferDiningKitchenAdjacency === true;
+  const preferLShapeProgrammeAdjacency = options.preferLShapeProgrammeAdjacency === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -131,7 +139,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  for (const strategy of strategies) {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -139,7 +147,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -178,11 +186,62 @@ export function generateLayouts(
     cand.findings = vr.findings;
     cand.valid = vr.ok;
     cand.metrics = computeMetrics(cand);
-    candidates.push(cand);
+    return cand;
+  };
+
+  for (const strategy of strategies) {
+    const legacy = buildCandidate(strategy, false);
+    // Phase 5.3B (opt-in): the L-wing adjacency preference is adopted ONLY when the
+    // full validator confirms it costs nothing — the placer's gates are proxies.
+    candidates.push(preferLShapeProgrammeAdjacency && input.site.shape === 'l-shape'
+      ? adoptLShapeAdjacencyVariant(legacy, buildCandidate(strategy, true), input)
+      : legacy);
   }
 
   sortCandidates(candidates);
   return candidates;
+}
+
+/** Programme adjacency key from the frozen quality metric (read-only): [doorRequired weight, total weight] satisfied. */
+function programmeAdjacencyKeyOf(c: LayoutCandidate, input: ProjectInput): [number, number] {
+  let door = 0, total = 0;
+  for (const fl of c.floors) {
+    for (const x of computeAdjacencyMetrics(fl, programAdjacencyByType(input, fl.level)).instances) {
+      if (x.adjacencySatisfied !== true) continue;
+      total += x.weight;
+      if (x.doorRequired) door += x.weight;
+    }
+  }
+  return [door, total];
+}
+
+const WATCHED_FINDING = /^CIRC|DIRECT_ACCESS|INACCESSIBLE|DAYLIGHT|DYL/;
+
+/**
+ * Phase 5.3B validated adoption. The adjacency-preferring variant replaces the
+ * legacy candidate only when, under the full validator, it:
+ *   - keeps validity (never valid → invalid),
+ *   - adds no HARD finding (per-code HARD counts never increase),
+ *   - adds no circulation / access / daylight finding of any severity (per code),
+ *   - strictly improves programme adjacency (doorRequired weight first, then total).
+ * Otherwise the legacy candidate is returned untouched.
+ */
+export function adoptLShapeAdjacencyVariant(legacy: LayoutCandidate, variant: LayoutCandidate, input: ProjectInput): LayoutCandidate {
+  if (JSON.stringify(variant.floors) === JSON.stringify(legacy.floors)) return legacy;
+  if (legacy.valid && !variant.valid) return legacy;
+  const counts = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const guarded = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const lc = counts(legacy, guarded), vc = counts(variant, guarded);
+  for (const [k, n] of vc) if (n > (lc.get(k) ?? 0)) return legacy;
+  const kl = programmeAdjacencyKeyOf(legacy, input), kv = programmeAdjacencyKeyOf(variant, input);
+  const better = kv[0] > kl[0] || (kv[0] === kl[0] && kv[1] > kl[1]);
+  if (!better) return legacy;
+  variant.explanations.push(`Phase 5.3B: L-wing programme-adjacency variant adopted (doorRequired weight ${kl[0]}→${kv[0]}, total ${kl[1]}→${kv[1]}) — validator confirmed no lost validity, no added HARD / circulation / access / daylight finding.`);
+  return variant;
 }
 
 function buildFloorSiteAware(
@@ -197,6 +256,7 @@ function buildFloorSiteAware(
   coreAnchors: Map<'stair-hall' | 'elevator-hall', CoreAnchor>,
   programmeDoorCompletion = false,
   preferDiningKitchenAdjacency = false,
+  preferLShapeProgrammeAdjacency = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -353,7 +413,9 @@ function buildFloorSiteAware(
       ? placedSpecs.filter(sp => sp.type !== 'elevator-hall')
       : placedSpecs;
     const lres = input.site.shape === 'l-shape' && buildableRects.length === 2
-      ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace)
+      ? (preferLShapeProgrammeAdjacency
+        ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace, { preferProgrammeAdjacency: true })
+        : placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace))
       : null;
     const result = lres ?? placeSpacesAcrossRects(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;

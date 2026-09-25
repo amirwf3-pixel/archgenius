@@ -47,6 +47,13 @@ export interface GenerateOptions {
    * dining↔kitchen door and the column fits. Omitted or false = legacy output.
    */
   preferDiningKitchenAdjacency?: boolean;
+  /**
+   * Phase 5.3B (opt-in, default OFF): L-shape wing selection prefers the plan with
+   * more satisfied programme adjacency, only among plans that already pass every
+   * mandatory dimension / circulation / daylight / direct-access gate.
+   * Omitted or false = legacy output.
+   */
+  preferLShapeProgrammeAdjacency?: boolean;
 }
 
 /**
@@ -167,6 +174,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
   const genOpts = {
     ...(opts.programmeDoorCompletion === true ? { programmeDoorCompletion: true } : {}),
     ...(opts.preferDiningKitchenAdjacency === true ? { preferDiningKitchenAdjacency: true } : {}),
+    ...(opts.preferLShapeProgrammeAdjacency === true ? { preferLShapeProgrammeAdjacency: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

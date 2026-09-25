@@ -397,6 +397,47 @@ export function lAwareParkingEnvelope(
   return env.w >= 6 ? env : fallback;
 }
 
+/** Opt-in L-wing selection preferences. Every field defaults to OFF (legacy selection). */
+export interface LShapePlacementOptions {
+  /**
+   * Phase 5.3B: among wing plans that ALL pass the existing dimension-contract,
+   * circulation and downstream daylight/direct-access gates, prefer the plan that
+   * satisfies more programme adjacency (spec.adjacencies): doorRequired weight
+   * first, then total weight. Never lets a gate-failing plan win; ties fall back
+   * to the legacy imbalance / residual / suite order.
+   */
+  preferProgrammeAdjacency?: boolean;
+}
+
+/**
+ * Programme adjacency key of a wing plan, from the programme's own spec.adjacencies
+ * (first spec per type, as in the quality metric's programAdjacencyByType). An
+ * instance is one placed room of a type carrying requirements; "adjacent" is any
+ * positive shared wall edge (the same relation the master-suite tie-break uses).
+ * Returns [Σ weight of satisfied doorRequired instances, Σ weight of all satisfied].
+ */
+function programmeAdjacencyKey(specs: ReadonlyArray<PlacedSpec>, p: { spaces: Space[]; corridors: Space[] }): [number, number] {
+  const reqByType = new Map<string, NonNullable<PlacedSpec['adjacencies']>>();
+  for (const sp of specs) if (sp.adjacencies?.length && !reqByType.has(sp.type)) reqByType.set(sp.type, sp.adjacencies);
+  const all = [...p.spaces, ...p.corridors];
+  let door = 0, total = 0;
+  for (const s of all) {
+    const reqs = reqByType.get(s.type);
+    if (!reqs) continue;
+    for (const r of reqs) {
+      const targets = all.filter(t => t.type === r.spaceType && t.id !== s.id);
+      if (targets.length === 0) continue; // not applicable on this plan
+      const touching = targets.some(t => sharedEdgeLen(s.rect, t.rect) > 1e-6);
+      if (r.adjacent ? touching : !touching) {
+        const w = r.weight ?? 1;
+        total += w;
+        if (r.doorRequired === true) door += w;
+      }
+    }
+  }
+  return [door, total];
+}
+
 export function placeSpacesLShape(
   buildableRects: Rect[],
   buildableBoundary: Polygon,
@@ -404,6 +445,7 @@ export function placeSpacesLShape(
   strategy: CandidateStrategy,
   access: AccessSide,
   mkSpace: (type: SpaceType, r: Rect, label: string, id: string, zone: Zone) => Space,
+  opts: LShapePlacementOptions = {},
 ): WingPlan | null {
   if (buildableRects.length !== 2) {  return null; }
   const [rawA, rawB] = buildableRects;
@@ -1008,6 +1050,13 @@ export function placeSpacesLShape(
       explanation.push('Phase 25 L-wings: no wing plan passed the downstream daylight / direct-access mirror — falling back to the generic region planner.');
       return null;
     }
+    const preferAdj = opts.preferProgrammeAdjacency === true;
+    const adjKeyCache = new Map<object, [number, number]>();
+    const adjKey = (p: { spaces: Space[]; corridors: Space[] }): [number, number] => {
+      let k = adjKeyCache.get(p);
+      if (!k) { k = programmeAdjacencyKey(specs, p); adjKeyCache.set(p, k); }
+      return k;
+    };
     let best = eligibleWingPlans[0];
     for (const c of eligibleWingPlans) {
       if (c.dimContractOk !== best.dimContractOk) {
@@ -1019,6 +1068,16 @@ export function placeSpacesLShape(
       if (c.circulationOk !== best.circulationOk) {
         if (c.circulationOk) best = c;
         continue;
+      }
+      // Phase 5.3B (opt-in): both plans already pass every mandatory gate
+      // (downstream mirror via eligibleWingPlans, dimension contract, circulation)
+      // — only then may programme adjacency decide, and only strictly.
+      if (preferAdj && c.dimContractOk && c.circulationOk && best.dimContractOk && best.circulationOk) {
+        const kc = adjKey(c), kb = adjKey(best);
+        if (kc[0] !== kb[0] || kc[1] !== kb[1]) {
+          if (kc[0] > kb[0] || (kc[0] === kb[0] && kc[1] > kb[1])) best = c;
+          continue;
+        }
       }
       if (c.imbalance < best.imbalance - 1e-9) best = c;
       else if (c.imbalance <= best.imbalance + 1e-9 && c.totalResidual < best.totalResidual - 1e-9) best = c;
