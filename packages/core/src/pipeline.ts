@@ -54,6 +54,14 @@ export interface GenerateOptions {
    * Omitted or false = legacy output.
    */
   preferLShapeProgrammeAdjacency?: boolean;
+  /**
+   * Phase 5.4A (opt-in, default OFF): the rectangular M3 entry gallery is confined to
+   * the living column when the full-width gallery would leave dining without an
+   * exterior edge; adopted only when the validator confirms strictly fewer
+   * MBH4-DYL-001 findings with no lost validity and no added HARD / circulation /
+   * access / daylight finding. Omitted or false = legacy output.
+   */
+  galleryDaylightAware?: boolean;
 }
 
 /**
@@ -175,6 +183,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.programmeDoorCompletion === true ? { programmeDoorCompletion: true } : {}),
     ...(opts.preferDiningKitchenAdjacency === true ? { preferDiningKitchenAdjacency: true } : {}),
     ...(opts.preferLShapeProgrammeAdjacency === true ? { preferLShapeProgrammeAdjacency: true } : {}),
+    ...(opts.galleryDaylightAware === true ? { galleryDaylightAware: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

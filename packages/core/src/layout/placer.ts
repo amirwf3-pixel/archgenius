@@ -401,6 +401,14 @@ export interface PlacerOptions {
    * the column fits every room's programme minimum; otherwise legacy placement.
    */
   preferDiningKitchenAdjacency?: boolean;
+  /**
+   * Phase 5.4A: when the Phase 15 M3 front entry gallery would span the whole public
+   * band and leave the dining room (side by side with living below it) with no
+   * exterior edge, confine the gallery to the living column so dining runs full
+   * depth to the street façade. Applied only when every gallery cell keeps its
+   * programme minimum width/area and living/dining keep theirs; otherwise legacy.
+   */
+  galleryDaylightAware?: boolean;
 }
 
 /** True when the programme carries a dining↔kitchen doorRequired adjacency (either direction). */
@@ -1546,6 +1554,7 @@ function placeSpacesFacingSouth(
     const dining = take('dining');
     let guestWc = take('guest-wc');
     let bandCarvedByGallery = false;
+    let publicMainPlaced = false; // Phase 5.4A: living + dining already placed beside the gallery
     const publicUnplaced: PlacedSpec[] = [];
     let g; while ((g = take('guest-room'))) publicUnplaced.push(g);
     let f; while ((f = take('family-room'))) publicUnplaced.push(f);
@@ -1583,6 +1592,57 @@ function placeSpacesFacingSouth(
         let galleryH = Math.min(2.3, Math.max(1.7, publicRect.h * 0.22));
         if (publicRect.h - galleryH < neededBelow) galleryH = publicRect.h - neededBelow;
         if (galleryH >= 1.5 && publicRect.h - galleryH >= neededBelow - 1e-6 && publicRect.w >= totalMinW - 1e-6) {
+          // Phase 5.4A (opt-in): daylight-aware gallery — see PlacerOptions.galleryDaylightAware.
+          if (opts.galleryDaylightAware === true && !shallowBand && galleryCells.length >= 2) {
+            const livT = Math.max(living.minArea, living.targetArea);
+            const dinT = Math.max(dining.minArea, dining.targetArea);
+            const livMinW = Math.max(living.minWidth ?? 3.0, 3.0);
+            const dinMinW = Math.max(dining.minWidth ?? 2.2, 2.2);
+            const W = publicRect.w, H = publicRect.h;
+            const fpR = footprint.x + footprint.w, fpB = footprint.y + footprint.h;
+            const onFacade = Math.abs(publicRect.y - footprint.y) < 1e-6;
+            // Legacy prediction: dining is the east cell of the side-by-side row below the
+            // full-width gallery; its only possible exterior edges are east / band bottom.
+            const legacyLivingW = Math.max(livMinW, Math.min(W - dinMinW, W * livT / (livT + dinT)));
+            const legacyDiningExterior = Math.abs(publicRect.x + W - fpR) < 1e-6 ||
+              Math.abs(publicRect.y + H - fpB) < 1e-6;
+            if (sideBySideBelow && onFacade && !legacyDiningExterior) {
+              const L = Math.round(Math.max(legacyLivingW, totalMinW) * 100) / 100;
+              if (L >= livMinW - 1e-6 && L >= totalMinW - 1e-6 && W - L >= dinMinW - 1e-6) {
+                const tg = galleryCells.map(s => Math.max(s.minArea, s.targetArea));
+                const sT = Math.max(tg.reduce((a, b) => a + b, 0), 1e-6);
+                const sur = Math.max(0, L - totalMinW);
+                const cw = galleryCells.map((s, i) => Math.round((minW(s) + sur * (tg[i] / sT)) * 100) / 100);
+                cw[cw.length - 1] = Math.round((L - cw.slice(0, -1).reduce((a, b) => a + b, 0)) * 100) / 100;
+                const cellsOk = galleryCells.every((s, i) => cw[i] >= minW(s) - 1e-6);
+                const sMinH = Math.max(...galleryCells.map((s, i) =>
+                  Math.max(s.minArea > 0 ? s.minArea / Math.max(cw[i], 0.5) : 0, minH(s))));
+                const sH = Math.round(Math.max(galleryH, sMinH) * 100) / 100;
+                const livH = Math.round((H - sH) * 100) / 100;
+                const fits = cellsOk && sH >= sMinH - 1e-6 &&
+                  galleryCells.every((s, i) => cw[i] * sH >= s.minArea - 1e-6) &&
+                  livH >= livingMinHBelow - 1e-6 && L * livH >= living.minArea - 1e-6 &&
+                  H >= diningMinHBelow - 1e-6 && (W - L) * H >= dining.minArea - 1e-6;
+                if (fits) {
+                  let gx = publicRect.x;
+                  galleryCells.forEach((s, i) => {
+                    placed.push(mkSpace(s.type, { x: gx, y: publicRect.y, w: cw[i], h: sH }, s.placedLabel, s.placedId, 'public'));
+                    gx = Math.round((gx + cw[i]) * 100) / 100;
+                  });
+                  placed.push(mkSpace('living',
+                    { x: publicRect.x, y: publicRect.y + sH, w: L, h: livH },
+                    living.placedLabel, living.placedId, 'public'));
+                  placed.push(mkSpace('dining',
+                    { x: publicRect.x + L, y: publicRect.y, w: W - L, h: H },
+                    dining.placedLabel, dining.placedId, 'public'));
+                  galleryBottom = publicRect.y + sH;
+                  explanation.push(`Phase 5.4A daylight-aware entry gallery: ${galleryCells.map(c => c.type).join('+')} over the living column (w=${L.toFixed(2)} m, h=${sH.toFixed(2)} m); dining runs full depth to the street façade`);
+                  galleryPlaced = true;
+                  publicMainPlaced = true;
+                }
+              }
+            }
+          }
           let strip: Rect = { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: galleryH };
           // Proportional row layout: each cell ≥ its minWidth, surplus shared by target area.
           const targets = galleryCells.map(s => Math.max(s.minArea, s.targetArea));
@@ -1603,7 +1663,7 @@ function placeSpacesFacingSouth(
           if (publicRect.h - stripH < neededBelow - 1e-6) {
             stripH = -1; // cannot host the row without crushing living/dining — let the column try
           }
-          if (stripH > 0) {
+          if (stripH > 0 && !publicMainPlaced) {
           strip = { ...strip, h: stripH };
           let cx = strip.x;
           galleryCells.forEach((s, i) => {
@@ -1707,7 +1767,7 @@ function placeSpacesFacingSouth(
       }
     }
 
-    if (living) {
+    if (living && !publicMainPlaced) {
       if (dining) {
         const totalSouthA = Math.max(living.minArea, living.targetArea) + Math.max(dining.minArea, dining.targetArea);
         let livingW = publicRect.w * Math.max(living.minArea, living.targetArea) / totalSouthA;
@@ -1831,7 +1891,7 @@ function placeSpacesFacingSouth(
             guestWc.placedLabel, guestWc.placedId, 'public'));
         }
       }
-    } else {
+    } else if (!publicMainPlaced) {
       const publicSpecs: PlacedSpec[] = [];
       for (const t of orderedPublicTypes as SpaceType[]) {
         let s; while ((s = take(t))) publicSpecs.push(s);

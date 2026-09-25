@@ -85,6 +85,13 @@ export interface GenerateLayoutsOptions {
    * mandatory gate (see LShapePlacementOptions).
    */
   preferLShapeProgrammeAdjacency?: boolean;
+  /**
+   * Phase 5.4A opt-in (default OFF): rectangular M3 entry gallery confined to the
+   * living column when the full-width gallery would leave dining without an
+   * exterior edge (see PlacerOptions.galleryDaylightAware). Adopted per candidate
+   * only through the validator-guarded comparison (adoptGalleryDaylightVariant).
+   */
+  galleryDaylightAware?: boolean;
 }
 
 export function generateLayouts(
@@ -95,6 +102,7 @@ export function generateLayouts(
   const programmeDoorCompletion = options.programmeDoorCompletion === true;
   const preferDiningKitchenAdjacency = options.preferDiningKitchenAdjacency === true;
   const preferLShapeProgrammeAdjacency = options.preferLShapeProgrammeAdjacency === true;
+  const galleryDaylightAware = options.galleryDaylightAware === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -139,7 +147,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -147,7 +155,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -193,9 +201,14 @@ export function generateLayouts(
     const legacy = buildCandidate(strategy, false);
     // Phase 5.3B (opt-in): the L-wing adjacency preference is adopted ONLY when the
     // full validator confirms it costs nothing — the placer's gates are proxies.
-    candidates.push(preferLShapeProgrammeAdjacency && input.site.shape === 'l-shape'
+    const base = preferLShapeProgrammeAdjacency && input.site.shape === 'l-shape'
       ? adoptLShapeAdjacencyVariant(legacy, buildCandidate(strategy, true), input)
-      : legacy);
+      : legacy;
+    // Phase 5.4A (opt-in): the daylight-aware gallery variant is adopted ONLY when the
+    // full validator confirms strictly fewer MBH4-DYL-001 failures at no other cost.
+    candidates.push(galleryDaylightAware
+      ? adoptGalleryDaylightVariant(base, buildCandidate(strategy, base !== legacy, true))
+      : base);
   }
 
   sortCandidates(candidates);
@@ -244,6 +257,35 @@ export function adoptLShapeAdjacencyVariant(legacy: LayoutCandidate, variant: La
   return variant;
 }
 
+const DAYLIGHT_RULE = 'MBH4-DYL-001';
+
+/**
+ * Phase 5.4A validated adoption. The daylight-aware gallery variant replaces the
+ * base candidate only when, under the full validator, it:
+ *   - keeps validity (never valid → invalid),
+ *   - adds no HARD finding (per-code HARD counts never increase),
+ *   - adds no circulation / access / daylight finding of any severity (per code),
+ *   - has strictly fewer MBH4-DYL-001 findings.
+ * Otherwise the base candidate is returned untouched. Deterministic.
+ */
+export function adoptGalleryDaylightVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (JSON.stringify(variant.floors) === JSON.stringify(base.floors)) return base;
+  if (base.valid && !variant.valid) return base;
+  const counts = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const guarded = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const bc = counts(base, guarded), vc = counts(variant, guarded);
+  for (const [k, n] of vc) if (n > (bc.get(k) ?? 0)) return base;
+  const dyl = (c: LayoutCandidate) => c.findings.filter(f => f.code === DAYLIGHT_RULE).length;
+  const db = dyl(base), dv = dyl(variant);
+  if (!(dv < db)) return base;
+  variant.explanations.push(`Phase 5.4A: daylight-aware entry-gallery variant adopted (${DAYLIGHT_RULE} findings ${db}→${dv}) — validator confirmed no lost validity, no added HARD / circulation / access / daylight finding.`);
+  return variant;
+}
+
 function buildFloorSiteAware(
   input: ProjectInput,
   buildableGeom: ReturnType<typeof computeBuildableGeometry>,
@@ -257,6 +299,7 @@ function buildFloorSiteAware(
   programmeDoorCompletion = false,
   preferDiningKitchenAdjacency = false,
   preferLShapeProgrammeAdjacency = false,
+  galleryDaylightAware = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -393,8 +436,12 @@ function buildFloorSiteAware(
     corridors = result.corridors;
     placeExpl = result.explanation.map(e => `[DECOMPOSITION-FAILURE-FALLBACK bounding] ${e}`);
   } else if (buildableRects.length === 1 || input.site.shape === 'rectangle') {
-    const result = preferDiningKitchenAdjacency
-      ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, { preferDiningKitchenAdjacency: true })
+    const placerOpts = {
+      ...(preferDiningKitchenAdjacency ? { preferDiningKitchenAdjacency: true } : {}),
+      ...(galleryDaylightAware ? { galleryDaylightAware: true } : {}),
+    };
+    const result = Object.keys(placerOpts).length > 0
+      ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, placerOpts)
       : placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
