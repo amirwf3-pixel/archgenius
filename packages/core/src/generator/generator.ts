@@ -164,6 +164,16 @@ export interface GenerateLayoutsOptions {
    * validator- and geometry-guarded comparison (adoptUpperFloorFrontPrivateVariant).
    */
   upperFloorFrontPrivate?: boolean;
+  /**
+   * Phase 5.6B opt-in (default OFF): on upper floors of rectangular sites, after 5.4D, an
+   * elevator hall separated from a facing corridor (running along the hall's edge) by an
+   * empty gap thinner than CORRIDOR_MIN_WIDTH is joined to it by a bridge corridor covering
+   * the gap and the corridor's full depth over the hall overlap — the unchanged 5.4D search
+   * (findThinStairGapBridge) applied to the elevator hall. The shaft, stair, rooms and
+   * anchors never move. Adopted per candidate only through the validator- and
+   * geometry-guarded comparison (adoptElevatorLandingBridgeVariant).
+   */
+  bridgeElevatorLandingGap?: boolean;
 }
 
 export function generateLayouts(
@@ -184,6 +194,7 @@ export function generateLayouts(
   const mainRoomMinDimension = options.mainRoomMinDimension === true;
   const diningEntryColumn = options.diningEntryColumn === true;
   const upperFloorFrontPrivate = options.upperFloorFrontPrivate === true;
+  const bridgeElevatorLandingGap = options.bridgeElevatorLandingGap === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -228,7 +239,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -236,7 +247,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -390,7 +401,16 @@ export function generateLayouts(
       withMainDim = adoptMainRoomDimensionVariant(withPocket,
         buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, true, entryUsed, frontUsed));
     }
-    candidates.push(withMainDim);
+    // Phase 5.6B (opt-in): last — the elevator-landing thin-gap bridge (a post-placement
+    // repair running after 5.4D on the floor) is built on every option already adopted and
+    // adopted ONLY through its own guard.
+    let withElevatorBridge = withMainDim;
+    if (bridgeElevatorLandingGap && input.site.shape === 'rectangle'
+      && withMainDim.findings.some(f => f.severity === 'hard' && f.code === ELEV_NO_LANDING)) {
+      withElevatorBridge = adoptElevatorLandingBridgeVariant(withMainDim,
+        buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, true));
+    }
+    candidates.push(withElevatorBridge);
   }
 
   sortCandidates(candidates);
@@ -593,6 +613,67 @@ export function adoptUpperFloorFrontPrivateVariant(base: LayoutCandidate, varian
   const bo = overlapPairs(base);
   for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
   variant.explanations.push(`Phase 5.6A: upper-floor front private split adopted (${UNPLACED} ${unplaced(base)}→${unplaced(variant)}; no other HARD / circulation / access / daylight finding added, ground floor and stair / elevator halls identical, no corridor shortened, no overhang, no new overlap, minimums and buildable containment held).`);
+  return variant;
+}
+
+const ELEV_NO_LANDING = 'ELEV_SHAFT_NO_LANDING';
+
+/** Floor explanation marker proving the Phase 5.6B elevator-landing bridge was built. */
+export const ELEVATOR_LANDING_BRIDGE_BUILT = 'Phase 5.6B elevator-landing bridge';
+
+/**
+ * Phase 5.6B guard: adopt the elevator-landing bridge variant only when the floor build
+ * really bridged an elevator hall and, against the candidate it would replace:
+ *  1. ELEV_SHAFT_NO_LANDING strictly decreases;
+ *  2. total HARD does not increase;  3. no other HARD code increases;
+ *  4. no circulation / access / daylight finding (WATCHED_FINDING, any severity) increases;
+ *  5. a valid candidate stays valid;
+ *  6. every non-corridor space (rooms, stair / elevator halls) is identical, by id and rect;
+ *  7. no new overlapping pair; every new or changed corridor piece is inside the buildable area;
+ *  8. every new or changed corridor piece keeps CORRIDOR_MIN_WIDTH and the variant's
+ *     corridors still cover every base corridor (nothing shortened);
+ *  9. determinism: pure comparison of two deterministic builds.
+ */
+export function adoptElevatorLandingBridgeVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (!variant.explanations.some(e => e.includes(ELEVATOR_LANDING_BRIDGE_BUILT))) return base;
+  const hardOf = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard');
+  const landing = (c: LayoutCandidate) => hardOf(c).filter(f => f.code === ELEV_NO_LANDING).length;
+  if (!(landing(variant) < landing(base))) return base;
+  if (hardOf(variant).length > hardOf(base).length) return base;
+  if (base.valid && !variant.valid) return base;
+  const count = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const pick = (f: Finding) => (f.severity === 'hard' && f.code !== ELEV_NO_LANDING) || WATCHED_FINDING.test(f.code);
+  const b = count(base, pick);
+  for (const [k, n] of count(variant, pick)) if (n > (b.get(k) ?? 0)) return base;
+  if (variant.floors.length !== base.floors.length) return base;
+  const E = 1e-6;
+  const same = (a: Rect, c: Rect) => Math.abs(a.x - c.x) < E && Math.abs(a.y - c.y) < E && Math.abs(a.w - c.w) < E && Math.abs(a.h - c.h) < E;
+  const rects = ((variant as any).buildableRects ?? []) as Rect[];
+  for (const fl of variant.floors) {
+    const bf = base.floors.find(x => x.level === fl.level);
+    if (!bf) return base;
+    const fixedB = bf.spaces.filter(s => s.type !== 'corridor'), fixedV = fl.spaces.filter(s => s.type !== 'corridor');
+    if (fixedB.length !== fixedV.length) return base;
+    for (const s of fixedB) {
+      const v = fixedV.find(x => x.id === s.id);
+      if (!v || v.type !== s.type || !same(v.rect, s.rect)) return base;
+    }
+    const corrB = bf.spaces.filter(s => s.type === 'corridor'), corrV = fl.spaces.filter(s => s.type === 'corridor');
+    for (const k of corrV) {
+      if (corrB.some(o => o.id === k.id && same(o.rect, k.rect))) continue;
+      if (Math.min(k.rect.w, k.rect.h) < CORRIDOR_MIN_WIDTH - E) return base;
+      if (rects.length > 0 && !insideBuildable(k.rect, rects)) return base;
+    }
+    const vRects = corrV.map(k => k.rect);
+    for (const k of corrB) if (unionCoveredArea(k.rect, vRects) < k.rect.w * k.rect.h - 1e-3) return base;
+  }
+  const bo = overlapPairs(base);
+  for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
+  variant.explanations.push(`Phase 5.6B: elevator-landing bridge variant adopted (${ELEV_NO_LANDING} ${landing(base)}→${landing(variant)}, HARD ${hardOf(base).length}→${hardOf(variant).length}; no other HARD / circulation / access / daylight finding added, rooms and stair / elevator halls unmoved, no corridor shortened, no overlap, corridor minimum and buildable containment held).`);
   return variant;
 }
 
@@ -1041,6 +1122,7 @@ function buildFloorSiteAware(
   mainRoomMinDimension = false,
   diningEntryColumn = false,
   upperFloorFrontPrivate = false,
+  bridgeElevatorLandingGap = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -1506,6 +1588,26 @@ function buildFloorSiteAware(
       };
       finalSpaces.splice(br.corridorIndex, 1, piece(br.bridge, K.id), ...br.remainders.map(r => piece(r, nextId('corridor'))));
       explanations.push(`Level ${level}: Phase 5.4D thin-gap stair bridge ${br.bridge.w.toFixed(2)}×${br.bridge.h.toFixed(2)} m on the hall's ${br.side} side closes a ${br.gap.toFixed(2)} m gap to the corridor (${br.remainders.length} remainder piece(s) kept).`);
+    }
+  }
+
+  // Phase 5.6B (opt-in): after 5.4D — join an upper-floor elevator hall left behind a thin
+  // empty gap (< CORRIDOR_MIN_WIDTH) to the facing corridor with the unchanged 5.4D search
+  // and split (bridge = gap + full corridor depth over the hall overlap, remainder pieces
+  // kept). Rectangular sites only; the facing corridor must run along the hall's edge. The
+  // shaft, stair, anchors and rooms never move; no valid bridge → geometry unchanged.
+  if (bridgeElevatorLandingGap && level > 0 && input.site.shape === 'rectangle') {
+    const lift = finalSpaces.find(s => s.type === 'elevator-hall');
+    const br = lift ? findThinStairGapBridge(lift.rect, finalSpaces, (r) => rectInsidePolygon(r, buildableBoundary, 1e-3)) : null;
+    const K = br ? finalSpaces[br.corridorIndex] : null;
+    const along = br && K ? ((br.side === 'north' || br.side === 'south') ? K.rect.w >= K.rect.h : K.rect.h >= K.rect.w) : false;
+    if (br && K && along) {
+      const piece = (r: Rect, id: string): Space => {
+        const g = mkSpace('corridor', r, K.label, id, K.zone);
+        return { ...K, id, rect: g.rect, polygon: g.polygon, area: g.area };
+      };
+      finalSpaces.splice(br.corridorIndex, 1, piece(br.bridge, K.id), ...br.remainders.map(r => piece(r, nextId('corridor'))));
+      explanations.push(`Level ${level}: ${ELEVATOR_LANDING_BRIDGE_BUILT} ${br.bridge.w.toFixed(2)}×${br.bridge.h.toFixed(2)} m on the elevator hall's ${br.side} side closes a ${br.gap.toFixed(2)} m gap to the corridor (${br.remainders.length} remainder piece(s) kept).`);
     }
   }
 

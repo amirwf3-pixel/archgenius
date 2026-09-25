@@ -144,6 +144,15 @@ export interface GenerateOptions {
    * shortened corridor, no overhang, no overlap. Omitted or false = legacy output.
    */
   upperFloorFrontPrivate?: boolean;
+  /**
+   * Phase 5.6B (opt-in, default OFF): on upper floors of rectangular sites, after 5.4D, an
+   * elevator hall separated from the facing corridor by an empty gap thinner than
+   * CORRIDOR_MIN_WIDTH is joined to it by a bridge corridor (the unchanged 5.4D search);
+   * adopted only when the validator confirms strictly fewer ELEV_SHAFT_NO_LANDING with no
+   * added HARD / circulation / access / daylight finding, no lost validity, no moved room /
+   * stair / elevator, no shortened corridor, no overlap. Omitted or false = legacy output.
+   */
+  bridgeElevatorLandingGap?: boolean;
 }
 
 /**
@@ -275,6 +284,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.mainRoomMinDimension === true ? { mainRoomMinDimension: true } : {}),
     ...(opts.diningEntryColumn === true ? { diningEntryColumn: true } : {}),
     ...(opts.upperFloorFrontPrivate === true ? { upperFloorFrontPrivate: true } : {}),
+    ...(opts.bridgeElevatorLandingGap === true ? { bridgeElevatorLandingGap: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)
