@@ -64,9 +64,9 @@
 - [x] Storage rooms (programmed space) — balcony/yard specs exist in programming but are not exposed in the UI
 - [x] Furniture placement (sanitary fixtures, kitchen counters, furniture validation)
 - [x] Elevator shaft geometry — **complete** (deterministic shaft cell reserved beside the stair core, exactly stacked on every floor with ELEV_* validation; dimensions are design assumptions — MBH15-LIFT-002 remains NOT_IMPLEMENTED)
-- [ ] Multi-section details — **not built**
+- [x] Multi-section details — **complete** (6c4ce1b)
 - [x] Comprehensive regression suite (core 959 tests, web 153 tests, incl. determinism, adversarial matrices, CAD structural validation) — committed golden DXF fixtures not included (outputs gitignored)
-- [ ] Accessibility checks — **not built**
+- [x] Accessibility checks — **complete** (42bb918)
 - [x] Bounded performance (bounded search enforced in code and tests; 10-floor generation well under a second in QA runs) — committed benchmark suite not included
 
 ## Completed development history (Phases 5.2 → 13.2)
