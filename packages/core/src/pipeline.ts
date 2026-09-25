@@ -81,6 +81,16 @@ export interface GenerateOptions {
    * daylight finding. Omitted or false = legacy output.
    */
   stackPublicForDaylight?: boolean;
+  /**
+   * Phase 5.4D (opt-in, default OFF): on upper floors, a stair hall separated from a
+   * facing corridor by an empty gap thinner than CORRIDOR_MIN_WIDTH is joined to it by
+   * a bridge corridor (gap + the corridor's full depth over the hall overlap);
+   * adopted only when the validator confirms strictly fewer CONSTRAINT_MUST_ADJACENT
+   * and CIRC_INACCESSIBLE_SPACE + CIRC_ROOM_THROUGH_ROOM findings with no lost validity
+   * and no added HARD / circulation / access / daylight finding. Omitted or false =
+   * legacy output.
+   */
+  bridgeThinStairGap?: boolean;
 }
 
 /**
@@ -205,6 +215,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.galleryDaylightAware === true ? { galleryDaylightAware: true } : {}),
     ...(opts.connectStairCore === true ? { connectStairCore: true } : {}),
     ...(opts.stackPublicForDaylight === true ? { stackPublicForDaylight: true } : {}),
+    ...(opts.bridgeThinStairGap === true ? { bridgeThinStairGap: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

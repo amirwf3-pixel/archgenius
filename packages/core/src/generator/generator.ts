@@ -41,7 +41,7 @@ import { placeFurniture } from './furniture.js';
 import type { Rect } from '../geometry/rect.js';
 import { rArea, rCorners, rIntersects } from '../geometry/rect.js';
 import { polygonArea } from '../geometry/polygon.js';
-import { EPS } from '../units.js';
+import { EPS, CORRIDOR_MIN_WIDTH } from '../units.js';
 import { computeBuildableGeometry } from '../site/buildable.js';
 import type { Polygon } from '../geometry/polygon-ops.js';
 import type { AccessSide } from '../model/site.js';
@@ -108,6 +108,15 @@ export interface GenerateLayoutsOptions {
    * validator-guarded comparison (adoptPublicStackDaylightVariant).
    */
   stackPublicForDaylight?: boolean;
+  /**
+   * Phase 5.4D opt-in (default OFF): on upper floors, a stair hall separated from a
+   * facing corridor by an empty gap thinner than CORRIDOR_MIN_WIDTH (left by re-pinning
+   * the hall onto the core anchor) is joined to it by a bridge corridor covering the
+   * gap and the corridor's full depth over the hall overlap (see
+   * findThinStairGapBridge). Adopted per candidate only through the validator-guarded
+   * comparison (adoptThinStairGapBridgeVariant).
+   */
+  bridgeThinStairGap?: boolean;
 }
 
 export function generateLayouts(
@@ -121,6 +130,7 @@ export function generateLayouts(
   const galleryDaylightAware = options.galleryDaylightAware === true;
   const connectStairCore = options.connectStairCore === true;
   const stackPublicForDaylight = options.stackPublicForDaylight === true;
+  const bridgeThinStairGap = options.bridgeThinStairGap === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -165,7 +175,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -173,7 +183,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -237,10 +247,17 @@ export function generateLayouts(
     // Phase 5.4C (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C. The public
     // stack variant is built on the options already adopted; in the placer a 5.4A
     // gallery that already placed living/dining takes precedence (stack never runs).
-    candidates.push(stackPublicForDaylight
+    const withStack = stackPublicForDaylight
       ? adoptPublicStackDaylightVariant(withConnector,
         buildCandidate(strategy, lAdjUsed, withGallery !== base, withConnector !== withGallery, true))
-      : withConnector);
+      : withConnector;
+    // Phase 5.4D (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C → 5.4D. The
+    // thin-gap stair bridge is a post-placement repair built on the options already
+    // adopted; it never fires where a 5.4B connector already joined the hall.
+    candidates.push(bridgeThinStairGap
+      ? adoptThinStairGapBridgeVariant(withStack,
+        buildCandidate(strategy, lAdjUsed, withGallery !== base, withConnector !== withGallery, withStack !== withConnector, true))
+      : withStack);
   }
 
   sortCandidates(candidates);
@@ -346,6 +363,36 @@ export function adoptPublicStackDaylightVariant(base: LayoutCandidate, variant: 
 }
 
 /**
+ * Phase 5.4D validated adoption. The thin-gap stair-bridge variant replaces the base
+ * candidate only when, under the full validator, it:
+ *   - keeps validity (never valid → invalid),
+ *   - adds no HARD finding (per-code HARD counts never increase),
+ *   - adds no circulation / access / daylight finding of any severity (per code),
+ *   - has strictly fewer CONSTRAINT_MUST_ADJACENT findings AND strictly fewer
+ *     CIRC_INACCESSIBLE_SPACE + CIRC_ROOM_THROUGH_ROOM findings combined.
+ * Otherwise the base candidate is returned untouched. Deterministic.
+ */
+export function adoptThinStairGapBridgeVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (JSON.stringify(variant.floors) === JSON.stringify(base.floors)) return base;
+  if (base.valid && !variant.valid) return base;
+  const counts = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const guarded = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const bc = counts(base, guarded), vc = counts(variant, guarded);
+  for (const [k, n] of vc) if (n > (bc.get(k) ?? 0)) return base;
+  const n = (c: LayoutCandidate, code: string) => c.findings.filter(f => f.code === code).length;
+  const adjB = n(base, 'CONSTRAINT_MUST_ADJACENT'), adjV = n(variant, 'CONSTRAINT_MUST_ADJACENT');
+  const reachB = n(base, 'CIRC_INACCESSIBLE_SPACE') + n(base, 'CIRC_ROOM_THROUGH_ROOM');
+  const reachV = n(variant, 'CIRC_INACCESSIBLE_SPACE') + n(variant, 'CIRC_ROOM_THROUGH_ROOM');
+  if (!(adjV < adjB) || !(reachV < reachB)) return base;
+  variant.explanations.push(`Phase 5.4D: thin-gap stair-bridge variant adopted (CONSTRAINT_MUST_ADJACENT ${adjB}→${adjV}, CIRC_INACCESSIBLE_SPACE+CIRC_ROOM_THROUGH_ROOM ${reachB}→${reachV}) — validator confirmed no lost validity, no added HARD / circulation / access / daylight finding.`);
+  return variant;
+}
+
+/**
  * Phase 5.4B validated adoption. The stair-core connector variant replaces the base
  * candidate only when, under the full validator, it:
  *   - keeps validity (never valid → invalid),
@@ -442,6 +489,84 @@ export function findStairCoreConnector(
   return ok[0] ?? null;
 }
 
+/**
+ * Phase 5.4D — pure geometric search for a thin-gap stair bridge.
+ *
+ * Returns null when the hall already shares ≥ CORRIDOR_MIN_WIDTH of wall with a
+ * corridor. Otherwise, for every corridor lying wholly beyond one side of the hall,
+ * the strip between them (gap depth d, cross span = the hall/corridor overlap) is a
+ * candidate when 0 < d < CORRIDOR_MIN_WIDTH (a gap 5.4B cannot fill without a sliver),
+ * the span is ≥ CORRIDOR_MIN_WIDTH, and the strip is inside the buildable geometry
+ * and overlaps no space. The bridge covers the strip plus the corridor's full depth
+ * over the span; the corridor outside the span is kept as remainder pieces
+ * (zero-length pieces dropped). Every resulting piece must have its short side
+ * ≥ CORRIDOR_MIN_WIDTH, or the candidate is rejected. Hall, stair and rooms never
+ * move. Ordering is deterministic: smallest gap, then smallest bridge area, then
+ * side order N/E/S/W, then x, then y.
+ */
+export function findThinStairGapBridge(
+  hall: Rect,
+  spaces: readonly { type: string; rect: Rect }[],
+  inside: (r: Rect) => boolean,
+): { corridorIndex: number; side: Side; gap: number; bridge: Rect; remainders: Rect[] } | null {
+  const MIN = CORRIDOR_MIN_WIDTH;
+  const E = 1e-6;
+  const corridors = spaces.map((s, i) => ({ s, i })).filter(x => x.s.type === 'corridor');
+  if (corridors.some(k => sharedEdge(hall, k.s.rect) >= MIN - E)) return null;
+  const out: { corridorIndex: number; side: Side; gap: number; bridge: Rect; remainders: Rect[] }[] = [];
+  for (const { s: k, i } of corridors) {
+    const K = k.rect;
+    const oy0 = Math.max(hall.y, K.y), oy1 = Math.min(hall.y + hall.h, K.y + K.h);
+    const ox0 = Math.max(hall.x, K.x), ox1 = Math.min(hall.x + hall.w, K.x + K.w);
+    const tries: { side: Side; d: number; lo: number; hi: number; gap: Rect; bridge: Rect; rem: Rect[] }[] = [];
+    if (K.x + K.w <= hall.x + E) {
+      const d = hall.x - (K.x + K.w);
+      tries.push({ side: 'west', d, lo: oy0, hi: oy1,
+        gap: { x: K.x + K.w, y: oy0, w: d, h: oy1 - oy0 },
+        bridge: { x: K.x, y: oy0, w: K.w + d, h: oy1 - oy0 },
+        rem: [{ x: K.x, y: K.y, w: K.w, h: oy0 - K.y }, { x: K.x, y: oy1, w: K.w, h: K.y + K.h - oy1 }] });
+    }
+    if (hall.x + hall.w <= K.x + E) {
+      const d = K.x - (hall.x + hall.w);
+      tries.push({ side: 'east', d, lo: oy0, hi: oy1,
+        gap: { x: hall.x + hall.w, y: oy0, w: d, h: oy1 - oy0 },
+        bridge: { x: hall.x + hall.w, y: oy0, w: d + K.w, h: oy1 - oy0 },
+        rem: [{ x: K.x, y: K.y, w: K.w, h: oy0 - K.y }, { x: K.x, y: oy1, w: K.w, h: K.y + K.h - oy1 }] });
+    }
+    if (K.y + K.h <= hall.y + E) {
+      const d = hall.y - (K.y + K.h);
+      tries.push({ side: 'south', d, lo: ox0, hi: ox1,
+        gap: { x: ox0, y: K.y + K.h, w: ox1 - ox0, h: d },
+        bridge: { x: ox0, y: K.y, w: ox1 - ox0, h: K.h + d },
+        rem: [{ x: K.x, y: K.y, w: ox0 - K.x, h: K.h }, { x: ox1, y: K.y, w: K.x + K.w - ox1, h: K.h }] });
+    }
+    if (hall.y + hall.h <= K.y + E) {
+      const d = K.y - (hall.y + hall.h);
+      tries.push({ side: 'north', d, lo: ox0, hi: ox1,
+        gap: { x: ox0, y: hall.y + hall.h, w: ox1 - ox0, h: d },
+        bridge: { x: ox0, y: hall.y + hall.h, w: ox1 - ox0, h: d + K.h },
+        rem: [{ x: K.x, y: K.y, w: ox0 - K.x, h: K.h }, { x: ox1, y: K.y, w: K.x + K.w - ox1, h: K.h }] });
+    }
+    for (const t of tries) {
+      if (!(t.d > E && t.d < MIN - E)) continue;
+      if (t.hi - t.lo < MIN - E) continue;
+      if (!inside(t.gap) || !inside(t.bridge)) continue;
+      if (spaces.some((o, j) => j !== i && rectsOverlap(o.rect, t.gap))) continue;
+      if (spaces.some((o, j) => j !== i && rectsOverlap(o.rect, t.bridge))) continue;
+      if (Math.min(t.bridge.w, t.bridge.h) < MIN - E) continue;
+      const rem = t.rem.filter(r => Math.min(r.w, r.h) > E);
+      if (rem.some(r => Math.min(r.w, r.h) < MIN - E)) continue;
+      out.push({ corridorIndex: i, side: t.side, gap: t.d, bridge: t.bridge, remainders: rem });
+    }
+  }
+  out.sort((a, b) =>
+    (a.gap - b.gap) ||
+    (a.bridge.w * a.bridge.h - b.bridge.w * b.bridge.h) ||
+    (SIDE_ORDER.indexOf(a.side) - SIDE_ORDER.indexOf(b.side)) ||
+    (a.bridge.x - b.bridge.x) || (a.bridge.y - b.bridge.y));
+  return out[0] ?? null;
+}
+
 function buildFloorSiteAware(
   input: ProjectInput,
   buildableGeom: ReturnType<typeof computeBuildableGeometry>,
@@ -458,6 +583,7 @@ function buildFloorSiteAware(
   galleryDaylightAware = false,
   connectStairCore = false,
   stackPublicForDaylight = false,
+  bridgeThinStairGap = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -896,6 +1022,24 @@ function buildFloorSiteAware(
     if (conn) {
       finalSpaces.push(mkSpace('corridor', conn.rect, 'Stair connector', nextId('corridor'), 'circulation'));
       explanations.push(`Level ${level}: Phase 5.4B stair-core connector ${conn.rect.w.toFixed(2)}×${conn.rect.h.toFixed(2)} m on the hall's ${conn.side} side joins the stair hall to the corridor network.`);
+    }
+  }
+
+  // Phase 5.4D (opt-in): join an upper-floor stair hall left behind a thin empty gap
+  // (< CORRIDOR_MIN_WIDTH) by re-pinning onto the core anchor. The facing corridor is
+  // replaced by a bridge (gap + full corridor depth over the hall overlap) plus its
+  // remainder pieces. Hall, stair, anchor and rooms never move; no valid bridge →
+  // geometry unchanged.
+  if (bridgeThinStairGap && level > 0 && stairSpace) {
+    const br = findThinStairGapBridge(stairSpace.rect, finalSpaces, (r) => rectInsidePolygon(r, buildableBoundary, 1e-3));
+    if (br) {
+      const K = finalSpaces[br.corridorIndex];
+      const piece = (r: Rect, id: string): Space => {
+        const g = mkSpace('corridor', r, K.label, id, K.zone);
+        return { ...K, id, rect: g.rect, polygon: g.polygon, area: g.area };
+      };
+      finalSpaces.splice(br.corridorIndex, 1, piece(br.bridge, K.id), ...br.remainders.map(r => piece(r, nextId('corridor'))));
+      explanations.push(`Level ${level}: Phase 5.4D thin-gap stair bridge ${br.bridge.w.toFixed(2)}×${br.bridge.h.toFixed(2)} m on the hall's ${br.side} side closes a ${br.gap.toFixed(2)} m gap to the corridor (${br.remainders.length} remainder piece(s) kept).`);
     }
   }
 
