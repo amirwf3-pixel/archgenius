@@ -63,6 +63,20 @@ network; the initial install works with no connectivity.
    because each detailed plan (طرح تفصیلی) varies by zone and needs an
    authenticated municipal publication.
 
+   **Current state (ROADMAP.md:46 infrastructure):** `resolveMunicipality`
+   (`regulations/municipality.ts`) maps `regulationJurisdiction` →
+   `site.jurisdiction` → `site.city` (English/Persian variants) to Tehran,
+   Karaj, Mashhad, Isfahan or Shiraz. A recognised Karaj / Mashhad / Isfahan /
+   Shiraz project composes its own placeholder pack (`ir-karaj-stub`,
+   `ir-mashhad-stub`, `ir-isfahan-stub`, `ir-shiraz-stub`); Tehran, no city and
+   unrecognised input keep `ir-tehran-stub`. The web form's pre-filled
+   jurisdiction value `Tehran-Municipality-Default` is a weak default: an
+   explicit supported city in a lower-priority field wins over it, while an
+   explicit Tehran value stays authoritative. The Karaj, Mashhad, Isfahan and
+   Shiraz municipal sources are **NOT OBTAINED**: each placeholder contains a
+   single advisory `NOT_IMPLEMENTED` missing-data notice and **no municipal
+   rule, threshold or verified status**.
+
 ### Finding routing
 
 * `HARD` violations block feasible layouts only when the rule is `ACTIVE`

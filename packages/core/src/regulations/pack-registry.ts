@@ -24,6 +24,7 @@
 import type { RegulationPack } from './types.js';
 import { IR_NATIONAL_MBR_PACK, IR_TEHRAN_STUB_PACK } from './packs/ir-national-mbr.js';
 import { SOURCE_REGISTRY_DEFAULTS } from './packs/source-registry.js';
+import { IR_KARAJ_STUB_PACK, IR_MASHHAD_STUB_PACK, IR_ISFAHAN_STUB_PACK, IR_SHIRAZ_STUB_PACK } from './packs/ir-municipal-stubs.js';
 // Lazy (call-time) use only — see `note on import cycle` at the bottom of the file.
 import { buildDefaultPack } from './engine.js';
 
@@ -200,6 +201,36 @@ export const REGULATION_PACK_FAMILIES: readonly PackFamily[] = Object.freeze([
       },
     ],
   },
+  // ROADMAP.md:46 — municipal placeholders. Each is loadable only as a single
+  // advisory NOT_IMPLEMENTED missing-data notice; its municipal source is
+  // NOT OBTAINED (sourceObtained is derived from the registry, never asserted).
+  ...[
+    { pack: IR_KARAJ_STUB_PACK, sourceId: 't1-karaj-municipal-source', name: 'Karaj' },
+    { pack: IR_MASHHAD_STUB_PACK, sourceId: 't1-mashhad-municipal-source', name: 'Mashhad' },
+    { pack: IR_ISFAHAN_STUB_PACK, sourceId: 't1-isfahan-municipal-source', name: 'Isfahan' },
+    { pack: IR_SHIRAZ_STUB_PACK, sourceId: 't1-shiraz-municipal-source', name: 'Shiraz' },
+  ].map(({ pack, sourceId, name }): PackFamily => ({
+    packId: pack.id,
+    jurisdiction: pack.jurisdiction,
+    scope: pack.scope,
+    description:
+      `Placeholder for ${name} municipal rules. Loadable, but its only rule is ` +
+      'NOT_IMPLEMENTED and emits only an advisory missing-data note.',
+    editions: [
+      {
+        packId: pack.id,
+        edition: pack.edition,
+        effectiveDate: pack.effectiveDate,
+        isDefault: true,
+        loadable: true,
+        sourceObtained: allSourcesObtained(sourceId),
+        note:
+          `Loadable as an advisory placeholder only. No ${name} municipal rule is shipped ` +
+          '(the municipal source is NOT OBTAINED — nothing is in sources/).',
+        load: () => pack,
+      },
+    ],
+  })),
 ]);
 
 // ---------------------------------------------------------------------------

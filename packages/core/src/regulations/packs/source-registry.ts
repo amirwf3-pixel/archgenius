@@ -95,6 +95,42 @@ export const SOURCE_REGISTRY_DEFAULTS: RegulationSource[] = [
     verificationState: 'not-obtained',
     note: 'Tehran detailed plan; district-specific (R-110, R-120, R-160, …). Must be supplied by the user with their building-permit instruction (دستور نقشه).',
   },
+  // ROADMAP.md:46 — municipal sources for the placeholder packs. NONE is held in
+  // sources/: no publisher, edition, URI, path or digest is recorded because
+  // none has been obtained. `tier: 1` is the tier REQUIRED before any
+  // municipal rule could be verified (same convention as the Tehran entry).
+  {
+    id: 't1-karaj-municipal-source',
+    title: 'Karaj municipal regulation source (کرج) — NOT OBTAINED',
+    jurisdiction: 'ir-karaj',
+    tier: 1,
+    verificationState: 'not-obtained',
+    note: 'No Karaj municipal document is held in sources/. No Karaj rule is shipped.',
+  },
+  {
+    id: 't1-mashhad-municipal-source',
+    title: 'Mashhad municipal regulation source (مشهد) — NOT OBTAINED',
+    jurisdiction: 'ir-mashhad',
+    tier: 1,
+    verificationState: 'not-obtained',
+    note: 'No Mashhad municipal document is held in sources/. No Mashhad rule is shipped.',
+  },
+  {
+    id: 't1-isfahan-municipal-source',
+    title: 'Isfahan municipal regulation source (اصفهان) — NOT OBTAINED',
+    jurisdiction: 'ir-isfahan',
+    tier: 1,
+    verificationState: 'not-obtained',
+    note: 'No Isfahan municipal document is held in sources/. No Isfahan rule is shipped.',
+  },
+  {
+    id: 't1-shiraz-municipal-source',
+    title: 'Shiraz municipal regulation source (شیراز) — NOT OBTAINED',
+    jurisdiction: 'ir-shiraz',
+    tier: 1,
+    verificationState: 'not-obtained',
+    note: 'No Shiraz municipal document is held in sources/. No Shiraz rule is shipped.',
+  },
 
   // ===== TIER 3: Secondary-practitioner sources (referenced during audit) =====
   {

@@ -534,6 +534,10 @@ export const FINDING_CODE_FA: Record<string, string> = {
   'MUN-PARK-001': 'پارکینگ — الزامات شهرداری',
   'MUN-SET-001': 'عقب‌نشینی — الزامات شهرداری',
   'THN-000': 'قواعد تهران — مورد عمومی',
+  'KRJ-000': 'قواعد کرج — منبع شهرداری دریافت نشده',
+  'MSH-000': 'قواعد مشهد — منبع شهرداری دریافت نشده',
+  'ISF-000': 'قواعد اصفهان — منبع شهرداری دریافت نشده',
+  'SHZ-000': 'قواعد شیراز — منبع شهرداری دریافت نشده',
   // P22-D: titles for the remaining engine-emitted codes (machine codes stay untranslated)
   'CONSTRAINT_DIRECT_ACCESS': 'الزام دسترسی مستقیم',
   'CONSTRAINT_MUST_SEPARATED': 'الزام جداسازی فضاها',

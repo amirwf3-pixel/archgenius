@@ -54,8 +54,11 @@ const countVerified = (rules: Array<{ status: string }>) =>
 // 1. Catalogue honesty
 // ---------------------------------------------------------------------------
 describe('pack registry — catalogue lists only what the repo actually has', () => {
-  it('lists exactly the three shipped packs, in declaration order', () => {
-    expect(listPackIds()).toEqual(['ir-default-v0.1', 'ir-national-mbr', 'ir-tehran-stub']);
+  it('lists exactly the shipped packs, in declaration order', () => {
+    expect(listPackIds()).toEqual([
+      'ir-default-v0.1', 'ir-national-mbr', 'ir-tehran-stub',
+      'ir-karaj-stub', 'ir-mashhad-stub', 'ir-isfahan-stub', 'ir-shiraz-stub',
+    ]);
     expect(listPackFamilies().map((f) => f.packId)).toEqual(listPackIds());
     expect(isKnownPack('ir-national-mbr')).toBe(true);
     expect(isKnownPack('ir-tehran')).toBe(false);

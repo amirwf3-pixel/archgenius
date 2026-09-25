@@ -13,6 +13,8 @@ import type { RegulationPack, BuildableFootprint, RegulationRule, RuleContext, R
 import type { AccessSide } from '../model/site.js';
 import { IR_NATIONAL_MBR_PACK, IR_TEHRAN_STUB_PACK } from './packs/ir-national-mbr.js';
 import { selectPacks } from './pack-registry.js';
+import { resolveMunicipality } from './municipality.js';
+import { MUNICIPAL_STUB_PACKS } from './packs/ir-municipal-stubs.js';
 import { computeBuildableGeometry } from '../site/buildable.js';
 
 /**
@@ -116,12 +118,14 @@ export function composePacks(project: ProjectInput): RegulationPack[] {
     // Local stub (will be replaced by real municipality pack once primary
     // sources are provided); always added so UI can surface the "local
     // verification required" advisory.
-    const jurisdiction = (project.regulationJurisdiction ?? project.site.jurisdiction ?? '').toLowerCase();
-    const city = (project.site.city ?? '').toLowerCase();
-    if (jurisdiction.includes('tehran') || city.includes('tehran') || city.includes('تهران')) {
-      packs.push(IR_TEHRAN_STUB_PACK);
+    // ROADMAP.md:46: a recognised non-Tehran municipality receives ITS OWN
+    // placeholder pack (never Tehran's). Tehran, no municipality, and
+    // unrecognised/ambiguous input keep the pre-existing Tehran placeholder —
+    // unchanged behaviour (golden outputs depend on it).
+    const municipality = resolveMunicipality(project);
+    if (municipality && municipality !== 'tehran') {
+      packs.push(MUNICIPAL_STUB_PACKS[municipality]);
     } else {
-      // Generic local placeholder when municipality unspecified.
       packs.push(IR_TEHRAN_STUB_PACK);
     }
   }

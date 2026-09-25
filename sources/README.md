@@ -14,6 +14,10 @@ for the machine-readable source registry with SHA-256 digests.
 | **مبحث چهارم — الزامات عمومی ساختمان** (1399 / 4th rev., latest) | 1 | `mabhas-4-1399.pdf` (future) | — | — | — | **NOT OBTAINED** — latest revision, not yet placed |
 | **مبحث پانزدهم — آسانسورها و پلکان برقی** (1392) | 1 | `mabhas-15.pdf` (repo root) + `sources/mabhas-15.pdf` | 1026762 | `e27e1d74e6ded86ecfe6399b524b612d2cf6fdd2da4c6a36df7d94a3ed6ea477` | 84 (PyPDF2) | **OBTAINED-AUTHENTICATED** — same as above |
 | **طرح تفصیلی تهران** / دستور نقشه | 1 | (project-specific PDF supplied by user) | — | — | — | **NOT OBTAINED** — always supplied per-project |
+| **Karaj** municipal regulation source (کرج) — registry id `t1-karaj-municipal-source` | 1 (required) | — | — | — | — | **NOT OBTAINED** — no document held; pack `ir-karaj-stub` ships only a NOT_IMPLEMENTED advisory |
+| **Mashhad** municipal regulation source (مشهد) — registry id `t1-mashhad-municipal-source` | 1 (required) | — | — | — | — | **NOT OBTAINED** — no document held; pack `ir-mashhad-stub` ships only a NOT_IMPLEMENTED advisory |
+| **Isfahan** municipal regulation source (اصفهان) — registry id `t1-isfahan-municipal-source` | 1 (required) | — | — | — | — | **NOT OBTAINED** — no document held; pack `ir-isfahan-stub` ships only a NOT_IMPLEMENTED advisory |
+| **Shiraz** municipal regulation source (شیراز) — registry id `t1-shiraz-municipal-source` | 1 (required) | — | — | — | — | **NOT OBTAINED** — no document held; pack `ir-shiraz-stub` ships only a NOT_IMPLEMENTED advisory |
 
 ### Verification evidence (Phase 5.2)
 
