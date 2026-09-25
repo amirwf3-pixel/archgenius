@@ -412,6 +412,11 @@ export interface LShapePlacementOptions {
    * PlacerOptions.rotateShallowStairPocket (default OFF — wings placed exactly as before).
    */
   rotateShallowStairPocket?: boolean;
+  /**
+   * Phase 5.5C: forwarded to every wing placeSpaces() call as
+   * PlacerOptions.mainRoomMinDimension (default OFF — wings placed exactly as before).
+   */
+  mainRoomMinDimension?: boolean;
 }
 
 /**
@@ -487,8 +492,11 @@ export function placeSpacesLShape(
   const place = (rect: Rect, list: PlacedSpec[]) =>
     list.length === 0
       ? { spaces: [] as Space[], corridors: [] as Space[], explanation: [] as string[] }
-      : (opts.rotateShallowStairPocket === true
-        ? placeSpaces(rect, list, strategy, access, mkSpace, { rotateShallowStairPocket: true })
+      : (opts.rotateShallowStairPocket === true || opts.mainRoomMinDimension === true
+        ? placeSpaces(rect, list, strategy, access, mkSpace, {
+          ...(opts.rotateShallowStairPocket === true ? { rotateShallowStairPocket: true } : {}),
+          ...(opts.mainRoomMinDimension === true ? { mainRoomMinDimension: true } : {}),
+        })
         : placeSpaces(rect, list, strategy, access, mkSpace));
   const covered = (list: PlacedSpec[], res: { spaces: Space[] }): boolean =>
     list.every(sp => res.spaces.some(s => s.id === sp.placedId));

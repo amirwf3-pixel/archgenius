@@ -26,6 +26,7 @@ import { buildHardConstraintGraph, placementOrderForTypes, classifyFeasibility, 
 import { sharedWallEdges } from '../geometry/room-polygon.js';
 import { bandCanHost, chooseSpineFraction, solveRow, solveCol, type BandCellDemand } from './topology.js';
 import { DOOR_INT_WIDTH } from '../units.js';
+import { IR_NATIONAL_MBR_PACK } from '../regulations/packs/ir-national-mbr.js';
 
 const CORRIDOR_W = 1.5;
 const MIN_SIDE = 1.0;
@@ -447,6 +448,59 @@ export interface PlacerOptions {
    * stairPocketRotationApplies). Stair solver and validation are unchanged.
    */
   rotateShallowStairPocket?: boolean;
+  /**
+   * Phase 5.5C: in the generic private-band sizing (horizontal columns / vertical rows),
+   * raise the planning minimum of ONE main room — the largest main room whose planned
+   * area already meets the verified MBH4-ROOM-001 area threshold (see
+   * mainRoomDimensionTarget) — to that rule's minimum width, so the room reaches both
+   * halves of §7-1-1-8. Width comes only from band slack: applied only when every
+   * cluster keeps its existing minimum; otherwise legacy sizing. Validation unchanged.
+   */
+  mainRoomMinDimension?: boolean;
+}
+
+/** Placer explanation prefix proving the Phase 5.5C main-room minimum dimension fired. */
+export const MAIN_ROOM_DIMENSION_APPLIED = 'Phase 5.5C main-room minimum dimension';
+
+/** MBH4-ROOM-001's main-room types (the rule's own list). */
+const ROOM001_MAIN_TYPES = new Set(['living', 'master-bedroom', 'family-room', 'dining', 'bedroom']);
+
+/**
+ * Phase 5.5C: the verified MBH4-ROOM-001 thresholds, read from the regulation pack
+ * (never re-declared). `large` selects the ≥75 m² unit pair (area_large/width_large).
+ */
+export function room001Thresholds(large: boolean): { area: number; width: number } | null {
+  const t = IR_NATIONAL_MBR_PACK.rules.find(r => r.ruleId === 'MBH4-ROOM-001')?.thresholds;
+  const area = t?.[large ? 'area_large' : 'area_small']?.value;
+  const width = t?.[large ? 'width_large' : 'width_small']?.value;
+  return typeof area === 'number' && typeof width === 'number' ? { area, width } : null;
+}
+
+/**
+ * Phase 5.5C — pure: pick the floor's main room to size to the MBH4-ROOM-001 minimum
+ * width. `large` mirrors the placer's existing main-habitable preference predicate (the
+ * one that already aims main rooms at the 12 m² floor). A room qualifies when its planned
+ * area (programme min/target, or that preference floor) meets the rule's area threshold;
+ * the largest planned area wins, ties broken by placedId. Returns null when none qualifies.
+ */
+export function mainRoomDimensionTarget(
+  specs: PlacedSpec[],
+  large: boolean,
+): { placedId: string; width: number; area: number } | null {
+  const th = room001Thresholds(large);
+  if (!th) return null;
+  let best: { spec: PlacedSpec; planned: number } | null = null;
+  for (const sp of specs) {
+    if (!ROOM001_MAIN_TYPES.has(sp.type)) continue;
+    const own = Math.max(sp.minArea ?? 0, sp.targetArea ?? 0);
+    const planned = Math.max(own, large ? th.area : 0);
+    if (planned + 1e-9 < th.area) continue;
+    if (!best || own > Math.max(best.spec.minArea ?? 0, best.spec.targetArea ?? 0) + 1e-9
+      || (Math.abs(own - Math.max(best.spec.minArea ?? 0, best.spec.targetArea ?? 0)) <= 1e-9 && sp.placedId.localeCompare(best.spec.placedId) < 0)) {
+      best = { spec: sp, planned };
+    }
+  }
+  return best ? { placedId: best.spec.placedId, width: th.width, area: th.area } : null;
 }
 
 /**
@@ -651,15 +705,24 @@ function placeSpacesFacingSouth(
   // by the regulation rule itself. Small units (<60 m² footprint) keep program minimums.
   const isMainHabitable = (t: string): boolean =>
     ['living', 'dining', 'bedroom', 'master-bedroom', 'family-room', 'guest-room'].includes(t);
-  const mainPrefH = (spec: PlacedSpec, bandCross: number): number => {
+  // Phase 5.5C (opt-in): the one main room sized to MBH4-ROOM-001's minimum width. The
+  // raise is requested explicitly (`raise`) only by the slack-checked sizing sites.
+  const mainDim = opts.mainRoomMinDimension === true
+    ? mainRoomDimensionTarget(specs, footprint.w * footprint.h >= 60) : null;
+  const raisesMain = (spec: PlacedSpec, raise: boolean): boolean =>
+    raise && mainDim !== null && spec.placedId === mainDim.placedId;
+  let mainDimApplied = false;
+  const mainPrefH = (spec: PlacedSpec, bandCross: number, raise = false): number => {
     const floor = (isMainHabitable(spec.type) && footprint.w * footprint.h >= 60)
       ? Math.max(spec.minArea ?? 0, 12) : Math.max(spec.minArea ?? 0, 0.25);
-    return Math.max(spec.minLength ?? spec.minWidth ?? 1.2, floor / Math.max(bandCross, 0.5));
+    const v = Math.max(spec.minLength ?? spec.minWidth ?? 1.2, floor / Math.max(bandCross, 0.5));
+    return raisesMain(spec, raise) ? Math.max(v, mainDim!.width) : v;
   };
-  const mainPrefW = (spec: PlacedSpec, bandH: number): number => {
+  const mainPrefW = (spec: PlacedSpec, bandH: number, raise = false): number => {
     const floor = (isMainHabitable(spec.type) && footprint.w * footprint.h >= 60)
       ? Math.max(spec.minArea ?? 0, 12) : Math.max(spec.minArea ?? 0, 0.25);
-    return Math.max(spec.minWidth ?? 1.2, floor / Math.max(bandH, 0.5));
+    const v = Math.max(spec.minWidth ?? 1.2, floor / Math.max(bandH, 0.5));
+    return raisesMain(spec, raise) ? Math.max(v, mainDim!.width) : v;
   };
   const mainPref = mainPrefH;
   const hasStorage = specs.some(s => s.type === 'storage');
@@ -1159,11 +1222,24 @@ function placeSpacesFacingSouth(
             // never stacked at min-height-then-stretched or left sub-regulation; growth is
             // capped at 1.75×target and any genuine slack becomes intentional void at the
             // free (far) end of the band instead of inflating the last room into a slab.
-            const clusterMinHs = genericClusters.map(cl => {
+            let clusterMinHs = genericClusters.map(cl => {
               // 2% margin over the bare area need so rounding cannot land a room just below
               // its contract threshold (e.g. master 11.9 < 12).
               return cl.rooms.reduce((s, r) => s + mainPref(r, privateRect.w), 0) * 1.02;
             });
+            // Phase 5.5C (opt-in): raise the chosen main room's row minimum to the rule
+            // width — only when the row width already meets it and the raised minimums
+            // still fit the band (width taken from slack only; every other row keeps its
+            // existing minimum). Otherwise the legacy minimums stand.
+            let vRaise = false;
+            if (mainDim && privateRect.w + 1e-6 >= mainDim.width) {
+              const raised = genericClusters.map(cl => cl.rooms.reduce((s, r) => s + mainPrefH(r, privateRect.w, true), 0) * 1.02);
+              if (raised.some((v, i) => v > clusterMinHs[i] + 1e-9) && raised.reduce((a, b) => a + b, 0) <= privateRect.h + 1e-6) {
+                clusterMinHs = raised;
+                vRaise = true;
+                mainDimApplied = true;
+              }
+            }
             const clusterCapHs = genericClusters.map(cl => {
               const capA = cl.rooms.reduce((s, r) => s + Math.max((r.minArea ?? 0) * 1.1, Math.max(r.targetArea ?? 0, r.minArea ?? 0) * 1.75), 0);
               return capA / Math.max(privateRect.w, 0.5);
@@ -1302,7 +1378,7 @@ function placeSpacesFacingSouth(
                 const clusterMin = bedMinH + bathMinH;
                 // +0.01 pad: room rects snap to the 2 cm grid, and a floor height rounded
                 // down (e.g. 2.8236 -> 2.82) would shave a hair below the 12 m² threshold.
-                const bedNeedH = mainPref(roomA, rowW);
+                const bedNeedH = mainPrefH(roomA, rowW, vRaise);
                 const bedMinEff = Math.min(Math.max(bedMinH, bedNeedH + 0.01), Math.max(bedMinH, rowH - bathMinH));
                 let bedH: number, bathH: number;
                 if (rowH < clusterMin - 1e-6) {
@@ -1348,9 +1424,30 @@ function placeSpacesFacingSouth(
             // Horizontal spine generic — Phase 15 M4: column minimums include each room's
             // area need at the band height (with the main-room preference); growth capped
             // at 1.75×target; slack becomes intentional void at the band's far end.
-            const clusterMinWs = genericClusters.map(cl => {
+            let clusterMinWs = genericClusters.map(cl => {
               return cl.rooms.reduce((s, r) => s + mainPrefW(r, privateRect.h), 0);
             });
+            // Phase 5.5C (opt-in): raise the chosen main room's column minimum to the rule
+            // width — only when the band depth already meets it and the raised minimums
+            // still fit the band (width taken from slack only; every other column keeps its
+            // existing minimum). Otherwise the legacy minimums stand.
+            let hRaise = false;
+            if (mainDim && privateRect.h + 1e-6 >= mainDim.width) {
+              // A paired column must also leave the partner its paired-split floor (the
+              // same floors the split below applies), so the chosen room can take the width.
+              const splitFloor = (cl: GenericCluster, i: number): number => i === 0
+                ? Math.max(cl.rooms[0].minWidth ?? 2.2, 2.0) : Math.max(cl.rooms[1].minWidth ?? 1.2, 1.0);
+              const raised = genericClusters.map(cl => {
+                const v = cl.rooms.reduce((s, r) => s + mainPrefW(r, privateRect.h, true), 0);
+                const k = cl.rooms.length === 2 ? cl.rooms.findIndex(r => r.placedId === mainDim.placedId) : -1;
+                return k >= 0 ? Math.max(v, mainDim.width + splitFloor(cl, 1 - k)) : v;
+              });
+              if (raised.some((v, i) => v > clusterMinWs[i] + 1e-9) && raised.reduce((a, b) => a + b, 0) <= privateRect.w + 1e-6) {
+                clusterMinWs = raised;
+                hRaise = true;
+                mainDimApplied = true;
+              }
+            }
             const clusterCapWs = genericClusters.map(cl => {
               const capA = cl.rooms.reduce((s, r) => s + Math.max((r.minArea ?? 0) * 1.1, Math.max(r.targetArea ?? 0, r.minArea ?? 0) * 1.75), 0);
               return capA / Math.max(privateRect.h, 0.5);
@@ -1478,6 +1575,15 @@ function placeSpacesFacingSouth(
                     bathW = colW - bedW;
                   }
                 }
+                // Phase 5.5C: inside a paired column the chosen main room takes the rule
+                // width from its partner's share — never below the partner's minimum.
+                if (hRaise && mainDim) {
+                  const k = cl.rooms.findIndex(r => r.placedId === mainDim.placedId);
+                  const partnerMin = k === 0 ? bathMinW : bedMinW;
+                  if (k >= 0 && (k === 0 ? bedW : bathW) < mainDim.width - 1e-9 && colW - mainDim.width >= partnerMin - 1e-6) {
+                    if (k === 0) { bedW = mainDim.width; bathW = colW - bedW; } else { bathW = mainDim.width; bedW = colW - bathW; }
+                  }
+                }
                 const firstSpec = cl.rooms[0];
                 const secondSpec = cl.rooms[1];
                 // P16-C quality-depth cap: side-by-side halves take only their contract+
@@ -1543,6 +1649,7 @@ function placeSpacesFacingSouth(
           placed.push(...bestPlacement.spaces);
           const bandVoid = Math.max(0, privateRect.w * privateRect.h - bestPlacement.spaces.reduce((a, s) => a + s.area, 0));
           if (bandVoid > 0.5) explanation.push(`Phase16-C quality-depth cap: ${bandVoid.toFixed(2)} m² of band slack kept as intentional void at the band's free end (M4 convention)`);
+          if (mainDimApplied && mainDim) explanation.push(`${MAIN_ROOM_DIMENSION_APPLIED}: ${mainDim.placedId} planning minimum raised to ${mainDim.width.toFixed(2)} m (MBH4-ROOM-001 width, pack threshold) from band slack; every other cell keeps its existing minimum`);
           explanation.push(`Phase13 bounded search: ${bestPlacement.attempts} attempt(s) (max ${MAX_CONSTRAINT_PLACEMENT_ATTEMPTS}), valid=${bestPlacement.valid}, clusters=${genericClusters.length}, mustTouchCorridor respected, separation evaluated via sharedWallEdges`);
         }
       }

@@ -32,7 +32,7 @@ import { generateWalls } from './walls.js';
 import { placeOpenings, programmeDoorRequirements } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
 import { validateLayout } from '../validation/validator.js';
-import { placeSpaces, type PlacedSpec } from '../layout/placer.js';
+import { placeSpaces, MAIN_ROOM_DIMENSION_APPLIED, type PlacedSpec } from '../layout/placer.js';
 import { rectPartitions, contactConnected, contactLen } from '../layout/regions.js';
 import { solveRow, solveCol, type BandCellDemand } from '../layout/topology.js';
 import { sortCandidates } from '../layout/ranking.js';
@@ -140,6 +140,13 @@ export interface GenerateLayoutsOptions {
    * candidate only through the validator-guarded comparison (adoptStairPocketVariant).
    */
   rotateShallowStairPocket?: boolean;
+  /**
+   * Phase 5.5C opt-in (default OFF): the generic private-band sizing (rectangular and
+   * L-shape wings) raises one main room's planning minimum to the verified MBH4-ROOM-001
+   * width from band slack only (see PlacerOptions.mainRoomMinDimension). Adopted per
+   * candidate only through the validator-guarded comparison (adoptMainRoomDimensionVariant).
+   */
+  mainRoomMinDimension?: boolean;
 }
 
 export function generateLayouts(
@@ -157,6 +164,7 @@ export function generateLayouts(
   const connectIsolatedRooms = options.connectIsolatedRooms === true;
   const diningFacadeRow = options.diningFacadeRow === true;
   const rotateShallowStairPocket = options.rotateShallowStairPocket === true;
+  const mainRoomMinDimension = options.mainRoomMinDimension === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -201,7 +209,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -209,7 +217,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -315,17 +323,31 @@ export function generateLayouts(
     // variant fails the guard, one fallback also runs every repair the caller enabled —
     // still adopted only through the same 5.5B guard. Deterministic order.
     let withPocket = withRooms;
+    // Option set of the adopted candidate (5.4B / 5.4D / 5.4E repairs, 5.5B pocket), so a
+    // later variant rebuilds exactly what was adopted.
+    let adopted = { connector: withConnector !== withFacade, bridge: withBridge !== withStack, rooms: withRooms !== withBridge, pocket: false };
     if (rotateShallowStairPocket) {
       const flags = [withConnector !== withFacade, withBridge !== withStack, withRooms !== withBridge] as const;
       withPocket = adoptStairPocketVariant(withRooms,
         buildCandidate(strategy, lAdjUsed, galleryUsed, flags[0], withStack !== withConnector, flags[1], flags[2], facadeUsed, true));
+      if (withPocket !== withRooms) adopted = { connector: flags[0], bridge: flags[1], rooms: flags[2], pocket: true };
       const repairs = [flags[0] || connectStairCore, flags[1] || bridgeThinStairGap, flags[2] || connectIsolatedRooms] as const;
       if (withPocket === withRooms && repairs.some((r, i) => r !== flags[i])) {
         withPocket = adoptStairPocketVariant(withRooms,
           buildCandidate(strategy, lAdjUsed, galleryUsed, repairs[0], withStack !== withConnector, repairs[1], repairs[2], facadeUsed, true));
+        if (withPocket !== withRooms) adopted = { connector: repairs[0], bridge: repairs[1], rooms: repairs[2], pocket: true };
       }
     }
-    candidates.push(withPocket);
+    // Phase 5.5C (opt-in): after the whole 5.3B–5.5B chain — the main-room minimum-dimension
+    // variant (built on every option already adopted) is adopted ONLY through its own
+    // guard, only when the adopted candidate still carries an MBH4-ROOM-001 HARD and the
+    // placer actually raised a main room.
+    let withMainDim = withPocket;
+    if (mainRoomMinDimension && withPocket.findings.some(f => f.severity === 'hard' && f.code === MAIN_ROOM_RULE)) {
+      withMainDim = adoptMainRoomDimensionVariant(withPocket,
+        buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, true));
+    }
+    candidates.push(withMainDim);
   }
 
   sortCandidates(candidates);
@@ -349,6 +371,88 @@ function programmeAdjacencyKeyOf(c: LayoutCandidate, input: ProjectInput): [numb
 const FACADE_ROW_PLACED = 'Phase 5.5A dining façade row';
 
 const WATCHED_FINDING = /^CIRC|DIRECT_ACCESS|INACCESSIBLE|DAYLIGHT|DYL/;
+
+const MAIN_ROOM_RULE = 'MBH4-ROOM-001';
+
+/** Phase 5.5C watched findings (any severity): circulation, access, daylight. */
+const MAIN_DIM_WATCHED = /^CIRC|ACCESS|DAYLIGHT|DYL/;
+
+/** True when rect `r` is covered by the (disjoint) buildable rects. */
+function insideBuildable(r: Rect, rects: Rect[]): boolean {
+  let covered = 0;
+  for (const b of rects) {
+    const w = Math.min(r.x + r.w, b.x + b.w) - Math.max(r.x, b.x);
+    const h = Math.min(r.y + r.h, b.y + b.h) - Math.max(r.y, b.y);
+    if (w > 0 && h > 0) covered += w * h;
+  }
+  return covered >= r.w * r.h - 1e-3;
+}
+
+/** Overlapping space-id pairs per floor (overlap area above 1e-4 m²). */
+function overlapPairs(c: LayoutCandidate): Set<string> {
+  const out = new Set<string>();
+  for (const fl of c.floors) {
+    const sp = fl.spaces.filter(s => s.rect);
+    for (let i = 0; i < sp.length; i++) for (let j = i + 1; j < sp.length; j++) {
+      const a = sp[i].rect, b = sp[j].rect;
+      const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (w > 0 && h > 0 && w * h > 1e-4) out.add(`${fl.level}:${[sp[i].id, sp[j].id].sort().join('|')}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Phase 5.5C guard: adopt the main-room minimum-dimension variant only when the placer
+ * really raised a main room, MBH4-ROOM-001 HARD strictly decreases, total HARD strictly
+ * decreases, no other HARD code increases, no circulation / access / daylight finding
+ * (any severity) increases, a valid candidate stays valid, no new overlapping pair or
+ * outside-buildable room appears, and no room shrinks below its own minimum width / area.
+ */
+export function adoptMainRoomDimensionVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (!variant.explanations.some(e => e.includes(MAIN_ROOM_DIMENSION_APPLIED))) return base;
+  const roomHard = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard' && f.code === MAIN_ROOM_RULE).length;
+  const hard = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard').length;
+  if (!(roomHard(variant) < roomHard(base))) return base;
+  if (!(hard(variant) < hard(base))) return base;
+  if (base.valid && !variant.valid) return base;
+  const count = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const pick = (f: Finding) => (f.severity === 'hard' && f.code !== MAIN_ROOM_RULE) || MAIN_DIM_WATCHED.test(f.code);
+  const b = count(base, pick);
+  for (const [k, n] of count(variant, pick)) if (n > (b.get(k) ?? 0)) return base;
+  // Geometry: no new overlap, no room newly outside the buildable area.
+  const bo = overlapPairs(base);
+  for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
+  const rects = ((variant as any).buildableRects ?? []) as Rect[];
+  if (rects.length > 0) {
+    for (const fl of variant.floors) {
+      const bf = base.floors.find(x => x.level === fl.level);
+      for (const s of fl.spaces) {
+        if (!s.rect || insideBuildable(s.rect, rects)) continue;
+        const bs = bf?.spaces.find(x => x.id === s.id);
+        if (!bs?.rect || insideBuildable(bs.rect, rects)) return base;
+      }
+    }
+  }
+  // Neighbours: a room that shrinks must stay at or above its own minimum width / area.
+  for (const fl of variant.floors) {
+    const bf = base.floors.find(x => x.level === fl.level);
+    for (const s of fl.spaces) {
+      const bs = bf?.spaces.find(x => x.id === s.id);
+      if (!s.rect || !bs?.rect) continue;
+      const sv = Math.min(s.rect.w, s.rect.h), sb = Math.min(bs.rect.w, bs.rect.h);
+      if (sv < sb - 1e-6 && typeof s.minWidth === 'number' && sv < s.minWidth - 1e-6) return base;
+      if (s.area < bs.area - 1e-6 && typeof s.minArea === 'number' && s.area < s.minArea - 1e-6) return base;
+    }
+  }
+  variant.explanations.push(`Phase 5.5C: main-room minimum-dimension variant adopted (${MAIN_ROOM_RULE} HARD ${roomHard(base)}→${roomHard(variant)}, HARD ${hard(base)}→${hard(variant)}; no other HARD / circulation / access / daylight finding added, no new overlap or outside-buildable room, no room below its minimum).`);
+  return variant;
+}
 
 /** Placer explanation prefix proving the Phase 5.5B stair pocket was actually rotated. */
 const STAIR_POCKET_ROTATED = 'Phase 5.5B stair pocket rotated';
@@ -792,6 +896,7 @@ function buildFloorSiteAware(
   connectIsolatedRooms = false,
   diningFacadeRow = false,
   rotateShallowStairPocket = false,
+  mainRoomMinDimension = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -934,6 +1039,7 @@ function buildFloorSiteAware(
       ...(stackPublicForDaylight ? { stackPublicForDaylight: true } : {}),
       ...(galleryDaylightAware && diningFacadeRow ? { diningFacadeRow: true } : {}),
       ...(rotateShallowStairPocket ? { rotateShallowStairPocket: true } : {}),
+      ...(mainRoomMinDimension ? { mainRoomMinDimension: true } : {}),
     };
     const result = Object.keys(placerOpts).length > 0
       ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, placerOpts)
@@ -955,10 +1061,11 @@ function buildFloorSiteAware(
       ? placedSpecs.filter(sp => sp.type !== 'elevator-hall')
       : placedSpecs;
     const lres = input.site.shape === 'l-shape' && buildableRects.length === 2
-      ? (preferLShapeProgrammeAdjacency || rotateShallowStairPocket
+      ? (preferLShapeProgrammeAdjacency || rotateShallowStairPocket || mainRoomMinDimension
         ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace, {
           ...(preferLShapeProgrammeAdjacency ? { preferProgrammeAdjacency: true } : {}),
           ...(rotateShallowStairPocket ? { rotateShallowStairPocket: true } : {}),
+          ...(mainRoomMinDimension ? { mainRoomMinDimension: true } : {}),
         })
         : placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace))
       : null;

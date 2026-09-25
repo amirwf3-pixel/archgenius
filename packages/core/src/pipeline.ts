@@ -116,6 +116,15 @@ export interface GenerateOptions {
    * Omitted or false = legacy output.
    */
   rotateShallowStairPocket?: boolean;
+  /**
+   * Phase 5.5C (opt-in, default OFF): the generic private-band sizing raises one main
+   * room's planning minimum to the verified MBH4-ROOM-001 width, taking width only from
+   * band slack; adopted only when MBH4-ROOM-001 HARD and total HARD strictly decrease with
+   * no other HARD / circulation / access / daylight finding added, no lost validity, no
+   * new overlap / outside-buildable room and no other room shrunk below its minimum.
+   * Omitted or false = legacy output.
+   */
+  mainRoomMinDimension?: boolean;
 }
 
 /**
@@ -244,6 +253,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.connectIsolatedRooms === true ? { connectIsolatedRooms: true } : {}),
     ...(opts.diningFacadeRow === true ? { diningFacadeRow: true } : {}),
     ...(opts.rotateShallowStairPocket === true ? { rotateShallowStairPocket: true } : {}),
+    ...(opts.mainRoomMinDimension === true ? { mainRoomMinDimension: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)
