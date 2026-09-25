@@ -13,7 +13,8 @@ import { createProject, generate } from '../pipeline.js';
 import {
   computeResidualMetrics, computeParkingMetrics, computeAdjacencyMetrics, computeCirculationMetrics,
   computeQualityMetricsV1, programAdjacencyByType, metricRatio, rectsTouch, rectUnionArea,
-  type AdjacencyRequirementsByType,
+  programSpecCountByType,
+  type AdjacencyRequirementsByType, type ProgramSpecCountByType,
 } from './metrics-v1.js';
 
 // ---------------------------------------------------------------------------
@@ -565,7 +566,10 @@ const PINNED: Record<'rect' | 'lshape' | 'lift', unknown> = {
     {level: 1, envelope: 96.955, footprintRect: 96.955, residual: 10.985, fragments: 1, unusable: 0, parking: null, adjacency: [9, 9, 6, 9, 1], circulation: [0.359, 1, 0.531, 0]},
   ],
   lshape: [
-    {level: 0, envelope: 242.48, footprintRect: 242.48, residual: 75.68, fragments: 2, unusable: 0, parking: [1, 1, true, 0.386], adjacency: [17, 20, 11, 17, 2], circulation: [0.404, 1, 0.605, 0]},
+    // Phase 5.3C: the programme's single corridor spec is realised as two corridor rooms here;
+    // corridor → stair-hall (w 3, doorRequired) is now evaluated once per spec, not per room
+    // (was [17, 20, 11, 17, 2] with the duplicate, unsatisfied per-room instance).
+    {level: 0, envelope: 242.48, footprintRect: 242.48, residual: 75.68, fragments: 2, unusable: 0, parking: [1, 1, true, 0.386], adjacency: [17, 17, 11, 14, 2], circulation: [0.404, 1, 0.605, 0]},
     {level: 1, envelope: 255.6, footprintRect: 279.6, residual: 6.503, fragments: 1, unusable: 0, parking: null, adjacency: [9, 9, 6, 9, 1], circulation: [0.173, 1, 0.762, 0]},
   ],
   lift: [
@@ -573,3 +577,154 @@ const PINNED: Record<'rect' | 'lshape' | 'lift', unknown> = {
     {level: 1, envelope: 115.57, footprintRect: 115.57, residual: 20.869, fragments: 2, unusable: 2.394, parking: null, adjacency: [9, 9, 6, 9, 1], circulation: [0.416, 1, 0.601, 0]},
   ],
 };
+
+// ---------------------------------------------------------------------------
+// 3b. Programme adjacency — Phase 5.3C split-room semantics
+// ---------------------------------------------------------------------------
+
+describe('programme adjacency: generated rooms outnumbering programme specs (Phase 5.3C)', () => {
+  const corrReqs: AdjacencyRequirementsByType = new Map<SpaceType, AdjacencyRequirement[]>([
+    ['corridor', [req('stair-hall', 3, true)]],
+  ]);
+  const counts = (entries: Array<[string, number]>): ProgramSpecCountByType => new Map(entries as Array<[SpaceType, number]>);
+  /** One programme corridor realised as two corridor rooms; C2 (optionally) touches the stair. */
+  const split = (c2TouchesStair: boolean, door: boolean) => floor({
+    spaces: [
+      { id: 'C1', type: 'corridor', x: 0, y: 0, w: 6, h: 1, adj: ['C2'] },
+      { id: 'C2', type: 'corridor', x: 6, y: 0, w: 1, h: 6, adj: ['C1', ...(c2TouchesStair ? ['S'] : [])] },
+      { id: 'S', type: 'stair-hall', x: c2TouchesStair ? 7 : 9, y: 0, w: 2, h: 3, adj: c2TouchesStair ? ['C2'] : [] },
+    ],
+    walls: c2TouchesStair ? [{ id: 'wCS', a: 'C2', b: 'S' }] : [],
+    openings: c2TouchesStair && door ? [{ id: 'dCS', wall: 'wCS', cx: 7, cy: 1 }] : [],
+  });
+
+  it('split corridor, one room satisfies: the single programme requirement passes (adjacency and door)', () => {
+    const m = computeAdjacencyMetrics(split(true, true), corrReqs, counts([['corridor', 1], ['stair-hall', 1]]));
+    expect(m.required).toMatchObject({ value: 1, num: 3, den: 3 });
+    expect(m.door).toMatchObject({ value: 1, num: 3, den: 3 });
+    expect(m.instances).toHaveLength(1);
+    expect(m.instances[0]).toMatchObject({ sourceSpaceId: 'C2', applicable: true, adjacencySatisfied: true, doorSatisfied: true, groupedSpaceIds: ['C1', 'C2'] });
+    // legacy per-room evaluation (no spec counts) double-counts the requirement
+    const legacy = computeAdjacencyMetrics(split(true, true), corrReqs);
+    expect(legacy.required).toMatchObject({ num: 3, den: 6 });
+    expect(legacy.door).toMatchObject({ num: 3, den: 6 });
+  });
+
+  it('split corridor, adjacent but no door: adjacency passes, doorRequired fails', () => {
+    const m = computeAdjacencyMetrics(split(true, false), corrReqs, counts([['corridor', 1], ['stair-hall', 1]]));
+    expect(m.required).toMatchObject({ num: 3, den: 3 });
+    expect(m.door).toMatchObject({ value: 0, num: 0, den: 3 });
+  });
+
+  it('split corridor, neither room satisfies: the requirement fails', () => {
+    const m = computeAdjacencyMetrics(split(false, false), corrReqs, counts([['corridor', 1], ['stair-hall', 1]]));
+    expect(m.required).toMatchObject({ value: 0, num: 0, den: 3 });
+    expect(m.door).toMatchObject({ value: 0, num: 0, den: 3 });
+    expect(m.instances).toHaveLength(1);
+    expect(m.instances[0]).toMatchObject({ adjacencySatisfied: false, doorSatisfied: false, groupedSpaceIds: ['C1', 'C2'] });
+  });
+
+  it('matching room/spec counts (and fewer rooms than specs) preserve the legacy result exactly', () => {
+    const reqs: AdjacencyRequirementsByType = new Map<SpaceType, AdjacencyRequirement[]>([
+      ['living', [req('dining', 3)]], ['dining', [req('kitchen', 3, true)]], ['corridor', [req('stair-hall', 3, true)]],
+    ]);
+    const f = floor({
+      spaces: [
+        { id: 'L', type: 'living', x: 0, y: 0, w: 4, h: 4, adj: ['D'] },
+        { id: 'D', type: 'dining', x: 4, y: 0, w: 3, h: 4, adj: ['L', 'K'] },
+        { id: 'K', type: 'kitchen', x: 7, y: 0, w: 3, h: 4, adj: ['D'] },
+        { id: 'C', type: 'corridor', x: 0, y: 4, w: 10, h: 1 },
+      ],
+      walls: [{ id: 'wDK', a: 'D', b: 'K' }],
+      openings: [{ id: 'dDK', wall: 'wDK', cx: 7, cy: 2 }],
+    });
+    const legacy = computeAdjacencyMetrics(f, reqs);
+    expect(computeAdjacencyMetrics(f, reqs, counts([['living', 1], ['dining', 1], ['kitchen', 1], ['corridor', 1]]))).toEqual(legacy);
+    expect(computeAdjacencyMetrics(f, reqs, counts([['living', 2], ['dining', 1], ['kitchen', 1], ['corridor', 3]]))).toEqual(legacy);
+    expect(computeAdjacencyMetrics(f, reqs, new Map())).toEqual(legacy);
+    expect(legacy.instances.every(i => i.groupedSpaceIds === undefined)).toBe(true);
+  });
+
+  it('multiple bedrooms with matching specs stay independently evaluated', () => {
+    const bedReqs: AdjacencyRequirementsByType = new Map<SpaceType, AdjacencyRequirement[]>([['bedroom', [req('corridor', 3, true)]]]);
+    const f = floor({
+      spaces: [
+        { id: 'B1', type: 'bedroom', x: 0, y: 0, w: 3, h: 3, adj: ['C'] },
+        { id: 'B2', type: 'bedroom', x: 3, y: 0, w: 3, h: 3, adj: [] },
+        { id: 'C', type: 'corridor', x: 0, y: 3, w: 3, h: 1, adj: ['B1'] },
+      ],
+    });
+    const m = computeAdjacencyMetrics(f, bedReqs, counts([['bedroom', 2], ['corridor', 1]]));
+    expect(m.required).toMatchObject({ num: 3, den: 6 });
+    expect(m.instances.map(i => [i.sourceSpaceId, i.adjacencySatisfied, i.groupedSpaceIds])).toEqual([['B1', true, undefined], ['B2', false, undefined]]);
+    expect(m).toEqual(computeAdjacencyMetrics(f, bedReqs));
+  });
+
+  it('generic grouping (any type, k > 1): satisfied instances = min(k, rooms touching)', () => {
+    const bedReqs: AdjacencyRequirementsByType = new Map<SpaceType, AdjacencyRequirement[]>([['bedroom', [req('corridor', 3)]]]);
+    const f = floor({
+      spaces: [
+        { id: 'B1', type: 'bedroom', x: 0, y: 0, w: 3, h: 3, adj: ['C'] },
+        { id: 'B2', type: 'bedroom', x: 3, y: 0, w: 3, h: 3, adj: [] },
+        { id: 'B3', type: 'bedroom', x: 6, y: 0, w: 3, h: 3, adj: [] },
+        { id: 'C', type: 'corridor', x: 0, y: 3, w: 3, h: 1, adj: ['B1'] },
+      ],
+    });
+    const m = computeAdjacencyMetrics(f, bedReqs, counts([['bedroom', 2]]));
+    expect(m.instances).toHaveLength(2);
+    expect(m.required).toMatchObject({ num: 3, den: 6 });
+    expect(m.instances.map(i => [i.sourceSpaceId, i.adjacencySatisfied])).toEqual([['B1', true], ['B2', false]]);
+  });
+
+  it('grouped separation requirement passes only when no room of the type touches the target', () => {
+    const sep: AdjacencyRequirementsByType = new Map<SpaceType, AdjacencyRequirement[]>([['corridor', [req('stair-hall', 2, false, false)]]]);
+    const c = counts([['corridor', 1]]);
+    expect(computeAdjacencyMetrics(split(false, false), sep, c).required).toMatchObject({ num: 2, den: 2 });
+    expect(computeAdjacencyMetrics(split(true, false), sep, c).required).toMatchObject({ num: 0, den: 2 });
+  });
+
+  it('grouped rooms with no target on the floor are not applicable (one N/A per programme spec)', () => {
+    const f = floor({ spaces: [
+      { id: 'C1', type: 'corridor', x: 0, y: 0, w: 6, h: 1 }, { id: 'C2', type: 'corridor', x: 6, y: 0, w: 1, h: 6 },
+    ] });
+    const m = computeAdjacencyMetrics(f, corrReqs, counts([['corridor', 1]]));
+    expect(m.notApplicableCount).toBe(1);
+    expect(m.required.value).toBeNull();
+  });
+
+  it('deterministic and non-mutating under repeated evaluation', () => {
+    const f = split(true, true);
+    const before = JSON.stringify(f);
+    const c = counts([['corridor', 1], ['stair-hall', 1]]);
+    const a = computeAdjacencyMetrics(f, corrReqs, c), b = computeAdjacencyMetrics(f, corrReqs, c);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+    expect(JSON.stringify(f)).toBe(before);
+  });
+
+  it('programSpecCountByType counts the generator programme per floor; out-of-range level → empty', () => {
+    const input = {
+      site: { shape: 'rectangle', width: 18, length: 25, streetWidth: 8, accessSide: 'south', setbackNorth: 3, setbackSouth: 1.5, setbackEast: 2, setbackWest: 2 },
+      building: { type: 'villa', bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, parkingSpaces: 1, kitchenType: 'closed', hasStair: true, floors: 2 },
+      seed: 42, deterministic: true, jurisdiction: 'IR',
+    } as unknown as ProjectInput;
+    const g = programSpecCountByType(input, 0);
+    expect(g.get('corridor')).toBe(1);
+    expect(g.get('stair-hall')).toBe(1);
+    expect(programSpecCountByType(input, 5).size).toBe(0);
+  });
+
+  it('L-shape split-corridor ground floor: corridor → stair-hall evaluated once and satisfied', () => {
+    const input = {
+      site: { shape: 'l-shape', width: 20, length: 26, streetWidth: 8, accessSide: 'south', setbackNorth: 3, setbackSouth: 1.5, setbackEast: 2, setbackWest: 2,
+        lShape: { width: 20, length: 26, notchWidth: 4, notchLength: 6, notchCorner: 'north-east' } },
+      building: { type: 'villa', bedrooms: 2, masterBedrooms: 1, bathrooms: 1, wc: 1, parkingSpaces: 1, kitchenType: 'closed', hasStair: true, floors: 2 },
+      seed: 42, deterministic: true, jurisdiction: 'IR',
+    } as unknown as ProjectInput;
+    const cand = generate(createProject(input)).project.candidates.find(c => c.floors[0].spaces.filter(s => s.type === 'corridor').length > 1)!;
+    expect(cand).toBeDefined();
+    const g = computeQualityMetricsV1(cand, input).floors[0].adjacency.instances.filter(i => i.sourceType === 'corridor' && i.targetType === 'stair-hall');
+    expect(g).toHaveLength(1);
+    expect(g[0].adjacencySatisfied).toBe(true);
+    expect(g[0].groupedSpaceIds!.length).toBeGreaterThan(1);
+  });
+});

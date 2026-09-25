@@ -442,6 +442,23 @@ export function programAdjacencyByType(input: ProjectInput, level: number): Adja
   return out;
 }
 
+/**
+ * Phase 5.3C: number of programme specs per type on one floor, from the same
+ * `programForFloor` call as programAdjacencyByType. Used to detect generated rooms
+ * that split one programme spec (e.g. one corridor spec realised as several rooms).
+ */
+export type ProgramSpecCountByType = Map<SpaceType, number>;
+
+export function programSpecCountByType(input: ProjectInput, level: number): ProgramSpecCountByType {
+  const out: ProgramSpecCountByType = new Map();
+  const n = Math.max(1, input.building.floors);
+  if (!Number.isInteger(level) || level < 0 || level >= n) return out;
+  const alloc = allocateBuildingProgram(input.building, n)[level];
+  if (!alloc) return out;
+  for (const spec of programForFloor(input.building, level, n === 1, alloc)) out.set(spec.type, (out.get(spec.type) ?? 0) + 1);
+  return out;
+}
+
 export interface AdjacencyInstance {
   sourceSpaceId: string;
   sourceType: SpaceType;
@@ -457,6 +474,12 @@ export interface AdjacencyInstance {
   adjacencySatisfied: boolean | null;
   /** door access exists to some target; null if not applicable or no door required */
   doorSatisfied: boolean | null;
+  /**
+   * Phase 5.3C: present only when the floor has MORE generated rooms of sourceType
+   * than programme specs — the rooms (sorted ids) evaluated as one group for this
+   * programme requirement. Absent whenever room and spec counts match (legacy shape).
+   */
+  groupedSpaceIds?: string[];
 }
 
 export interface AdjacencyMetrics {
@@ -468,11 +491,84 @@ export interface AdjacencyMetrics {
   notApplicableCount: number;
 }
 
-export function computeAdjacencyMetrics(floor: Floor, reqs: AdjacencyRequirementsByType): AdjacencyMetrics {
+/**
+ * Programme adjacency, evaluated per programme spec.
+ *
+ * Legacy (specCounts omitted, or rooms of a type ≤ programme specs of that type):
+ * one instance per generated room, exactly as before.
+ *
+ * Phase 5.3C split-room semantics (specCounts given and a type has MORE generated
+ * rooms than programme specs, k): those rooms are one group per requirement, yielding
+ * k instances (one per spec). Per-room outcomes are computed exactly as in the legacy
+ * path, then aggregated:
+ *   - adjacent requirement: satisfied instances = min(k, #rooms touching a target) —
+ *     for k = 1, passes iff ANY room of the type touches the target;
+ *   - separation requirement: satisfied instances = max(0, k − #rooms touching a target)
+ *     — for k = 1, passes iff NO room of the type touches it;
+ *   - doorRequired: door-satisfied instances = min(k, #rooms with direct door access).
+ * Weights, normalisation and the not-applicable rule are unchanged.
+ */
+export function computeAdjacencyMetrics(floor: Floor, reqs: AdjacencyRequirementsByType, specCounts?: ProgramSpecCountByType): AdjacencyMetrics {
   const spaces = [...(floor.spaces ?? [])].sort(byId);
   const instances: AdjacencyInstance[] = [];
   let reqNum = 0, reqDen = 0, doorNum = 0, doorDen = 0, na = 0;
+  // Phase 5.3C: types whose generated rooms outnumber their programme specs.
+  const grouped = new Map<string, number>();
+  if (specCounts) {
+    const roomCount = new Map<string, number>();
+    for (const s of spaces) roomCount.set(s.type, (roomCount.get(s.type) ?? 0) + 1);
+    for (const [t, n] of roomCount) {
+      const k = specCounts.get(t as SpaceType) ?? 0;
+      if (k >= 1 && n > k && (reqs.get(t as SpaceType)?.length ?? 0) > 0) grouped.set(t, k);
+    }
+  }
+  const emitGroup = (t: string, k: number): void => {
+    const members = spaces.filter(s => s.type === t);
+    const groupedSpaceIds = members.map(m => m.id);
+    for (const r of reqs.get(t as SpaceType) ?? []) {
+      const w = Math.max(0, r.weight);
+      const targetType = r.spaceType ?? null;
+      const doorRequired = !!r.doorRequired;
+      const per = members.map(m => {
+        const targets = targetType === null ? [] : spaces.filter(x => x.type === targetType && x.id !== m.id);
+        const touching = targets.some(x => (m.adjacentSpaceIds ?? []).includes(x.id) || (x.adjacentSpaceIds ?? []).includes(m.id));
+        const door = doorRequired && targets.some(x => hasDirectAccess(m.id, x.id, floor));
+        return { id: m.id, applicable: targets.length > 0, touching, door };
+      });
+      const app = per.filter(p => p.applicable);
+      if (app.length === 0) {
+        for (let j = 0; j < k; j++) {
+          na++;
+          instances.push({ sourceSpaceId: members[Math.min(j, members.length - 1)].id, sourceType: t as SpaceType, targetType, weight: w,
+            wantAdjacent: r.adjacent, doorRequired, applicable: false, adjacencySatisfied: null, doorSatisfied: null, groupedSpaceIds });
+        }
+        continue;
+      }
+      const nTouch = app.filter(p => p.touching).length;
+      const nAdjOk = r.adjacent ? Math.min(k, nTouch) : Math.max(0, k - nTouch);
+      const nDoor = Math.min(k, app.filter(p => p.door).length);
+      // Deterministic representative rooms: satisfying rooms first, then by id.
+      const reps = [...app].sort((a, b) => {
+        const sa = (r.adjacent ? a.touching : !a.touching) ? 0 : 1, sb = (r.adjacent ? b.touching : !b.touching) ? 0 : 1;
+        return sa - sb || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+      });
+      for (let j = 0; j < k; j++) {
+        const adjacencySatisfied = j < nAdjOk;
+        reqDen += w; if (adjacencySatisfied) reqNum += w;
+        let doorSatisfied: boolean | null = null;
+        if (doorRequired) { doorSatisfied = j < nDoor; doorDen += w; if (doorSatisfied) doorNum += w; }
+        instances.push({ sourceSpaceId: reps[Math.min(j, reps.length - 1)].id, sourceType: t as SpaceType, targetType, weight: w,
+          wantAdjacent: r.adjacent, doorRequired, applicable: true, adjacencySatisfied, doorSatisfied, groupedSpaceIds });
+      }
+    }
+  };
+  const emitted = new Set<string>();
   for (const s of spaces) {
+    if (grouped.has(s.type)) {
+      // emitted once, at the position of the group's first room (sorted ids)
+      if (!emitted.has(s.type)) { emitted.add(s.type); emitGroup(s.type, grouped.get(s.type)!); }
+      continue;
+    }
     for (const r of reqs.get(s.type) ?? []) {
       const w = Math.max(0, r.weight);
       const targetType = r.spaceType ?? null;
@@ -1119,7 +1215,7 @@ export function computeQualityMetricsV1(candidate: LayoutCandidate, input: Proje
       level: fl.level,
       residual: computeResidualMetrics(fl),
       parking: computeParkingMetrics(fl),
-      adjacency: computeAdjacencyMetrics(fl, programAdjacencyByType(input, fl.level)),
+      adjacency: computeAdjacencyMetrics(fl, programAdjacencyByType(input, fl.level), programSpecCountByType(input, fl.level)),
       circulation: computeCirculationMetrics(fl),
       rooms: computeRoomUsabilityMetrics(fl),
       daylight: computeDaylightMetrics(fl),
