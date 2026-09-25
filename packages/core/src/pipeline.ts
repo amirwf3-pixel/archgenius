@@ -34,6 +34,12 @@ export interface GenerateOptions {
    * candidate list is always available via `project.candidates`.
    */
   topCandidates?: number;
+  /**
+   * Phase 5.2 (opt-in, default OFF): complete missing programme `doorRequired`
+   * doors where the two rooms already share a wall (openings stage 3b).
+   * Omitted or false = legacy output, byte-identical.
+   */
+  programmeDoorCompletion?: boolean;
 }
 
 /**
@@ -151,7 +157,9 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     'daylight-orientation',
     'alternative-zoning',
   ];
-  const all = generateLayouts(project.input, strategies);
+  const all = opts.programmeDoorCompletion === true
+    ? generateLayouts(project.input, strategies, { programmeDoorCompletion: true })
+    : generateLayouts(project.input, strategies);
   // Phase 13.1: final feasibility gate — filter out geometrically invalid candidates (w<=0,h<=0,area<=0,below min)
   // Phase 13.2: when NO valid candidate exists, return an explicit INFEASIBLE result —
   // an invalid/below-min candidate is never selected as bestCandidate and never exposed as usable.

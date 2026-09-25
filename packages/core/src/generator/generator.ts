@@ -28,7 +28,7 @@ import {
 import { DEFAULT_STAIR_CONFIG, type Stair, type Elevator, type ElevatorDoorSide } from '../model/stairs.js';
 import { buildElevator, cellFitsShaft, elevatorLandingSide, findCoreAdjacentShaftCell, rigidShaftCell } from './elevator-shaft.js';
 import { generateWalls } from './walls.js';
-import { placeOpenings } from './openings.js';
+import { placeOpenings, programmeDoorRequirements } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
 import { validateLayout } from '../validation/validator.js';
 import { placeSpaces, type PlacedSpec } from '../layout/placer.js';
@@ -65,10 +65,21 @@ export const ALL_STRATEGIES: CandidateStrategy[] = [
   'alternative-zoning',
 ];
 
+/** Phase 5.2 — optional generator behaviour. Every field defaults to OFF (legacy, byte-identical). */
+export interface GenerateLayoutsOptions {
+  /**
+   * Opt-in programme door completion (openings stage 3b): adds a direct door
+   * where a programme `doorRequired` pair already shares a wall but has no door.
+   */
+  programmeDoorCompletion?: boolean;
+}
+
 export function generateLayouts(
   input: ProjectInput,
   strategies: CandidateStrategy[] = ['functional-circulation'],
+  options: GenerateLayoutsOptions = {},
 ): LayoutCandidate[] {
+  const programmeDoorCompletion = options.programmeDoorCompletion === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -121,7 +132,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -177,6 +188,7 @@ function buildFloorSiteAware(
   explanations: string[],
   alloc: FloorProgramAllocation,
   coreAnchors: Map<'stair-hall' | 'elevator-hall', CoreAnchor>,
+  programmeDoorCompletion = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -731,7 +743,11 @@ function buildFloorSiteAware(
   (floor as any).siteShape = input.site.shape;
   (floor as any).assignedProgram = assignedProgram;
 
-  const { openings } = placeOpenings(floor, input.site.accessSide);
+  // Phase 5.2: stage 3b runs only when opted in; the omitted/false path makes the
+  // exact legacy two-argument call so output stays byte-identical.
+  const { openings } = programmeDoorCompletion
+    ? placeOpenings(floor, input.site.accessSide, { programmeDoorRequirements: programmeDoorRequirements(specs) })
+    : placeOpenings(floor, input.site.accessSide);
   floor.openings = openings;
 
   // Phase 18: furniture is placed AFTER the openings exist so pieces can avoid

@@ -24,6 +24,55 @@ import {
 } from '../units.js';
 import { vSub, vNorm } from '../geometry/vec2.js';
 import type { Vec2 } from '../geometry/vec2.js';
+import { segmentBlocksDoorSwing, doorSwingSectorPolygon } from '../geometry/swing.js';
+import { privacyTransitionAllowed } from '../layout/constraints.js';
+import type { AdjacencyRequirement } from '../model/space.js';
+
+/**
+ * Phase 5.2 — one programme door requirement, taken verbatim from the programme
+ * specs (`spec.adjacencies[i]` with `adjacent: true` and `doorRequired: true`).
+ * No rule or weight is invented here: this is just the (source, target) type pair.
+ */
+export interface ProgrammeDoorRequirement {
+  sourceType: string;
+  targetType: string;
+}
+
+/** Phase 5.2 — optional behaviour of placeOpenings. Omitted = legacy behaviour, byte-identical. */
+export interface PlaceOpeningsOptions {
+  /**
+   * When provided (opt-in), stage 3b adds at most ONE direct door per applicable
+   * requirement and source room whenever the two rooms already share a wall with
+   * a free span but no door joins them. Existing doors are never removed.
+   */
+  programmeDoorRequirements?: readonly ProgrammeDoorRequirement[];
+}
+
+/**
+ * Phase 5.2 — derive the door requirements from the EXISTING programme specs only.
+ * Keeps entries with a target type, `adjacent: true` and `doorRequired: true`; drops
+ * same-type entries (e.g. the corridor's own copy of corridor→bedroom); dedups and
+ * sorts by (sourceType, targetType) so the stage order is deterministic.
+ */
+export function programmeDoorRequirements(
+  specs: ReadonlyArray<{ type: string; adjacencies?: ReadonlyArray<AdjacencyRequirement> }>,
+): ProgrammeDoorRequirement[] {
+  const seen = new Set<string>();
+  const out: ProgrammeDoorRequirement[] = [];
+  for (const spec of specs) {
+    for (const a of spec.adjacencies ?? []) {
+      if (!a.spaceType || a.adjacent !== true || a.doorRequired !== true) continue;
+      if (a.spaceType === spec.type) continue;
+      const key = `${spec.type}|${a.spaceType}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ sourceType: spec.type, targetType: a.spaceType });
+    }
+  }
+  out.sort((x, y) => (x.sourceType < y.sourceType ? -1 : x.sourceType > y.sourceType ? 1
+    : x.targetType < y.targetType ? -1 : x.targetType > y.targetType ? 1 : 0));
+  return out;
+}
 
 interface OpeningPlaced {
   wallId: string;
@@ -91,7 +140,7 @@ function computeDoorLeaf(center: Vec2, wallDir: Vec2, normal: Vec2, width: numbe
 }
 
 /** Place openings on a floor, mutating walls/openings arrays. */
-export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings: Opening[]; entranceWallId?: string; entranceDoorId?: string } {
+export function placeOpenings(floor: Floor, accessSide: AccessSide, options?: PlaceOpeningsOptions): { openings: Opening[]; entranceWallId?: string; entranceDoorId?: string } {
   const openings: Opening[] = [];
   let openingCounter = 0;
   const mkId = (type: string) => `${type}-${floor.level}-${openingCounter++}`;
@@ -490,6 +539,111 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide): { openings:
     if (!pick) continue;
     placeDoorOnWall(pick.wall, s.id, width);
     roomByPrimary.set(s.id, { key: bestKey, score: 1, wall: pick.wall, span: pick.span, otherId: bestOther.id });
+  }
+
+  // 3b) Phase 5.2 — OPT-IN programme door completion. Runs only when the caller
+  //     passes programme door requirements (default: never — legacy output is
+  //     byte-identical). For each requirement (deterministic (source, target) order)
+  //     and each source room (id order): if no door already joins the room to ANY
+  //     room of the target type, add at most ONE direct door on the longest existing
+  //     shared wall that has a free span (same pairWalls / bestFreeWall /
+  //     placeDoorOnWall helpers as the stages above). Guards: same-type pairs,
+  //     parking / yard / balcony / elevator-hall are skipped; shaftPairOk and
+  //     privacyTransitionAllowed must pass. A new door whose swing sector is
+  //     crossed by a wall, overlaps another door's swing, or collides on its wall
+  //     is rolled back completely. Existing doors are never moved or removed.
+  //     Both rooms must already share a door-graph component (through-room guard).
+  const doorReqs = options?.programmeDoorRequirements;
+  if (doorReqs && doorReqs.length) {
+    const UNSUITABLE = new Set(['parking', 'yard', 'balcony', 'elevator-hall']);
+    const DOOR_TYPES = new Set(['door', 'entrance', 'sliding-door']);
+    const joined = (a: string, b: string): boolean => openings.some(o => DOOR_TYPES.has(o.type) &&
+      ((o.spaceA === a && o.spaceB === b) || (o.spaceA === b && o.spaceB === a)));
+    const edgesCrossSwing = (poly: Vec2[], door: Opening): boolean => {
+      for (let i = 0; i < poly.length; i++) {
+        const p = poly[i], q = poly[(i + 1) % poly.length];
+        if (segmentBlocksDoorSwing(p.x, p.y, q.x, q.y, door)) return true;
+      }
+      return false;
+    };
+    const swingClash = (n: Opening): boolean => {
+      for (const w of floor.walls) {
+        if (w.id === n.wallId) continue;
+        if (segmentBlocksDoorSwing(w.start.x, w.start.y, w.end.x, w.end.y, n)) return true;
+      }
+      const nSector = doorSwingSectorPolygon(n);
+      for (const o of openings) {
+        if (o === n || !DOOR_TYPES.has(o.type)) continue;
+        if (o.wallId === n.wallId &&
+          Math.hypot(o.center.x - n.center.x, o.center.y - n.center.y) < (o.width + n.width) / 2 + 0.1) return true;
+        const oSector = doorSwingSectorPolygon(o);
+        if (!nSector || !oSector) continue;
+        if (edgesCrossSwing(nSector, o) || edgesCrossSwing(oSector, n)) return true;
+      }
+      return false;
+    };
+    // Through-room guard: a 3b door may only join two rooms that are ALREADY in the
+    // same connected component of the door graph (union-find over the doors placed
+    // by the stages above). Such a door changes no room's reachability, so it can
+    // neither create a through-room (e.g. a master bathroom becoming the passage
+    // between corridor and master bedroom) nor change what the Phase 25 repair
+    // sees and adds afterwards. Rooms not yet connected are left to the existing
+    // stage 3 / Phase 25 access logic, exactly as on the legacy path.
+    const doorComp = new Map<string, string>();
+    for (const sp of floor.spaces) doorComp.set(sp.id, sp.id);
+    const compOf = (id: string): string => {
+      let r = id;
+      while (doorComp.get(r) !== undefined && doorComp.get(r) !== r) r = doorComp.get(r)!;
+      return r;
+    };
+    for (const o of openings) {
+      if (!DOOR_TYPES.has(o.type)) continue;
+      const w = floor.walls.find(x => x.id === o.wallId);
+      if (!w || !w.spaceIds[0] || !w.spaceIds[1]) continue;
+      const ra = compOf(w.spaceIds[0]), rb = compOf(w.spaceIds[1]);
+      if (ra !== rb) doorComp.set(ra < rb ? rb : ra, ra < rb ? ra : rb);
+    }
+    const spacesSorted = [...floor.spaces].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const req of doorReqs) {
+      if (req.sourceType === req.targetType) continue;
+      if (UNSUITABLE.has(req.sourceType) || UNSUITABLE.has(req.targetType)) continue;
+      for (const src of spacesSorted) {
+        if (src.type !== req.sourceType) continue;
+        const targets = spacesSorted.filter(t => t.type === req.targetType && t.id !== src.id);
+        if (!targets.length) continue;
+        if (targets.some(t => joined(src.id, t.id))) continue; // already satisfied
+        let best: { target: Space; wall: Wall; len: number; key: string; width: number } | null = null;
+        for (const t of targets) {
+          if (!shaftPairOk(src.type, t.type)) continue;
+          if (!privacyTransitionAllowed(src.privacy, t.privacy)) continue;
+          if (compOf(src.id) !== compOf(t.id)) continue; // through-room guard (see above)
+          const key = src.id < t.id ? `${src.id}|${t.id}` : `${t.id}|${src.id}`;
+          const walls = pairWalls.get(key);
+          if (!walls) continue; // no existing shared wall: placement issue, out of scope
+          const width = doorWidthFor(src.type, t.type);
+          const pick = bestFreeWall(walls, width);
+          if (!pick) continue; // wall too short / fully occupied
+          const len = wallLength(pick.wall);
+          if (!best || len > best.len + 1e-9 || (Math.abs(len - best.len) <= 1e-9 && key < best.key)) {
+            best = { target: t, wall: pick.wall, len, key, width };
+          }
+        }
+        if (!best) continue;
+        // Swing side follows stage 3: a wet room is the side the leaf opens into.
+        const into = WET.has(src.type) && !WET.has(best.target.type) ? src.id : best.target.id;
+        const countBefore = openings.length;
+        const counterBefore = openingCounter;
+        placeDoorOnWall(best.wall, into, best.width);
+        if (openings.length === countBefore) continue;
+        const added = openings[openings.length - 1];
+        if (swingClash(added)) {
+          openings.pop();
+          best.wall.openingIds.pop();
+          occupied.get(best.wall.id)?.pop();
+          openingCounter = counterBefore;
+        }
+      }
+    }
   }
 
   // ---- Windows (professional) ----

@@ -208,6 +208,18 @@ ProjectInput (same as Phase10.1)
   → PDF/XLSX/report/manifest same canonical candidate, checksum deterministic
 ```
 
+## Phase 5.2 — Programme door completion (opt-in)
+
+- **Option:** `GenerateOptions.programmeDoorCompletion` (also `generateLayouts(input, strategies, { programmeDoorCompletion })`). **Default `false`.** Omitted or `false` makes the exact legacy `placeOpenings(floor, accessSide)` call: result JSON and DXF are byte-identical to the pre-5.2 output.
+- **Source of truth:** `programmeDoorRequirements(specs)` (`generator/openings.ts`) reads only the existing programme specs — `spec.adjacencies` entries with `adjacent: true` and `doorRequired: true`; same-type entries dropped. No new adjacency rules or weights.
+- **Stage 3b** (`placeOpenings`, after stage 3, before windows, so furniture still sees every door): for each requirement and each source room, when no door joins it to any room of the target type, add at most ONE direct door on the longest existing shared wall with a free span, using the existing `pairWalls` / `bestFreeWall` / `placeDoorOnWall` helpers. Existing doors are never moved or removed.
+- **Guards:** already-satisfied pairs skipped; same-type pairs and parking / yard / balcony / elevator-hall skipped; `shaftPairOk` and `privacyTransitionAllowed` must pass; wall too short / occupied → skipped; the two rooms must already be in the same door-graph component (through-room guard — a 3b door never changes reachability, so it cannot create a through-room or suppress the Phase 25 connectivity repair); a new door whose swing is crossed by a wall, overlaps another door's swing, or collides on its wall is rolled back completely (openings, wall occupancy and id counter restored).
+- **Deterministic:** requirements sorted by (source, target), rooms by id, ties broken by wall length then pair key. No randomness.
+- **Why still opt-in:** enabling it changes the geometry/DXF golden hashes (`elevator-shaft.test.ts`, Phase 5.1c pinned digests), which have not been re-pinned; extra doors change furniture placement and therefore door/furniture ranking tiers; a master bathroom may carry two doors (corridor + bedroom), an unresolved privacy trade-off.
+- **Measured** (128 candidates: 4 sites × 4 programmes × 2 seeds × 4 strategies, Quality V1 adjacency `door`): door-required satisfaction **696 → 924 / 1018 (68.4% → 90.8%)** — 120 dining→kitchen, 108 master-bedroom→master-bathroom; no instance worse, no new HARD / CIRC / DOOR / FURN / PRIVACY findings, room geometry unchanged.
+- **Remaining 94 unmet:** 80 have no shared wall (placement — out of scope for 3b: corridor→stair-hall 24, foyer→guest-wc 24, master-bedroom→master-bathroom 8, bedroom→corridor 6, master-bedroom→corridor 6, foyer→living 6, dining→kitchen 6); 6 foyer→living shared wall < 1.5 m; 6 master-bedroom→master-bathroom blocked by the through-room guard (master bedroom not yet connected); 2 dining→kitchen rolled back for swing clash.
+- **Tests:** `generator/programme-doors.test.ts` (21).
+
 ## Persistence
 
 - Projects serializable JSON, plain data, schema version 6 (Phase11), preserve saved projects, locked state persisted, polygon canonical
