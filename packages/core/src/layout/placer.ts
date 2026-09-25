@@ -409,6 +409,15 @@ export interface PlacerOptions {
    * programme minimum width/area and living/dining keep theirs; otherwise legacy.
    */
   galleryDaylightAware?: boolean;
+  /**
+   * Phase 5.4C: when the side-by-side living/dining row would leave dining with no
+   * exterior edge while the band's living-side edge lies on the building exterior,
+   * reuse the existing front-to-back stack (living at the front, dining behind) so
+   * both rooms touch that exterior side edge. Applied only when the band is long
+   * enough for both programme minimums, no other public cell still needs the row,
+   * and dining keeps any kitchen contact it had; otherwise legacy side-by-side.
+   */
+  stackPublicForDaylight?: boolean;
 }
 
 /** True when the programme carries a dining↔kitchen doorRequired adjacency (either direction). */
@@ -417,6 +426,34 @@ function programmeRequiresDiningKitchenDoor(specs: PlacedSpec[]): boolean {
   return specs.some(s =>
     (s.type === 'dining' && (s.adjacencies ?? []).some(a => a.spaceType === 'kitchen' && a.adjacent && a.doorRequired === true)) ||
     (s.type === 'kitchen' && (s.adjacencies ?? []).some(a => a.spaceType === 'dining' && a.adjacent && a.doorRequired === true)));
+}
+
+/**
+ * Phase 5.4C — pure geometric predicate for the daylight-aware public stack (frame-south
+ * coordinates: band front at band.y, living cell at band.x). True when the legacy
+ * side-by-side dining (the band's east cell, full row height from the band front)
+ * touches no footprint edge, the band's living-side (west) edge lies on the footprint
+ * boundary, and dining keeps any kitchen contact it had (the stacked dining spans the
+ * band's back edge). Edge tolerance is half of snap()'s 1 cm grid.
+ */
+export function publicStackForDaylightApplies(
+  band: Rect, footprint: Rect, legacyLivingW: number, rowH: number, kitchen: Rect | null,
+): boolean {
+  const E = 0.005;
+  const fpR = footprint.x + footprint.w, fpB = footprint.y + footprint.h;
+  const bandR = band.x + band.w, bandB = band.y + band.h;
+  const legacyDin: Rect = { x: band.x + legacyLivingW, y: band.y, w: band.w - legacyLivingW, h: rowH };
+  const diningExterior = Math.abs(bandR - fpR) < E || Math.abs(band.y - footprint.y) < E ||
+    Math.abs(band.y + rowH - fpB) < E;
+  if (diningExterior) return false;
+  if (Math.abs(band.x - footprint.x) >= E) return false;
+  if (!kitchen) return true;
+  const ox = Math.min(legacyDin.x + legacyDin.w, kitchen.x + kitchen.w) - Math.max(legacyDin.x, kitchen.x);
+  const oy = Math.min(legacyDin.y + legacyDin.h, kitchen.y + kitchen.h) - Math.max(legacyDin.y, kitchen.y);
+  const touching = ((Math.abs(legacyDin.x + legacyDin.w - kitchen.x) < E || Math.abs(kitchen.x + kitchen.w - legacyDin.x) < E) && oy > E) ||
+    ((Math.abs(legacyDin.y + legacyDin.h - kitchen.y) < E || Math.abs(kitchen.y + kitchen.h - legacyDin.y) < E) && ox > E);
+  if (!touching) return true;
+  return Math.abs(kitchen.y - bandB) < E && Math.min(kitchen.x + kitchen.w, bandR) - Math.max(kitchen.x, band.x) > E;
 }
 
 export function placeSpaces(
@@ -1778,10 +1815,26 @@ function placeSpacesFacingSouth(
         const publicMinH = Math.max(livingMinH, diningMinH);
         const publicH = Math.max(publicRect.h, publicMinH);
         const requiredMinW = livingMinW + diningMinW;
+        // Phase 5.4C (opt-in): daylight-aware stacking — see PlacerOptions.stackPublicForDaylight.
+        let stackForDaylight = false;
+        if (opts.stackPublicForDaylight === true && !shallowBand && publicRect.w >= requiredMinW - 1e-6 &&
+            guestWc === undefined && publicUnplaced.length === 0 &&
+            publicRect.h >= livingMinH + diningMinH - 1e-6) {
+          const legacyLivW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, livingW));
+          const k = placed.find(p => p.type === 'kitchen');
+          stackForDaylight = publicStackForDaylightApplies(publicRect, footprint, legacyLivW, publicH, k ? k.rect : null);
+          if (stackForDaylight) explanation.push(`Phase 5.4C daylight-aware public stack: living front, dining behind — both on the band's exterior side edge (band ${publicRect.w.toFixed(2)}×${publicRect.h.toFixed(2)} m)`);
+        }
         // Phase 13.1: feasibility-first — if not enough width for side-by-side, stack vertically preserving min
-        if (publicRect.w < requiredMinW - 1e-6) {
+        if (publicRect.w < requiredMinW - 1e-6 || stackForDaylight) {
           // Not enough width side-by-side — check if we can stack vertically (tall publicRect)
           if (publicRect.h >= livingMinH + diningMinH - 1e-6) {
+            // Phase 5.4C: pre-align the stacked rooms' x-extent to snap()'s 1 cm grid, keeping the
+            // right edge at or inside the band (the adjoining corridor edge is not snapped), so the
+            // final snap pass cannot push living/dining into the corridor. Legacy stack unchanged.
+            const stackX = stackForDaylight ? Math.round((publicRect.x + 1e-9) * 100) / 100 : publicRect.x;
+            const stackW = stackForDaylight
+              ? Math.floor((publicRect.x + publicRect.w - stackX) * 100 + 1e-9) / 100 : publicRect.w;
             // Phase 15 M4: aim both main rooms at (preference-aware) area needs FIRST, then
             // share any genuine surplus by target — instead of the fixed 0.55 split which
             // left dining below 12 m² on tall narrow bands (12×18 family) and giant rooms
@@ -1806,17 +1859,17 @@ function placeSpacesFacingSouth(
               const dy2 = Math.round((publicRect.y + livingH) * 100) / 100;
               diningH = Math.round((publicRect.y + publicRect.h - dy2) * 100) / 100;
               placed.push(mkSpace('living',
-                { x: publicRect.x, y: publicRect.y, w: Math.max(publicRect.w, livingMinW), h: livingH },
+                { x: stackX, y: publicRect.y, w: Math.max(stackW, livingMinW), h: livingH },
                 living.placedLabel, living.placedId, 'public'));
               placed.push(mkSpace('dining',
-                { x: publicRect.x, y: dy2, w: Math.max(publicRect.w, diningMinW), h: diningH },
+                { x: stackX, y: dy2, w: Math.max(stackW, diningMinW), h: diningH },
                 dining.placedLabel, dining.placedId, 'public'));
             } else {
               placed.push(mkSpace('living',
-                { x: publicRect.x, y: publicRect.y, w: Math.max(publicRect.w, livingMinW), h: livingH },
+                { x: stackX, y: publicRect.y, w: Math.max(stackW, livingMinW), h: livingH },
                 living.placedLabel, living.placedId, 'public'));
               placed.push(mkSpace('dining',
-                { x: publicRect.x, y: diningY, w: Math.max(publicRect.w, diningMinW), h: diningH },
+                { x: stackX, y: diningY, w: Math.max(stackW, diningMinW), h: diningH },
                 dining.placedLabel, dining.placedId, 'public'));
             }
           } else {

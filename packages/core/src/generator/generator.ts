@@ -100,6 +100,14 @@ export interface GenerateLayoutsOptions {
    * (adoptStairCoreConnectorVariant).
    */
   connectStairCore?: boolean;
+  /**
+   * Phase 5.4C opt-in (default OFF): rectangular placer stacks living (front) and
+   * dining (behind) when the side-by-side row would leave dining without an exterior
+   * edge and the band's living-side edge is exterior (see
+   * PlacerOptions.stackPublicForDaylight). Adopted per candidate only through the
+   * validator-guarded comparison (adoptPublicStackDaylightVariant).
+   */
+  stackPublicForDaylight?: boolean;
 }
 
 export function generateLayouts(
@@ -112,6 +120,7 @@ export function generateLayouts(
   const preferLShapeProgrammeAdjacency = options.preferLShapeProgrammeAdjacency === true;
   const galleryDaylightAware = options.galleryDaylightAware === true;
   const connectStairCore = options.connectStairCore === true;
+  const stackPublicForDaylight = options.stackPublicForDaylight === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -156,7 +165,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -164,7 +173,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -222,9 +231,16 @@ export function generateLayouts(
     // Phase 5.4B (opt-in): the stair-core connector variant (built on the same adopted
     // options) is adopted ONLY when the validator confirms strictly fewer
     // corridor↔stair-hall and inaccessible-space findings at no other cost.
-    candidates.push(connectStairCore
+    const withConnector = connectStairCore
       ? adoptStairCoreConnectorVariant(withGallery, buildCandidate(strategy, lAdjUsed, withGallery !== base, true))
-      : withGallery);
+      : withGallery;
+    // Phase 5.4C (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C. The public
+    // stack variant is built on the options already adopted; in the placer a 5.4A
+    // gallery that already placed living/dining takes precedence (stack never runs).
+    candidates.push(stackPublicForDaylight
+      ? adoptPublicStackDaylightVariant(withConnector,
+        buildCandidate(strategy, lAdjUsed, withGallery !== base, withConnector !== withGallery, true))
+      : withConnector);
   }
 
   sortCandidates(candidates);
@@ -299,6 +315,33 @@ export function adoptGalleryDaylightVariant(base: LayoutCandidate, variant: Layo
   const db = dyl(base), dv = dyl(variant);
   if (!(dv < db)) return base;
   variant.explanations.push(`Phase 5.4A: daylight-aware entry-gallery variant adopted (${DAYLIGHT_RULE} findings ${db}→${dv}) — validator confirmed no lost validity, no added HARD / circulation / access / daylight finding.`);
+  return variant;
+}
+
+/**
+ * Phase 5.4C validated adoption. The daylight-aware public-stack variant replaces
+ * the base candidate only when, under the full validator, it:
+ *   - keeps validity (never valid → invalid),
+ *   - adds no HARD finding (per-code HARD counts never increase),
+ *   - adds no circulation / access / daylight finding of any severity (per code),
+ *   - has strictly fewer MBH4-DYL-001 findings.
+ * Otherwise the base candidate is returned untouched. Deterministic.
+ */
+export function adoptPublicStackDaylightVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (JSON.stringify(variant.floors) === JSON.stringify(base.floors)) return base;
+  if (base.valid && !variant.valid) return base;
+  const counts = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const guarded = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const bc = counts(base, guarded), vc = counts(variant, guarded);
+  for (const [k, n] of vc) if (n > (bc.get(k) ?? 0)) return base;
+  const dyl = (c: LayoutCandidate) => c.findings.filter(f => f.code === DAYLIGHT_RULE).length;
+  const db = dyl(base), dv = dyl(variant);
+  if (!(dv < db)) return base;
+  variant.explanations.push(`Phase 5.4C: daylight-aware public-stack variant adopted (${DAYLIGHT_RULE} findings ${db}→${dv}) — validator confirmed no lost validity, no added HARD / circulation / access / daylight finding.`);
   return variant;
 }
 
@@ -414,6 +457,7 @@ function buildFloorSiteAware(
   preferLShapeProgrammeAdjacency = false,
   galleryDaylightAware = false,
   connectStairCore = false,
+  stackPublicForDaylight = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -553,6 +597,7 @@ function buildFloorSiteAware(
     const placerOpts = {
       ...(preferDiningKitchenAdjacency ? { preferDiningKitchenAdjacency: true } : {}),
       ...(galleryDaylightAware ? { galleryDaylightAware: true } : {}),
+      ...(stackPublicForDaylight ? { stackPublicForDaylight: true } : {}),
     };
     const result = Object.keys(placerOpts).length > 0
       ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, placerOpts)

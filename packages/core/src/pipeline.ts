@@ -72,6 +72,15 @@ export interface GenerateOptions {
    * Omitted or false = legacy output.
    */
   connectStairCore?: boolean;
+  /**
+   * Phase 5.4C (opt-in, default OFF): the rectangular placer stacks living (front)
+   * and dining (behind) when the side-by-side row would leave dining without an
+   * exterior edge and the band's living-side edge is exterior, so both rooms touch
+   * it; adopted only when the validator confirms strictly fewer MBH4-DYL-001
+   * findings with no lost validity and no added HARD / circulation / access /
+   * daylight finding. Omitted or false = legacy output.
+   */
+  stackPublicForDaylight?: boolean;
 }
 
 /**
@@ -195,6 +204,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.preferLShapeProgrammeAdjacency === true ? { preferLShapeProgrammeAdjacency: true } : {}),
     ...(opts.galleryDaylightAware === true ? { galleryDaylightAware: true } : {}),
     ...(opts.connectStairCore === true ? { connectStairCore: true } : {}),
+    ...(opts.stackPublicForDaylight === true ? { stackPublicForDaylight: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)
