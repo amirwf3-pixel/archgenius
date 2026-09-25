@@ -467,6 +467,56 @@ export interface PlacerOptions {
    * otherwise the 5.4A geometry is used unchanged.
    */
   diningEntryColumn?: boolean;
+  /**
+   * Phase 5.6A: on an upper floor (the caller passes this only for level > 0) of a
+   * horizontal / L-spur corridor with no public or semi-private programme, when the
+   * existing Phase 13 side-by-side check says the private band behind the corridor
+   * cannot host its clusters, move the minimum number of trailing private clusters (in
+   * their existing order) to the empty front zone across the corridor (see
+   * upperFloorFrontPrivateSplit). Both sides are painted by the unchanged horizontal
+   * column painter against the corridor. Applied only when both sides pass the existing
+   * capacity checks and every painted room touches the corridor; otherwise legacy.
+   */
+  upperFloorFrontPrivate?: boolean;
+}
+
+/** Placer explanation prefix proving the Phase 5.6A upper-floor front split fired. */
+export const UPPER_FLOOR_FRONT_PRIVATE_APPLIED = 'Phase 5.6A upper-floor front private split';
+
+/** Capacity demand of one private cluster for upperFloorFrontPrivateSplit. */
+export interface FrontSplitGroup {
+  /** Each room's minimum width along the corridor (the Phase 13 computeMinWidth). */
+  minWidths: number[];
+  /** Each room's minimum depth across the band (the Phase 13 computeMinHeight). */
+  minDepths: number[];
+}
+
+/**
+ * Phase 5.6A — pure: the minimum number k ≥ 1 of TRAILING groups (order preserved) to
+ * move from the band behind the corridor to the front zone so that BOTH sides pass the
+ * existing Phase 13 side-by-side capacity check (Σ room minimum widths ≤ side width) and
+ * every room's minimum depth fits its side's depth. At least one group stays behind.
+ * Returns null when the back band is already feasible, the input is invalid, or no k works.
+ */
+export function upperFloorFrontPrivateSplit(
+  groups: FrontSplitGroup[],
+  back: { w: number; h: number },
+  front: { w: number; h: number },
+): number | null {
+  const E = 1e-6;
+  const okDim = (v: number) => Number.isFinite(v) && v > 0;
+  if (!Array.isArray(groups) || groups.length < 2) return null;
+  if (![back.w, back.h, front.w, front.h].every(okDim)) return null;
+  if (groups.some(g => g.minWidths.length === 0 || g.minWidths.length !== g.minDepths.length
+    || ![...g.minWidths, ...g.minDepths].every(okDim))) return null;
+  const fits = (gs: FrontSplitGroup[], side: { w: number; h: number }) =>
+    gs.reduce((a, g) => a + g.minWidths.reduce((x, y) => x + y, 0), 0) <= side.w + E
+    && gs.every(g => g.minDepths.every(d => d <= side.h + E));
+  if (fits(groups, back)) return null;
+  for (let k = 1; k < groups.length; k++) {
+    if (fits(groups.slice(0, groups.length - k), back) && fits(groups.slice(groups.length - k), front)) return k;
+  }
+  return null;
 }
 
 /** Placer explanation prefix proving the Phase 5.5C main-room minimum dimension fired. */
@@ -1146,6 +1196,205 @@ function placeSpacesFacingSouth(
 
     explanation.push(`Phase13 generic private clusters: ${genericClusters.map(c=>`${c.id}[${c.types.join('+')}] mustTouchCorridor=${c.mustTouchCorridor} sep=[${c.separationConstraints.join(',')}]`).join(' | ')}`);
 
+    // Horizontal-spine column painter (extracted verbatim from the Phase 13 bounded
+    // search so Phase 5.6A can reuse it for the front zone; legacy calls it with the
+    // private band and the full cluster list — identical arithmetic).
+    const paintHorizontalColumns = (band: Rect, clusters: GenericCluster[], attempt: number): Space[] => {
+      const attemptPlaced: Space[] = [];
+      // Horizontal spine generic — Phase 15 M4: column minimums include each room's
+      // area need at the band height (with the main-room preference); growth capped
+      // at 1.75×target; slack becomes intentional void at the band's far end.
+      let clusterMinWs = clusters.map(cl => {
+        return cl.rooms.reduce((s, r) => s + mainPrefW(r, band.h), 0);
+      });
+      // Phase 5.5C (opt-in): raise the chosen main room's column minimum to the rule
+      // width — only when the band depth already meets it and the raised minimums
+      // still fit the band (width taken from slack only; every other column keeps its
+      // existing minimum). Otherwise the legacy minimums stand.
+      let hRaise = false;
+      if (mainDim && band.h + 1e-6 >= mainDim.width) {
+        // A paired column must also leave the partner its paired-split floor (the
+        // same floors the split below applies), so the chosen room can take the width.
+        const splitFloor = (cl: GenericCluster, i: number): number => i === 0
+          ? Math.max(cl.rooms[0].minWidth ?? 2.2, 2.0) : Math.max(cl.rooms[1].minWidth ?? 1.2, 1.0);
+        const raised = clusters.map(cl => {
+          const v = cl.rooms.reduce((s, r) => s + mainPrefW(r, band.h, true), 0);
+          const k = cl.rooms.length === 2 ? cl.rooms.findIndex(r => r.placedId === mainDim.placedId) : -1;
+          return k >= 0 ? Math.max(v, mainDim.width + splitFloor(cl, 1 - k)) : v;
+        });
+        if (raised.some((v, i) => v > clusterMinWs[i] + 1e-9) && raised.reduce((a, b) => a + b, 0) <= band.w + 1e-6) {
+          clusterMinWs = raised;
+          hRaise = true;
+          mainDimApplied = true;
+        }
+      }
+      const clusterCapWs = clusters.map(cl => {
+        const capA = cl.rooms.reduce((s, r) => s + Math.max((r.minArea ?? 0) * 1.1, Math.max(r.targetArea ?? 0, r.minArea ?? 0) * 1.75), 0);
+        return capA / Math.max(band.h, 0.5);
+      });
+      const clusterRawMinWs = clusters.map(cl => cl.rooms.reduce((s, r) => s + Math.max(r.minWidth ?? 1.0, 1.0), 0));
+      const totalMinWRaw = clusterMinWs.reduce((a,b)=>a+b,0);
+      const needsFitW = totalMinWRaw <= band.w + 1e-6;
+      const clusterMinWsEff = needsFitW ? clusterMinWs : clusterRawMinWs;
+      const totalMinW = clusterMinWsEff.reduce((a,b)=>a+b,0);
+      const totalExtraArea = clusters.reduce((sum, cl) => {
+        const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+        const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+        return sum + Math.max(0, target - minArea);
+      }, 0);
+      const remainingW = band.w - totalMinW;
+
+      let x = band.x;
+      const colWs: number[] = [];
+      for (let ci = 0; ci < clusters.length; ci++) {
+        const cl = clusters[ci];
+        const isLast = ci === clusters.length - 1;
+        const minW = clusterMinWsEff[ci];
+        let colW: number;
+        if (isLast) {
+          const remaining = band.x + band.w - x;
+          // Phase 13.1: never negative, preserve min; Phase 15 M4: capped growth when
+          // the band can host it, legacy tile clamped inside the band otherwise.
+          if (needsFitW) {
+            colW = remaining >= minW - 1e-6
+              ? Math.max(minW, Math.min(remaining, Math.max(minW, clusterCapWs[ci])))
+              : minW;
+            // P44 — same sliver guard as the spine rows / `cappedBandDepth`:
+            // sub-CELL_QUALITY_MIN_VOID slack cannot read as a void, so the tile
+            // keeps the band instead of leaving a sliver against the envelope.
+            if (remaining - colW > 1e-6 && remaining - colW < CELL_QUALITY_MIN_VOID) {
+              colW = remaining;
+            }
+          } else {
+            const legacyW = remaining >= minW - 1e-6 ? remaining : minW;
+            colW = Math.max(minW, Math.min(legacyW, remaining));
+          }
+          if (colW <= 0) colW = minW;
+        } else {
+          const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
+          const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
+          const extra = Math.max(0, target - minArea);
+          const attemptFactor = 1 + (attempt * 0.05 - 0.1);
+          const extraShare = totalExtraArea > 1e-6 ? (extra / totalExtraArea) * remainingW * attemptFactor : remainingW / clusters.length;
+          colW = needsFitW
+            ? Math.min(Math.max(minW, clusterCapWs[ci]), minW + Math.max(0, extraShare))
+            : minW + Math.max(0, extraShare);
+          if (colW <= 0) colW = minW;
+        }
+        colWs.push(colW);
+        x += colW;
+      }
+      x = band.x;
+      if (!needsFitW && clusters.length > 1) {
+        // Bounded needs top-up (mirrors the row pass): rows short of their area need
+        // borrow from slack first, then from the far column above its contract floor.
+        const lastIdx = clusters.length - 1;
+        const lastFloor = clusterRawMinWs[lastIdx];
+        let used = 0;
+        for (const ww of colWs) used += ww;
+        let slack = Math.max(0, band.w - used);
+        for (let ci = 0; ci < lastIdx; ci++) {
+          const deficit = clusterMinWs[ci] + 0.01 - colWs[ci];
+          if (deficit <= 1e-6) continue;
+          const borrow = Math.min(deficit, slack + Math.max(0, colWs[lastIdx] - lastFloor));
+          if (borrow <= 1e-6) break;
+          colWs[ci] += borrow;
+          if (borrow > slack) {
+            colWs[lastIdx] -= (borrow - slack);
+            slack = 0;
+          } else {
+            slack -= borrow;
+          }
+        }
+      }
+      // Containment pass (always, mirrors the rows): trim over-grown columns toward
+      // their contract floors so the band total never exceeds the band extent.
+      {
+        let totW = 0;
+        for (const ww of colWs) totW += ww;
+        if (totW > band.w + 1e-6) {
+          const floorsW = colWs.map((ww, i) => Math.min(ww, Math.max(clusterRawMinWs[i], Math.min(clusterMinWs[i], ww))));
+          let excessW = totW - band.w;
+          let headW = 0;
+          const headroomW = colWs.map((ww, i) => { const v = Math.max(0, ww - floorsW[i]); headW += v; return v; });
+          if (headW > 1e-6) {
+            for (let i = 0; i < colWs.length && excessW > 1e-9; i++) {
+              const cut = Math.min(headroomW[i], excessW * (headroomW[i] / headW));
+              colWs[i] -= cut;
+              excessW -= cut;
+            }
+          }
+        }
+      }
+      for (let ci = 0; ci < clusters.length; ci++) {
+        const cl = clusters[ci];
+        const colW = colWs[ci];
+        const colRect: Rect = { x, y: band.y, w: colW, h: band.h };
+        x += colW;
+
+        if (cl.rooms.length === 2) {
+          const bedMinW = Math.max(cl.rooms[0].minWidth ?? 2.2, 2.0);
+          const bathMinW = Math.max(cl.rooms[1].minWidth ?? 1.2, 1.0);
+          const bedTarget = Math.max(cl.rooms[0].minArea, cl.rooms[0].targetArea);
+          const bathTarget = Math.max(cl.rooms[1].minArea, cl.rooms[1].targetArea);
+          const clusterMin = bedMinW + bathMinW;
+          let bedW: number, bathW: number;
+          if (colW < clusterMin - 1e-6) {
+            bedW = bedMinW;
+            bathW = bathMinW;
+          } else {
+            const clusterExtra = Math.max(0, colW - clusterMin);
+            const totalClusterTarget = bedTarget + bathTarget;
+            if (totalClusterTarget > 1e-6) {
+              bedW = bedMinW + clusterExtra * (bedTarget / totalClusterTarget);
+              bathW = colW - bedW;
+              if (bathW < bathMinW) { bathW = bathMinW; bedW = colW - bathW; }
+              if (bedW < bedMinW) { bedW = bedMinW; bathW = colW - bedW; }
+            } else {
+              bedW = colW * 0.6;
+              bathW = colW - bedW;
+            }
+          }
+          // Phase 5.5C: inside a paired column the chosen main room takes the rule
+          // width from its partner's share — never below the partner's minimum.
+          if (hRaise && mainDim) {
+            const k = cl.rooms.findIndex(r => r.placedId === mainDim.placedId);
+            const partnerMin = k === 0 ? bathMinW : bedMinW;
+            if (k >= 0 && (k === 0 ? bedW : bathW) < mainDim.width - 1e-9 && colW - mainDim.width >= partnerMin - 1e-6) {
+              if (k === 0) { bedW = mainDim.width; bathW = colW - bedW; } else { bathW = mainDim.width; bedW = colW - bathW; }
+            }
+          }
+          const firstSpec = cl.rooms[0];
+          const secondSpec = cl.rooms[1];
+          // P16-C quality-depth cap: side-by-side halves take only their contract+
+          // quality depth (anchored on the corridor edge); surplus stays intentional
+          // void at the band's free end — ribbons like 2.5×13 m are never a success.
+          const bedRH = cappedBandDepth(firstSpec, bedW, colRect.h);
+          const leftRect: Rect = { x: colRect.x, y: bandAnchoredY(band, bedRH), w: bedW, h: bedRH };
+          const firstSpace = mkSpace(firstSpec.type, leftRect, firstSpec.placedLabel, firstSpec.placedId, 'private');
+          firstSpace.rect.x = Math.round((firstSpace.rect.x+1e-9)*100)/100;
+          firstSpace.rect.y = Math.round((firstSpace.rect.y+1e-9)*100)/100;
+          firstSpace.rect.w = Math.round((firstSpace.rect.w+1e-9)*100)/100;
+          firstSpace.rect.h = Math.round((firstSpace.rect.h+1e-9)*100)/100;
+          firstSpace.polygon = rCorners(firstSpace.rect); firstSpace.area = rArea(firstSpace.rect);
+          const rightX = Math.round((firstSpace.rect.x + firstSpace.rect.w + 1e-9)*100)/100;
+          const rightW = Math.max(bathW, colRect.w - (rightX - colRect.x));
+          const rightRH = cappedBandDepth(secondSpec, rightW, colRect.h);
+          const rightRect: Rect = { x: rightX, y: bandAnchoredY(band, rightRH), w: rightW, h: rightRH };
+          attemptPlaced.push(firstSpace);
+          attemptPlaced.push(mkSpace(secondSpec.type, rightRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
+        } else {
+          const single = cl.rooms[0];
+          // P16-C: capped at the cell's contract+quality depth; slack stays an
+          // intentional void at the band's free end (M4 convention).
+          const singleH = cappedBandDepth(single, colRect.w, colRect.h);
+          const singleRect: Rect = { x: colRect.x, y: bandAnchoredY(band, singleH), w: colRect.w, h: singleH };
+          attemptPlaced.push(mkSpace(single.type, singleRect, single.placedLabel, single.placedId, 'private'));
+        }
+      }
+      return attemptPlaced;
+    };
+
     // Feasibility check: sum min widths/heights vs available
     const computeMinWidth = (spec: PlacedSpec): number => Math.max(spec.minWidth ?? 2.0, 1.0);
     const computeMinHeight = (spec: PlacedSpec): number => Math.max(spec.minLength ?? spec.minWidth ?? 2.0, 1.0);
@@ -1170,8 +1419,53 @@ function placeSpacesFacingSouth(
     const feasibility = classifyFeasibility(requiredTotal, isVerticalSpineCheck ? privateRect.h : privateRect.w, genericClusters.flatMap(c=>c.rooms.map(r=>r.type)));
     explanation.push(`Phase13 feasibility: ${feasibility.status} ${feasibility.reasonCode} — ${feasibility.message}`);
 
+    // Phase 5.6A (opt-in): upper-floor front private split — see
+    // PlacerOptions.upperFloorFrontPrivate. null → the legacy branches below run unchanged.
+    let frontSplitSpaces: Space[] | null = null;
+    let frontSplitNote = '';
+    if (opts.upperFloorFrontPrivate === true && !feasibleSideBySide && !isVerticalSpineCheck) {
+      const front = layout.zones.public[0];
+      const corr = layout.corridors[0];
+      const E = 0.011;
+      const onlyPrivateAndCore = specs.every(sp => zoneOf(sp) === 'private' || zoneOf(sp) === 'circulation');
+      const ovl = (a: Rect, b: Rect) => Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0.02 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 0.02;
+      const frontEmpty = !!front && placed.every(sp => !ovl(sp.rect, front));
+      const corridorBetween = !!front && !!corr && corr.w > corr.h
+        && Math.abs(front.y + front.h - corr.y) < E && Math.abs(privateRect.y - (corr.y + corr.h)) < E;
+      const k = front && onlyPrivateAndCore && frontEmpty && corridorBetween
+        ? upperFloorFrontPrivateSplit(genericClusters.map(cl => ({ minWidths: cl.rooms.map(computeMinWidth), minDepths: cl.rooms.map(computeMinHeight) })),
+          { w: privateRect.w, h: privateRect.h }, { w: front.w, h: front.h })
+        : null;
+      if (k !== null && front && corr) {
+        const backCl = genericClusters.slice(0, genericClusters.length - k);
+        const frontCl = genericClusters.slice(genericClusters.length - k);
+        const mainDimBefore = mainDimApplied;
+        for (let attempt = 0; attempt < MAX_CONSTRAINT_PLACEMENT_ATTEMPTS && !frontSplitSpaces; attempt++) {
+          const backSp = paintHorizontalColumns(privateRect, backCl, attempt);
+          const frontSp = paintHorizontalColumns(front, frontCl, attempt);
+          const inside = (sp: Space, b: Rect) => sp.rect.x >= b.x - E && sp.rect.y >= b.y - E
+            && sp.rect.x + sp.rect.w <= b.x + b.w + E && sp.rect.y + sp.rect.h <= b.y + b.h + E;
+          const all = [...backSp, ...frontSp];
+          const ok = backSp.every(sp => inside(sp, privateRect) && Math.abs(sp.rect.y - (corr.y + corr.h)) < E)
+            && frontSp.every(sp => inside(sp, front) && Math.abs(sp.rect.y + sp.rect.h - corr.y) < E)
+            && all.every(sp => sp.rect.w > 0 && sp.rect.h > 0 && sp.rect.w + 1e-6 >= computeMinWidth(specs.find(x => x.placedId === sp.id)!) - 0.05)
+            && !hasOverlappingRooms([...placed, ...all])
+            && all.every(sp => { const sep = getHardSeparated(sp.type); return placed.every(o => !sep.includes(o.type) || sharedWallEdges(sp.polygon, o.polygon).length === 0); });
+          if (ok) {
+            frontSplitSpaces = all;
+            frontSplitNote = `${UPPER_FLOOR_FRONT_PRIVATE_APPLIED}: ${k} trailing cluster(s) [${frontCl.map(c => c.types.join('+')).join(' | ')}] moved to the front zone ${front.w.toFixed(2)}×${front.h.toFixed(2)} m across the corridor; ${backCl.length} cluster(s) stay behind it (${privateRect.w.toFixed(2)}×${privateRect.h.toFixed(2)} m); every room touches the corridor (attempt ${attempt + 1})`;
+          }
+        }
+        if (!frontSplitSpaces) mainDimApplied = mainDimBefore;
+      }
+    }
+
     if (genericClusters.length > 0) {
-      if (!feasibleSideBySide) {
+      if (frontSplitSpaces) {
+        placed.push(...frontSplitSpaces);
+        explanation.push(frontSplitNote);
+        if (mainDimApplied && mainDim) explanation.push(`${MAIN_ROOM_DIMENSION_APPLIED}: ${mainDim.placedId} planning minimum raised to ${mainDim.width.toFixed(2)} m (MBH4-ROOM-001 width, pack threshold) from band slack; every other cell keeps its existing minimum`);
+      } else if (!feasibleSideBySide) {
         explanation.push(`Phase13 INFEASIBLE side-by-side: required ${requiredTotal.toFixed(2)}m > available ${isVerticalSpineCheck ? privateRect.h.toFixed(2) : privateRect.w.toFixed(2)}m — falling back to generic column layout (will report CONSTRAINT_MUST_ADJACENT HARD) reason=${feasibility.reasonCode} code=HARD_CONSTRAINT_INFEASIBLE_DIMENSION`);
         // Generic fallback: place each genericCluster as a column, rooms stacked vertically, bottom touching corridor
         // This preserves min dimensions, site containment, locks, but will report HARD for unsatisfied direct access
@@ -1514,197 +1808,7 @@ function placeSpacesFacingSouth(
               }
             }
           } else {
-            // Horizontal spine generic — Phase 15 M4: column minimums include each room's
-            // area need at the band height (with the main-room preference); growth capped
-            // at 1.75×target; slack becomes intentional void at the band's far end.
-            let clusterMinWs = genericClusters.map(cl => {
-              return cl.rooms.reduce((s, r) => s + mainPrefW(r, privateRect.h), 0);
-            });
-            // Phase 5.5C (opt-in): raise the chosen main room's column minimum to the rule
-            // width — only when the band depth already meets it and the raised minimums
-            // still fit the band (width taken from slack only; every other column keeps its
-            // existing minimum). Otherwise the legacy minimums stand.
-            let hRaise = false;
-            if (mainDim && privateRect.h + 1e-6 >= mainDim.width) {
-              // A paired column must also leave the partner its paired-split floor (the
-              // same floors the split below applies), so the chosen room can take the width.
-              const splitFloor = (cl: GenericCluster, i: number): number => i === 0
-                ? Math.max(cl.rooms[0].minWidth ?? 2.2, 2.0) : Math.max(cl.rooms[1].minWidth ?? 1.2, 1.0);
-              const raised = genericClusters.map(cl => {
-                const v = cl.rooms.reduce((s, r) => s + mainPrefW(r, privateRect.h, true), 0);
-                const k = cl.rooms.length === 2 ? cl.rooms.findIndex(r => r.placedId === mainDim.placedId) : -1;
-                return k >= 0 ? Math.max(v, mainDim.width + splitFloor(cl, 1 - k)) : v;
-              });
-              if (raised.some((v, i) => v > clusterMinWs[i] + 1e-9) && raised.reduce((a, b) => a + b, 0) <= privateRect.w + 1e-6) {
-                clusterMinWs = raised;
-                hRaise = true;
-                mainDimApplied = true;
-              }
-            }
-            const clusterCapWs = genericClusters.map(cl => {
-              const capA = cl.rooms.reduce((s, r) => s + Math.max((r.minArea ?? 0) * 1.1, Math.max(r.targetArea ?? 0, r.minArea ?? 0) * 1.75), 0);
-              return capA / Math.max(privateRect.h, 0.5);
-            });
-            const clusterRawMinWs = genericClusters.map(cl => cl.rooms.reduce((s, r) => s + Math.max(r.minWidth ?? 1.0, 1.0), 0));
-            const totalMinWRaw = clusterMinWs.reduce((a,b)=>a+b,0);
-            const needsFitW = totalMinWRaw <= privateRect.w + 1e-6;
-            const clusterMinWsEff = needsFitW ? clusterMinWs : clusterRawMinWs;
-            const totalMinW = clusterMinWsEff.reduce((a,b)=>a+b,0);
-            const totalExtraArea = genericClusters.reduce((sum, cl) => {
-              const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
-              const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
-              return sum + Math.max(0, target - minArea);
-            }, 0);
-            const remainingW = privateRect.w - totalMinW;
-
-            let x = privateRect.x;
-            const colWs: number[] = [];
-            for (let ci = 0; ci < genericClusters.length; ci++) {
-              const cl = genericClusters[ci];
-              const isLast = ci === genericClusters.length - 1;
-              const minW = clusterMinWsEff[ci];
-              let colW: number;
-              if (isLast) {
-                const remaining = privateRect.x + privateRect.w - x;
-                // Phase 13.1: never negative, preserve min; Phase 15 M4: capped growth when
-                // the band can host it, legacy tile clamped inside the band otherwise.
-                if (needsFitW) {
-                  colW = remaining >= minW - 1e-6
-                    ? Math.max(minW, Math.min(remaining, Math.max(minW, clusterCapWs[ci])))
-                    : minW;
-                  // P44 — same sliver guard as the spine rows / `cappedBandDepth`:
-                  // sub-CELL_QUALITY_MIN_VOID slack cannot read as a void, so the tile
-                  // keeps the band instead of leaving a sliver against the envelope.
-                  if (remaining - colW > 1e-6 && remaining - colW < CELL_QUALITY_MIN_VOID) {
-                    colW = remaining;
-                  }
-                } else {
-                  const legacyW = remaining >= minW - 1e-6 ? remaining : minW;
-                  colW = Math.max(minW, Math.min(legacyW, remaining));
-                }
-                if (colW <= 0) colW = minW;
-              } else {
-                const target = cl.rooms.reduce((s, r) => s + Math.max(r.minArea, r.targetArea), 0);
-                const minArea = cl.rooms.reduce((s, r) => s + (r.minArea ?? 0), 0);
-                const extra = Math.max(0, target - minArea);
-                const attemptFactor = 1 + (attempt * 0.05 - 0.1);
-                const extraShare = totalExtraArea > 1e-6 ? (extra / totalExtraArea) * remainingW * attemptFactor : remainingW / genericClusters.length;
-                colW = needsFitW
-                  ? Math.min(Math.max(minW, clusterCapWs[ci]), minW + Math.max(0, extraShare))
-                  : minW + Math.max(0, extraShare);
-                if (colW <= 0) colW = minW;
-              }
-              colWs.push(colW);
-              x += colW;
-            }
-            x = privateRect.x;
-            if (!needsFitW && genericClusters.length > 1) {
-              // Bounded needs top-up (mirrors the row pass): rows short of their area need
-              // borrow from slack first, then from the far column above its contract floor.
-              const lastIdx = genericClusters.length - 1;
-              const lastFloor = clusterRawMinWs[lastIdx];
-              let used = 0;
-              for (const ww of colWs) used += ww;
-              let slack = Math.max(0, privateRect.w - used);
-              for (let ci = 0; ci < lastIdx; ci++) {
-                const deficit = clusterMinWs[ci] + 0.01 - colWs[ci];
-                if (deficit <= 1e-6) continue;
-                const borrow = Math.min(deficit, slack + Math.max(0, colWs[lastIdx] - lastFloor));
-                if (borrow <= 1e-6) break;
-                colWs[ci] += borrow;
-                if (borrow > slack) {
-                  colWs[lastIdx] -= (borrow - slack);
-                  slack = 0;
-                } else {
-                  slack -= borrow;
-                }
-              }
-            }
-            // Containment pass (always, mirrors the rows): trim over-grown columns toward
-            // their contract floors so the band total never exceeds the band extent.
-            {
-              let totW = 0;
-              for (const ww of colWs) totW += ww;
-              if (totW > privateRect.w + 1e-6) {
-                const floorsW = colWs.map((ww, i) => Math.min(ww, Math.max(clusterRawMinWs[i], Math.min(clusterMinWs[i], ww))));
-                let excessW = totW - privateRect.w;
-                let headW = 0;
-                const headroomW = colWs.map((ww, i) => { const v = Math.max(0, ww - floorsW[i]); headW += v; return v; });
-                if (headW > 1e-6) {
-                  for (let i = 0; i < colWs.length && excessW > 1e-9; i++) {
-                    const cut = Math.min(headroomW[i], excessW * (headroomW[i] / headW));
-                    colWs[i] -= cut;
-                    excessW -= cut;
-                  }
-                }
-              }
-            }
-            for (let ci = 0; ci < genericClusters.length; ci++) {
-              const cl = genericClusters[ci];
-              const colW = colWs[ci];
-              const colRect: Rect = { x, y: privateRect.y, w: colW, h: privateRect.h };
-              x += colW;
-
-              if (cl.rooms.length === 2) {
-                const bedMinW = Math.max(cl.rooms[0].minWidth ?? 2.2, 2.0);
-                const bathMinW = Math.max(cl.rooms[1].minWidth ?? 1.2, 1.0);
-                const bedTarget = Math.max(cl.rooms[0].minArea, cl.rooms[0].targetArea);
-                const bathTarget = Math.max(cl.rooms[1].minArea, cl.rooms[1].targetArea);
-                const clusterMin = bedMinW + bathMinW;
-                let bedW: number, bathW: number;
-                if (colW < clusterMin - 1e-6) {
-                  bedW = bedMinW;
-                  bathW = bathMinW;
-                } else {
-                  const clusterExtra = Math.max(0, colW - clusterMin);
-                  const totalClusterTarget = bedTarget + bathTarget;
-                  if (totalClusterTarget > 1e-6) {
-                    bedW = bedMinW + clusterExtra * (bedTarget / totalClusterTarget);
-                    bathW = colW - bedW;
-                    if (bathW < bathMinW) { bathW = bathMinW; bedW = colW - bathW; }
-                    if (bedW < bedMinW) { bedW = bedMinW; bathW = colW - bedW; }
-                  } else {
-                    bedW = colW * 0.6;
-                    bathW = colW - bedW;
-                  }
-                }
-                // Phase 5.5C: inside a paired column the chosen main room takes the rule
-                // width from its partner's share — never below the partner's minimum.
-                if (hRaise && mainDim) {
-                  const k = cl.rooms.findIndex(r => r.placedId === mainDim.placedId);
-                  const partnerMin = k === 0 ? bathMinW : bedMinW;
-                  if (k >= 0 && (k === 0 ? bedW : bathW) < mainDim.width - 1e-9 && colW - mainDim.width >= partnerMin - 1e-6) {
-                    if (k === 0) { bedW = mainDim.width; bathW = colW - bedW; } else { bathW = mainDim.width; bedW = colW - bathW; }
-                  }
-                }
-                const firstSpec = cl.rooms[0];
-                const secondSpec = cl.rooms[1];
-                // P16-C quality-depth cap: side-by-side halves take only their contract+
-                // quality depth (anchored on the corridor edge); surplus stays intentional
-                // void at the band's free end — ribbons like 2.5×13 m are never a success.
-                const bedRH = cappedBandDepth(firstSpec, bedW, colRect.h);
-                const leftRect: Rect = { x: colRect.x, y: bandAnchoredY(privateRect, bedRH), w: bedW, h: bedRH };
-                const firstSpace = mkSpace(firstSpec.type, leftRect, firstSpec.placedLabel, firstSpec.placedId, 'private');
-                firstSpace.rect.x = Math.round((firstSpace.rect.x+1e-9)*100)/100;
-                firstSpace.rect.y = Math.round((firstSpace.rect.y+1e-9)*100)/100;
-                firstSpace.rect.w = Math.round((firstSpace.rect.w+1e-9)*100)/100;
-                firstSpace.rect.h = Math.round((firstSpace.rect.h+1e-9)*100)/100;
-                firstSpace.polygon = rCorners(firstSpace.rect); firstSpace.area = rArea(firstSpace.rect);
-                const rightX = Math.round((firstSpace.rect.x + firstSpace.rect.w + 1e-9)*100)/100;
-                const rightW = Math.max(bathW, colRect.w - (rightX - colRect.x));
-                const rightRH = cappedBandDepth(secondSpec, rightW, colRect.h);
-                const rightRect: Rect = { x: rightX, y: bandAnchoredY(privateRect, rightRH), w: rightW, h: rightRH };
-                attemptPlaced.push(firstSpace);
-                attemptPlaced.push(mkSpace(secondSpec.type, rightRect, secondSpec.placedLabel, secondSpec.placedId, 'private'));
-              } else {
-                const single = cl.rooms[0];
-                // P16-C: capped at the cell's contract+quality depth; slack stays an
-                // intentional void at the band's free end (M4 convention).
-                const singleH = cappedBandDepth(single, colRect.w, colRect.h);
-                const singleRect: Rect = { x: colRect.x, y: bandAnchoredY(privateRect, singleH), w: colRect.w, h: singleH };
-                attemptPlaced.push(mkSpace(single.type, singleRect, single.placedLabel, single.placedId, 'private'));
-              }
-            }
+            attemptPlaced.push(...paintHorizontalColumns(privateRect, genericClusters, attempt));
           }
 
           // Evaluate hard separation for this attempt

@@ -133,6 +133,17 @@ export interface GenerateOptions {
    * only through the unchanged 5.4A guard. Omitted or false = legacy output.
    */
   diningEntryColumn?: boolean;
+  /**
+   * Phase 5.6A (opt-in, default OFF): on upper floors of rectangular sites with a
+   * horizontal / L-spur corridor and no public or semi-private programme, when the private
+   * band behind the corridor fails the existing capacity check, the minimum number of
+   * trailing private clusters moves (order kept) to the empty front zone across the
+   * corridor, every room touching it; adopted only when the validator confirms strictly
+   * fewer ARCH_PROGRAM_UNPLACED with no added HARD / circulation / access / daylight
+   * finding, no lost validity, an identical ground floor and stair / elevator halls, no
+   * shortened corridor, no overhang, no overlap. Omitted or false = legacy output.
+   */
+  upperFloorFrontPrivate?: boolean;
 }
 
 /**
@@ -263,6 +274,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.rotateShallowStairPocket === true ? { rotateShallowStairPocket: true } : {}),
     ...(opts.mainRoomMinDimension === true ? { mainRoomMinDimension: true } : {}),
     ...(opts.diningEntryColumn === true ? { diningEntryColumn: true } : {}),
+    ...(opts.upperFloorFrontPrivate === true ? { upperFloorFrontPrivate: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)
