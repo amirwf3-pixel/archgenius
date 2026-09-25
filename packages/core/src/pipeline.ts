@@ -125,6 +125,14 @@ export interface GenerateOptions {
    * Omitted or false = legacy output.
    */
   mainRoomMinDimension?: boolean;
+  /**
+   * Phase 5.5D (opt-in, default OFF; effective with galleryDaylightAware): where the 5.4A
+   * dining would exceed 7 m and the 5.5A façade row cannot keep the kitchen contact, the
+   * gallery cells stack in a column against the corridor while living (front) and dining
+   * (behind, on the kitchen) share the exterior living-side column, both ≤ 7 m; adopted
+   * only through the unchanged 5.4A guard. Omitted or false = legacy output.
+   */
+  diningEntryColumn?: boolean;
 }
 
 /**
@@ -254,6 +262,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.diningFacadeRow === true ? { diningFacadeRow: true } : {}),
     ...(opts.rotateShallowStairPocket === true ? { rotateShallowStairPocket: true } : {}),
     ...(opts.mainRoomMinDimension === true ? { mainRoomMinDimension: true } : {}),
+    ...(opts.diningEntryColumn === true ? { diningEntryColumn: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

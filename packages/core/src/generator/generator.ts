@@ -32,7 +32,7 @@ import { generateWalls } from './walls.js';
 import { placeOpenings, programmeDoorRequirements } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
 import { validateLayout } from '../validation/validator.js';
-import { placeSpaces, MAIN_ROOM_DIMENSION_APPLIED, type PlacedSpec } from '../layout/placer.js';
+import { placeSpaces, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, type PlacedSpec } from '../layout/placer.js';
 import { rectPartitions, contactConnected, contactLen } from '../layout/regions.js';
 import { solveRow, solveCol, type BandCellDemand } from '../layout/topology.js';
 import { sortCandidates } from '../layout/ranking.js';
@@ -147,6 +147,14 @@ export interface GenerateLayoutsOptions {
    * candidate only through the validator-guarded comparison (adoptMainRoomDimensionVariant).
    */
   mainRoomMinDimension?: boolean;
+  /**
+   * Phase 5.5D opt-in (default OFF): within the 5.4A daylight-aware gallery arrangement,
+   * where the 5.4A dining would exceed 7 m and the 5.5A façade row cannot keep the kitchen
+   * contact, the gallery cells stack in a column against the corridor and living (front) /
+   * dining (behind, on the kitchen) share the exterior living-side column, both ≤ 7 m (see
+   * PlacerOptions.diningEntryColumn). Adopted only through the unchanged 5.4A guard.
+   */
+  diningEntryColumn?: boolean;
 }
 
 export function generateLayouts(
@@ -165,6 +173,7 @@ export function generateLayouts(
   const diningFacadeRow = options.diningFacadeRow === true;
   const rotateShallowStairPocket = options.rotateShallowStairPocket === true;
   const mainRoomMinDimension = options.mainRoomMinDimension === true;
+  const diningEntryColumn = options.diningEntryColumn === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -209,7 +218,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -217,7 +226,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -286,34 +295,49 @@ export function generateLayouts(
         }
       }
     }
+    // Phase 5.5D (opt-in): immediately after 5.5A — the dining entry-column variant (built
+    // with the 5.4A gallery arrangement enabled) is adopted ONLY through the unchanged 5.4A
+    // guard, and only when the entry column actually fired in the placer.
+    let withEntry = withFacade;
+    if (galleryDaylightAware && diningEntryColumn) {
+      const v = buildCandidate(strategy, lAdjUsed, true, false, false, false, false, false, false, false, true);
+      if (v.explanations.some(e => e.startsWith(DINING_ENTRY_COLUMN_PLACED))) {
+        const adopted = adoptGalleryDaylightVariant(withFacade, v);
+        if (adopted === v) {
+          v.explanations.push('Phase 5.5D: dining entry-column variant adopted through the unchanged 5.4A guard.');
+          withEntry = v;
+        }
+      }
+    }
+    const entryUsed = withEntry !== withFacade;
     const facadeUsed = withFacade !== withGallery;
-    const galleryUsed = withGallery !== base || facadeUsed;
+    const galleryUsed = withGallery !== base || facadeUsed || entryUsed;
     // Phase 5.4B (opt-in): the stair-core connector variant (built on the same adopted
     // options) is adopted ONLY when the validator confirms strictly fewer
     // corridor↔stair-hall and inaccessible-space findings at no other cost.
     const withConnector = connectStairCore
-      ? adoptStairCoreConnectorVariant(withFacade, buildCandidate(strategy, lAdjUsed, galleryUsed, true, false, false, false, facadeUsed))
-      : withFacade;
+      ? adoptStairCoreConnectorVariant(withEntry, buildCandidate(strategy, lAdjUsed, galleryUsed, true, false, false, false, facadeUsed, false, false, entryUsed))
+      : withEntry;
     // Phase 5.4C (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C. The public
     // stack variant is built on the options already adopted; in the placer a 5.4A
     // gallery that already placed living/dining takes precedence (stack never runs).
     const withStack = stackPublicForDaylight
       ? adoptPublicStackDaylightVariant(withConnector,
-        buildCandidate(strategy, lAdjUsed, galleryUsed, withConnector !== withFacade, true, false, false, facadeUsed))
+        buildCandidate(strategy, lAdjUsed, galleryUsed, withConnector !== withEntry, true, false, false, facadeUsed, false, false, entryUsed))
       : withConnector;
     // Phase 5.4D (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C → 5.4D. The
     // thin-gap stair bridge is a post-placement repair built on the options already
     // adopted; it never fires where a 5.4B connector already joined the hall.
     const withBridge = bridgeThinStairGap
       ? adoptThinStairGapBridgeVariant(withStack,
-        buildCandidate(strategy, lAdjUsed, galleryUsed, withConnector !== withFacade, withStack !== withConnector, true, false, facadeUsed))
+        buildCandidate(strategy, lAdjUsed, galleryUsed, withConnector !== withEntry, withStack !== withConnector, true, false, facadeUsed, false, false, entryUsed))
       : withStack;
     // Phase 5.4E (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C → 5.4D → 5.4E.
     // Isolated-room access connectors are a post-placement repair built on the options
     // already adopted.
     const withRooms = connectIsolatedRooms
       ? adoptRoomAccessConnectorVariant(withBridge,
-        buildCandidate(strategy, lAdjUsed, galleryUsed, withConnector !== withFacade, withStack !== withConnector, withBridge !== withStack, true, facadeUsed))
+        buildCandidate(strategy, lAdjUsed, galleryUsed, withConnector !== withEntry, withStack !== withConnector, withBridge !== withStack, true, facadeUsed, false, false, entryUsed))
       : withBridge;
     // Phase 5.5B (opt-in): after the whole 5.3B–5.5A chain — the rotated stair-pocket
     // variant (built on every option already adopted) is adopted ONLY through its own
@@ -325,16 +349,16 @@ export function generateLayouts(
     let withPocket = withRooms;
     // Option set of the adopted candidate (5.4B / 5.4D / 5.4E repairs, 5.5B pocket), so a
     // later variant rebuilds exactly what was adopted.
-    let adopted = { connector: withConnector !== withFacade, bridge: withBridge !== withStack, rooms: withRooms !== withBridge, pocket: false };
+    let adopted = { connector: withConnector !== withEntry, bridge: withBridge !== withStack, rooms: withRooms !== withBridge, pocket: false };
     if (rotateShallowStairPocket) {
-      const flags = [withConnector !== withFacade, withBridge !== withStack, withRooms !== withBridge] as const;
+      const flags = [withConnector !== withEntry, withBridge !== withStack, withRooms !== withBridge] as const;
       withPocket = adoptStairPocketVariant(withRooms,
-        buildCandidate(strategy, lAdjUsed, galleryUsed, flags[0], withStack !== withConnector, flags[1], flags[2], facadeUsed, true));
+        buildCandidate(strategy, lAdjUsed, galleryUsed, flags[0], withStack !== withConnector, flags[1], flags[2], facadeUsed, true, false, entryUsed));
       if (withPocket !== withRooms) adopted = { connector: flags[0], bridge: flags[1], rooms: flags[2], pocket: true };
       const repairs = [flags[0] || connectStairCore, flags[1] || bridgeThinStairGap, flags[2] || connectIsolatedRooms] as const;
       if (withPocket === withRooms && repairs.some((r, i) => r !== flags[i])) {
         withPocket = adoptStairPocketVariant(withRooms,
-          buildCandidate(strategy, lAdjUsed, galleryUsed, repairs[0], withStack !== withConnector, repairs[1], repairs[2], facadeUsed, true));
+          buildCandidate(strategy, lAdjUsed, galleryUsed, repairs[0], withStack !== withConnector, repairs[1], repairs[2], facadeUsed, true, false, entryUsed));
         if (withPocket !== withRooms) adopted = { connector: repairs[0], bridge: repairs[1], rooms: repairs[2], pocket: true };
       }
     }
@@ -345,7 +369,7 @@ export function generateLayouts(
     let withMainDim = withPocket;
     if (mainRoomMinDimension && withPocket.findings.some(f => f.severity === 'hard' && f.code === MAIN_ROOM_RULE)) {
       withMainDim = adoptMainRoomDimensionVariant(withPocket,
-        buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, true));
+        buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, true, entryUsed));
     }
     candidates.push(withMainDim);
   }
@@ -897,6 +921,7 @@ function buildFloorSiteAware(
   diningFacadeRow = false,
   rotateShallowStairPocket = false,
   mainRoomMinDimension = false,
+  diningEntryColumn = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -1040,6 +1065,7 @@ function buildFloorSiteAware(
       ...(galleryDaylightAware && diningFacadeRow ? { diningFacadeRow: true } : {}),
       ...(rotateShallowStairPocket ? { rotateShallowStairPocket: true } : {}),
       ...(mainRoomMinDimension ? { mainRoomMinDimension: true } : {}),
+      ...(galleryDaylightAware && diningEntryColumn ? { diningEntryColumn: true } : {}),
     };
     const result = Object.keys(placerOpts).length > 0
       ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, placerOpts)

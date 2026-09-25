@@ -457,6 +457,16 @@ export interface PlacerOptions {
    * cluster keeps its existing minimum; otherwise legacy sizing. Validation unchanged.
    */
   mainRoomMinDimension?: boolean;
+  /**
+   * Phase 5.5D: inside the 5.4A daylight-aware gallery arrangement, when the 5.4A dining
+   * would exceed DINING_DAYLIGHT_MAX and the 5.5A façade row cannot keep the kitchen
+   * contact (it returns null), stack the gallery cells in a column against the corridor
+   * and put living (front) and dining (behind, touching the kitchen) in the column on the
+   * exterior living-side edge — both ≤ DINING_DAYLIGHT_MAX (see diningEntryColumnLayout).
+   * Applied only with galleryDaylightAware and only when every programme minimum holds;
+   * otherwise the 5.4A geometry is used unchanged.
+   */
+  diningEntryColumn?: boolean;
 }
 
 /** Placer explanation prefix proving the Phase 5.5C main-room minimum dimension fired. */
@@ -601,6 +611,89 @@ export function diningFacadeRowLayout(a: {
   const livH = cm(H - Dd);
   if (livH < a.livMinH - E || W < a.livMinW - E || W * livH < a.livMinArea - E) return null;
   return { galleryW: Lg, cellW: cw, rowD: Dd, diningW: Fd, livingH: livH };
+}
+
+/** Placer explanation prefix proving the Phase 5.5D dining entry column was built. */
+export const DINING_ENTRY_COLUMN_PLACED = 'Phase 5.5D dining entry column';
+
+/**
+ * Phase 5.5D — pure entry-column layout (band-local frame: street façade at y = 0, the
+ * living-side band edge at x = 0, the corridor side at x = W, the band back at y = H).
+ *
+ *   street
+ *   ┌──────────┬─────────┐
+ *   │ living   │ gallery │  ← gallery cells stacked from the street façade inward,
+ *   ├──────────┤ cells   │    against the corridor side (x = W)
+ *   │ dining   │ (void)  │
+ *   └──────────┴─────────┘
+ *     kitchen (behind the band)
+ *
+ * Used only where the 5.4A dining (W − L) × H would exceed DINING_DAYLIGHT_MAX and the
+ * 5.5A façade row cannot keep the kitchen contact. Returns null unless:
+ *   - the 5.4A dining exceeds DINING_DAYLIGHT_MAX on some axis;
+ *   - the living-side edge (x = 0) is exterior;
+ *   - the kitchen lies behind the main column (touching y = H) with at least
+ *     FACADE_ROW_KITCHEN_CONTACT of wall along it (dining ↔ kitchen contact);
+ *   - the corridor runs along x = W beside every gallery cell with at least
+ *     FACADE_ROW_KITCHEN_CONTACT of wall (gallery ↔ corridor contact);
+ *   - every gallery cell, living and dining meet their programme minimum width, height
+ *     and area, and living and dining are ≤ DINING_DAYLIGHT_MAX on both axes.
+ * Column width Wg = max(widest cell minimum, W − DINING_DAYLIGHT_MAX); cells take
+ * max(min height, min area / Wg, target area / Wg); slack in the gallery column stays an
+ * intentional void at its inner end (a sub-CELL_QUALITY_MIN_VOID remainder joins the last
+ * cell). Living/dining split by target area, clamped into the feasible range. All splits
+ * on the 1 cm grid; deterministic.
+ */
+export function diningEntryColumnLayout(a: {
+  W: number; H: number; L: number;
+  cells: FacadeRowCell[];
+  livMinW: number; livMinH: number; livMinArea: number; livTargetArea: number;
+  dinMinW: number; dinMinArea: number; dinTargetArea: number;
+  livingSideExterior: boolean;
+  kitchen: Rect | null;
+  corridor: Rect | null;
+}): { galleryW: number; mainW: number; cellH: number[]; livingH: number; diningH: number } | null {
+  const E = 1e-6, T = 0.005, MAX = DINING_DAYLIGHT_MAX;
+  const cm = (v: number) => Math.round(v * 100) / 100;
+  const cmUp = (v: number) => Math.ceil(v * 100 - 1e-6) / 100;
+  const { W, H, L, cells } = a;
+  if (!(W > 0) || !(H > 0) || !(L > 0) || L >= W || cells.length === 0) return null;
+  if (!(H > MAX + E || W - L > MAX + E)) return null;
+  if (!a.livingSideExterior) return null;
+  const Wg = Math.max(...cells.map(c => cmUp(c.minW)), cmUp(W - MAX));
+  const Wm = cm(W - Wg);
+  if (Wm > MAX + E || Wm < Math.max(a.livMinW, a.dinMinW) - E) return null;
+  // Gallery column: cells stacked from the street façade.
+  const cellH = cells.map(c => cmUp(Math.max(c.minH, c.minArea / Wg, c.targetArea / Wg)));
+  const used = cellH.reduce((x, y) => x + y, 0);
+  if (used > H + E) return null;
+  if (H - used > E && H - used < CELL_QUALITY_MIN_VOID) cellH[cellH.length - 1] = cm(cellH[cellH.length - 1] + H - used);
+  if (!cells.every((c, i) => cellH[i] >= c.minH - E && Wg >= c.minW - E && Wg * cellH[i] >= c.minArea - E)) return null;
+  // Gallery ↔ corridor: the corridor runs along x = W beside every cell.
+  const c = a.corridor;
+  if (!c || Math.abs(c.x - W) > T) return null;
+  let y0 = 0;
+  for (const h of cellH) {
+    const oy = Math.min(y0 + h, c.y + c.h) - Math.max(y0, c.y);
+    if (oy < FACADE_ROW_KITCHEN_CONTACT - E) return null;
+    y0 += h;
+  }
+  // Dining ↔ kitchen: the kitchen lies behind the main column.
+  const k = a.kitchen;
+  if (!k || Math.abs(k.y - H) > T) return null;
+  if (Math.min(Wm, k.x + k.w) - Math.max(0, k.x) < FACADE_ROW_KITCHEN_CONTACT - E) return null;
+  // Main column: living at the front, dining behind (touching the kitchen).
+  const livNeed = Math.max(a.livMinH, a.livMinW, a.livMinArea / Wm);
+  const lo = cmUp(Math.max(a.dinMinW, a.dinMinArea / Wm, H - MAX));
+  const hi = Math.min(MAX, H - livNeed);
+  if (lo > hi + E) return null;
+  const split = cm(H * a.dinTargetArea / Math.max(a.dinTargetArea + a.livTargetArea, E));
+  const hd = cm(Math.min(Math.max(split, lo), hi));
+  const hl = cm(H - hd);
+  if (hd < lo - E || hd > MAX + E || hl > MAX + E || hl < livNeed - E) return null;
+  if (Math.min(Wm, hd) < a.dinMinW - E || Wm * hd < a.dinMinArea - E) return null;
+  if (Math.min(Wm, hl) < a.livMinW - E || Wm * hl < a.livMinArea - E) return null;
+  return { galleryW: Wg, mainW: Wm, cellH, livingH: hl, diningH: hd };
 }
 
 /** True when the programme carries a dining↔kitchen doorRequired adjacency (either direction). */
@@ -1933,7 +2026,49 @@ function placeSpacesFacingSouth(
                   galleryCells.every((s, i) => cw[i] * sH >= s.minArea - 1e-6) &&
                   livH >= livingMinHBelow - 1e-6 && L * livH >= living.minArea - 1e-6 &&
                   H >= diningMinHBelow - 1e-6 && (W - L) * H >= dining.minArea - 1e-6;
-                if (fits) {
+                // Phase 5.5D (opt-in): dining entry column — see PlacerOptions.diningEntryColumn.
+                // Only where the 5.4A dining would exceed DINING_DAYLIGHT_MAX and the 5.5A
+                // façade row cannot be built (it returns null); otherwise 5.4A below.
+                if (fits && opts.diningEntryColumn === true) {
+                  const kp = placed.find(p => p.type === 'kitchen');
+                  const kLocal = kp ? { x: kp.rect.x - publicRect.x, y: kp.rect.y - publicRect.y, w: kp.rect.w, h: kp.rect.h } : null;
+                  const cells = galleryCells.map(s => ({ minW: minW(s), minH: minH(s), minArea: s.minArea, targetArea: s.targetArea }));
+                  const fr55 = diningFacadeRowLayout({
+                    W, H, L, galleryH, cells,
+                    livMinW, livMinH: livingMinHBelow, livMinArea: living.minArea,
+                    dinMinW, dinMinArea: dining.minArea, kitchen: kLocal,
+                  });
+                  if (fr55 === null) {
+                    const corr = layout.corridors.find(c => Math.abs(c.x - (publicRect.x + W)) < 0.005) ?? null;
+                    const ec = diningEntryColumnLayout({
+                      W, H, L, cells,
+                      livMinW, livMinH: livingMinHBelow, livMinArea: living.minArea, livTargetArea: livT,
+                      dinMinW, dinMinArea: dining.minArea, dinTargetArea: dinT,
+                      livingSideExterior: Math.abs(publicRect.x - footprint.x) < 0.005,
+                      kitchen: kLocal,
+                      corridor: corr ? { x: corr.x - publicRect.x, y: corr.y - publicRect.y, w: corr.w, h: corr.h } : null,
+                    });
+                    if (ec) {
+                      const gx0 = Math.round((publicRect.x + ec.mainW) * 100) / 100;
+                      let gy = publicRect.y;
+                      galleryCells.forEach((s, i) => {
+                        placed.push(mkSpace(s.type, { x: gx0, y: gy, w: ec.galleryW, h: ec.cellH[i] }, s.placedLabel, s.placedId, 'public'));
+                        gy = Math.round((gy + ec.cellH[i]) * 100) / 100;
+                      });
+                      placed.push(mkSpace('living',
+                        { x: publicRect.x, y: publicRect.y, w: ec.mainW, h: ec.livingH },
+                        living.placedLabel, living.placedId, 'public'));
+                      placed.push(mkSpace('dining',
+                        { x: publicRect.x, y: Math.round((publicRect.y + ec.livingH) * 100) / 100, w: ec.mainW, h: ec.diningH },
+                        dining.placedLabel, dining.placedId, 'public'));
+                      galleryBottom = publicRect.y + ec.livingH;
+                      explanation.push(`${DINING_ENTRY_COLUMN_PLACED}: ${galleryCells.map(c => c.type).join('+')} stacked in a ${ec.galleryW.toFixed(2)} m column against the corridor; living ${ec.mainW.toFixed(2)}×${ec.livingH.toFixed(2)} m at the street, dining ${ec.mainW.toFixed(2)}×${ec.diningH.toFixed(2)} m behind it on the kitchen`);
+                      galleryPlaced = true;
+                      publicMainPlaced = true;
+                    }
+                  }
+                }
+                if (fits && !publicMainPlaced) {
                   let gx = publicRect.x;
                   galleryCells.forEach((s, i) => {
                     placed.push(mkSpace(s.type, { x: gx, y: publicRect.y, w: cw[i], h: sH }, s.placedLabel, s.placedId, 'public'));
