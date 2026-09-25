@@ -100,6 +100,13 @@ export interface GenerateOptions {
    * Omitted or false = legacy output.
    */
   connectIsolatedRooms?: boolean;
+  /**
+   * Phase 5.5A (opt-in, default OFF): within the 5.4A daylight-aware gallery arrangement,
+   * a dining that would exceed 7 m in depth or frontage goes on the street-façade row
+   * beside the gallery (≤ 7 m both axes) with living behind; adopted only through the
+   * unchanged 5.4A guard. Omitted or false = legacy output.
+   */
+  diningFacadeRow?: boolean;
 }
 
 /**
@@ -226,6 +233,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.stackPublicForDaylight === true ? { stackPublicForDaylight: true } : {}),
     ...(opts.bridgeThinStairGap === true ? { bridgeThinStairGap: true } : {}),
     ...(opts.connectIsolatedRooms === true ? { connectIsolatedRooms: true } : {}),
+    ...(opts.diningFacadeRow === true ? { diningFacadeRow: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)
