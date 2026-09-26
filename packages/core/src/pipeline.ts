@@ -179,6 +179,20 @@ export interface GenerateOptions {
    * adoptStackedPairMinAreaVariant.
    */
   stackedPairMinArea?: boolean;
+  /**
+   * Phase 5.6F opt-in (default OFF): forwarded to generateLayouts — the shaft / corridor
+   * overlap notch on upper floors of rectangular sites, adopted only through
+   * adoptShaftCorridorNotchVariant.
+   */
+  notchShaftCorridorOverlap?: boolean;
+  /**
+   * Phase 5.6G opt-in (default OFF): forwarded to generateLayouts — the L-shape upper-floor
+   * stair-core circulation (stair on its CoreAnchor, core-seeded wing circulation, redundant
+   * wing spine not emitted), adopted only through adoptLShapeUpperCoreCirculationVariant.
+   */
+  lShapeUpperCoreCirculation?: boolean;
+  /** Task 128 opt-in (default OFF): forwarded to generateLayouts — two-stage L-shape room-quality selection. */
+  lShapeRoomQualitySelection?: boolean;
 }
 
 /**
@@ -314,6 +328,9 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.linkLShapeWingCorridors === true ? { linkLShapeWingCorridors: true } : {}),
     ...(opts.alignLShapeEntryFoyer === true ? { alignLShapeEntryFoyer: true } : {}),
     ...(opts.stackedPairMinArea === true ? { stackedPairMinArea: true } : {}),
+    ...(opts.notchShaftCorridorOverlap === true ? { notchShaftCorridorOverlap: true } : {}),
+    ...(opts.lShapeUpperCoreCirculation === true ? { lShapeUpperCoreCirculation: true } : {}),
+    ...(opts.lShapeRoomQualitySelection === true ? { lShapeRoomQualitySelection: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

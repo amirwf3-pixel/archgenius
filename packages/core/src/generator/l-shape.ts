@@ -44,10 +44,10 @@ import type { CandidateStrategy } from '../model/layout.js';
 import type { AccessSide } from '../model/site.js';
 import type { Polygon } from '../geometry/polygon-ops.js';
 import { rectInsidePolygon } from '../geometry/polygon-ops.js';
-import { placeSpaces, hasOverlappingRooms, type PlacedSpec } from '../layout/placer.js';
+import { placeSpaces, hasOverlappingRooms, ROOM001_MAIN_TYPES, room001Thresholds, mainRoomDimensionTarget, mainRoomUnitIsLarge, type PlacedSpec } from '../layout/placer.js';
 import { contactLen } from '../layout/regions.js';
 import { solveRow, solveCol, type BandCellDemand, type BandSolution } from '../layout/topology.js';
-import { EPS, CORRIDOR_MIN_WIDTH } from '../units.js';
+import { EPS, CORRIDOR_MIN_WIDTH, WELD_STEP, CORRIDOR_SNAP_EPS } from '../units.js';
 
 /**
  * P29-B FIX 2 — wing-residual stats for the balance selection (pure, exported
@@ -171,6 +171,89 @@ function circulationConnected(spaces: ReadonlyArray<Space>): boolean {
     });
 }
 
+
+/**
+ * Phase 5.6G weld-stability mirror (planner proxy, pure): replays, on copies, the
+ * corridor-edge translation of the downstream site-aware corridor/room snap
+ * (snapCorridorsToRoomsSiteAware, CORRIDOR_SNAP_EPS) and reports whether every
+ * space stays inside the buildable boundary (same 1e-3 containment test). A plan
+ * failing it would have a room pushed out and relocated after placement, so it is
+ * not counted as circulation-connected. Never moves or resizes the inputs.
+ */
+export function corridorSnapKeepsInside(rooms: ReadonlyArray<Space>, circ: ReadonlyArray<Space>, boundary: Polygon): boolean {
+  const sp = [...rooms, ...circ].map(x => ({ isCorr: x.type === 'corridor', r: { ...x.rect } }));
+  const eps = CORRIDOR_SNAP_EPS;
+  for (const c of sp) {
+    if (!c.isCorr) continue;
+    const north = c.r.y + c.r.h, south = c.r.y, east = c.r.x + c.r.w, west = c.r.x;
+    for (const s of sp) {
+      if (s === c) continue;
+      if (Math.abs(s.r.y - north) < eps) s.r.y = north;
+      if (Math.abs(s.r.y + s.r.h - south) < eps) s.r.y = south - s.r.h;
+      if (Math.abs(s.r.x - east) < eps) s.r.x = east;
+      if (Math.abs(s.r.x + s.r.w - west) < eps) s.r.x = west - s.r.w;
+    }
+  }
+  return sp.every(s => rectInsidePolygon(s.r, boundary, 1e-3));
+}
+
+/**
+ * Phase 5.6G — upper-floor circulation judged from the stair core: every
+ * corridor is transitively adjacent-connected (≥ L_CIRC_LINK) to the core rect
+ * through corridors only, every main habitable room touches that system, every
+ * wet room touches it or a bedroom suite host (same rule as
+ * circulationConnected), and nothing overlaps the core. Pure.
+ */
+export function coreSeededCirculationOk(spaces: ReadonlyArray<Space>, circ: ReadonlyArray<Space>, core: Rect): boolean {
+  // Planner proxy only: contact is measured at the M6 weld precision so that a
+  // pre-weld sub-step seam (e.g. 4 mm) reads the same as the welded geometry.
+  const touchLen = (a: Rect, b: Rect): number => {
+    const xo = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const yo = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    if (xo < -WELD_STEP || yo < -WELD_STEP) return 0;
+    if (Math.abs(a.y + a.h - b.y) <= WELD_STEP || Math.abs(b.y + b.h - a.y) <= WELD_STEP) return Math.max(0, xo);
+    if (Math.abs(a.x + a.w - b.x) <= WELD_STEP || Math.abs(b.x + b.w - a.x) <= WELD_STEP) return Math.max(0, yo);
+    return 0;
+  };
+  if ([...spaces, ...circ].some(s => rOverlapArea(s.rect, core) > 1e-3)) return false;
+  // Tracked by object: wing corridors from separate placer calls may share an id.
+  const comp = new Set<Space>();
+  const q: Rect[] = [core];
+  while (q.length) {
+    const cur = q.shift()!;
+    for (const c of circ) {
+      if (comp.has(c)) continue;
+      if (touchLen(cur, c.rect) >= L_CIRC_LINK) { comp.add(c); q.push(c.rect); }
+    }
+  }
+  if (!circ.every(c => comp.has(c))) return false;
+  const reach: Rect[] = [core, ...circ.map(c => c.rect)];
+  const L_WET = new Set<string>(['bathroom', 'master-bathroom', 'guest-wc', 'laundry']);
+  const touches = (r: Rect) => reach.some(c => touchLen(r, c) >= L_CIRC_LINK);
+  const rooms = spaces.filter(s => !L_CIRC_TYPES.has(s.type));
+  return rooms.filter(h => L_HABITABLE_ATTACH.has(h.type)).every(h => touches(h.rect))
+    && rooms.filter(h => L_WET.has(h.type)).every(h => touches(h.rect)
+      || rooms.some(o => (o.type === 'master-bedroom' || o.type === 'bedroom') && touchLen(h.rect, o.rect) >= L_CIRC_LINK));
+}
+
+/**
+ * Phase 5.6G — wing-synthesized corridors that are redundant next to the bridge
+ * strip / stair core: a corridor is dropped only when it touches no other
+ * circulation (strip, core or another wing corridor) by L_CIRC_LINK and every
+ * room touching it by L_CIRC_LINK already touches the strip or the core by
+ * L_CIRC_LINK. Returns the kept corridors (the input array when nothing drops). Pure.
+ */
+export function redundantWingSpinesDropped(rooms: ReadonlyArray<Space>, wingCorridors: Space[], strip: Rect, core: Rect): Space[] {
+  const anchors = [strip, core];
+  const redundant = (c: Space): boolean => {
+    if (anchors.some(a => sharedEdgeLen(c.rect, a) >= L_CIRC_LINK)) return false;
+    if (wingCorridors.some(o => o !== c && sharedEdgeLen(c.rect, o.rect) >= L_CIRC_LINK)) return false;
+    return rooms.filter(r => sharedEdgeLen(r.rect, c.rect) >= L_CIRC_LINK)
+      .every(r => anchors.some(a => sharedEdgeLen(r.rect, a) >= L_CIRC_LINK));
+  };
+  const kept = wingCorridors.filter(c => !redundant(c));
+  return kept.length === wingCorridors.length ? wingCorridors : kept;
+}
 
 // ---- P35 downstream-failure proxy ------------------------------------------
 // P31's circulation preference let a connector-twin plan win this stage while
@@ -418,6 +501,15 @@ export interface LShapePlacementOptions {
    */
   mainRoomMinDimension?: boolean;
   /**
+   * Task 128 (V3): two-stage wing-plan selection. Stage 1 is the unchanged selection
+   * (dimension contract → circulation → [5.3B adjacency] → imbalance → residual → suite).
+   * Only when that winner itself fails MBH4-ROOM-001 (no ROOM001_MAIN_TYPES room meeting the
+   * pack's area AND width thresholds), the SAME eligible plans are re-ranked with one extra
+   * key after circulation: prefer a plan with such a room that is also no larger than
+   * L_ROOM_QUALITY_MAX_AREA. Plans are only selected, never moved or resized. Default OFF.
+   */
+  roomQualitySelection?: boolean;
+  /**
    * Phase 5.6C: after selection, when the selected plan's bridge strip and a
    * parallel wing corridor face each other across an empty gap without being
    * circulation-connected, add one cut-perpendicular corridor link of
@@ -435,10 +527,58 @@ export interface LShapePlacementOptions {
    * space and all corridors are untouched.
    */
   alignEntryFoyer?: boolean;
+  /**
+   * Phase 5.6G: the upper-floor stair core rect (the building's CoreAnchor). When
+   * given, the caller has withheld the stair-hall spec and places the hall on this
+   * rect itself. Plan circulation is then judged from the stair core
+   * (coreSeededCirculationOk) instead of the entry spaces, and a wing-synthesized
+   * spine that touches no circulation and serves no room the bridge strip / stair
+   * does not already serve is not emitted — only when the plan stays fully
+   * core-connected without it. Default absent — selection exactly as before.
+   */
+  coreAnchorRect?: Rect;
 }
+
+/** Explanation prefix proving Phase 5.6G dropped a redundant wing spine in the selected plan. */
+export const L_UPPER_CORE_SPINE_SUPPRESSED = 'Phase 5.6G L-wings redundant wing spine not emitted';
 
 /** Explanation prefix proving the Phase 5.6D entrance / foyer boundary moved. */
 export const L_ENTRY_FOYER_ALIGNED = 'Phase 5.6D L-wings entry/foyer boundary aligned';
+/** Explanation prefix proving the task-128 room-quality re-rank changed the selected wing plan. */
+export const L_ROOM_QUALITY_SELECTED = 'L-shape room-quality selection';
+/**
+ * Oversized-room quality guard (m², rect area) — not a regulatory threshold. Shared by the
+ * 5.6G adoption guard (clause 11) and the task-128 room-quality re-rank.
+ */
+export const L_ROOM_QUALITY_MAX_AREA = 60;
+
+/** Task 128 — pure: `sp` is an MBH4-ROOM-001 main room meeting the pack's area AND width thresholds. */
+export function meetsRoom001Main(sp: Space, th: { area: number; width: number }): boolean {
+  return ROOM001_MAIN_TYPES.has(sp.type)
+    && rArea(sp.rect) >= th.area - EPS && Math.min(sp.rect.w, sp.rect.h) >= th.width - EPS;
+}
+
+/** Task 128 — pure: the stage-2 preferred room — meets ROOM-001 and is not oversized (≤ L_ROOM_QUALITY_MAX_AREA). */
+export function roomQualityPreferred(sp: Space, th: { area: number; width: number }): boolean {
+  return meetsRoom001Main(sp, th) && rArea(sp.rect) <= L_ROOM_QUALITY_MAX_AREA + EPS;
+}
+
+/**
+ * Task 128 — pure two-stage selection. `winner` is the unchanged stage-1 selection
+ * (`select(null)`). If it already has a ROOM-001 main room (any size) it is returned as is;
+ * otherwise `select` re-ranks the same plans with the preferred-room key inserted after
+ * circulation. When no plan has a preferred room the key never differs, so the existing
+ * ranking is preserved.
+ */
+export function selectWithRoomQuality<P extends { spaces: Space[] }>(
+  winner: P,
+  select: (key: ((p: P) => boolean) | null) => P,
+  th: { area: number; width: number },
+): { best: P; reranked: boolean } {
+  if (winner.spaces.some(sp => meetsRoom001Main(sp, th))) return { best: winner, reranked: false };
+  const best = select(p => p.spaces.some(sp => roomQualityPreferred(sp, th)));
+  return { best, reranked: best !== winner };
+}
 
 /**
  * Phase 5.6D — deterministic entrance / foyer boundary shift in a horizontal
@@ -1046,6 +1186,20 @@ export function placeSpacesLShape(
             continue;
           }
           const bridgeSpace = mkSpace('corridor', cfg.strip, 'Corridor', 'corridor-bridge', 'circulation');
+          // Phase 5.6G (upper floor, core anchor given): a redundant wing spine is not
+          // emitted — only when the plan without it is fully core-connected.
+          let spineDropped = 0;
+          if (opts.coreAnchorRect) {
+            const core = opts.coreAnchorRect;
+            const rooms = [...dayAll.spaces, ...nightRes.spaces];
+            const wing = [...dayAll.corridors, ...nightRes.corridors];
+            const kept = redundantWingSpinesDropped(rooms, wing, cfg.strip, core);
+            if (kept !== wing && coreSeededCirculationOk([...rooms, bridgeSpace], [bridgeSpace, ...kept], core)) {
+              spineDropped = wing.length - kept.length;
+              dayAll.corridors = dayAll.corridors.filter(c => kept.includes(c));
+              nightRes.corridors = nightRes.corridors.filter(c => kept.includes(c));
+            }
+          }
           const all = [...dayAll.spaces, ...nightRes.spaces, bridgeSpace];
           // Geometry-authoritative gates — accepted only when the actual
           // placed rectangles are collision-free and nothing leaves the
@@ -1074,7 +1228,10 @@ export function placeSpacesLShape(
           // emitted only when it passes every geometry gate and actually
           // connects the corridor system to the entry spaces.
           const circSpacesNow = [bridgeSpace, ...dayAll.corridors, ...nightRes.corridors];
-          let circOk = circulationConnected([...all, ...circSpacesNow]);
+          let circOk = opts.coreAnchorRect
+            ? coreSeededCirculationOk(all, circSpacesNow, opts.coreAnchorRect)
+              && corridorSnapKeepsInside(all, circSpacesNow, buildableBoundary)
+            : circulationConnected([...all, ...circSpacesNow]);
           let connectorSpace: Space | null = null;
           const tryConnector = (cand: Rect): void => {
             if (cand.h < 1.2 || cand.w < 1.2) return;
@@ -1161,6 +1318,7 @@ export function placeSpacesLShape(
             corridors: [...dayAll.corridors, ...nightRes.corridors, bridgeSpace, ...(connectorSpace ? [connectorSpace] : [])],
             lines: [
               `Phase 25 L-wings: plan ACCEPTED (${split.note}; ${orient.note}; ${v.note}; ${cfg.note}${connectorSpace ? '; corridor-link added' : ''}) — day ${v.day.length} room(s) on ${dayRectCfg.w.toFixed(1)}x${dayRectCfg.h.toFixed(1)} m, night ${v.night.length} on ${nightRectCfg.w.toFixed(1)}x${nightRectCfg.h.toFixed(1)} m, bridge strip ${cfg.strip.w.toFixed(1)}x${cfg.strip.h.toFixed(1)} m on the shared cut.`,
+              ...(spineDropped > 0 ? [`${L_UPPER_CORE_SPINE_SUPPRESSED}: ${spineDropped} wing corridor(s) touching no circulation, whose rooms all open onto the bridge strip / stair core, were not emitted (plan stays core-connected).`] : []),
               ...dayAll.explanation.map(e => `[day wing] ${e}`),
               ...nightRes.explanation.map(e => `[night wing] ${e}`),
             ],
@@ -1206,36 +1364,62 @@ export function placeSpacesLShape(
       if (!k) { k = programmeAdjacencyKey(specs, p); adjKeyCache.set(p, k); }
       return k;
     };
-    let best = eligibleWingPlans[0];
-    for (const c of eligibleWingPlans) {
-      if (c.dimContractOk !== best.dimContractOk) {
-        if (c.dimContractOk) best = c;
-        continue;
-      }
-      // P31-P1: a circulation-connected plan always beats a disconnected one
-      // (the door pass turns the connector adjacency into spine doors).
-      if (c.circulationOk !== best.circulationOk) {
-        if (c.circulationOk) best = c;
-        continue;
-      }
-      // Phase 5.3B (opt-in): both plans already pass every mandatory gate
-      // (downstream mirror via eligibleWingPlans, dimension contract, circulation)
-      // — only then may programme adjacency decide, and only strictly.
-      if (preferAdj && c.dimContractOk && c.circulationOk && best.dimContractOk && best.circulationOk) {
-        const kc = adjKey(c), kb = adjKey(best);
-        if (kc[0] !== kb[0] || kc[1] !== kb[1]) {
-          if (kc[0] > kb[0] || (kc[0] === kb[0] && kc[1] > kb[1])) best = c;
+    type WingPlan = (typeof eligibleWingPlans)[number];
+    const selectWingPlan = (roomQualityKey: ((p: WingPlan) => boolean) | null): WingPlan => {
+      let best = eligibleWingPlans[0];
+      for (const c of eligibleWingPlans) {
+        if (c.dimContractOk !== best.dimContractOk) {
+          if (c.dimContractOk) best = c;
           continue;
         }
+        // P31-P1: a circulation-connected plan always beats a disconnected one
+        // (the door pass turns the connector adjacency into spine doors).
+        if (c.circulationOk !== best.circulationOk) {
+          if (c.circulationOk) best = c;
+          continue;
+        }
+        // Task 128 stage 2 only: the room-quality key (never consulted in stage 1).
+        if (roomQualityKey) {
+          const qc = roomQualityKey(c), qb = roomQualityKey(best);
+          if (qc !== qb) {
+            if (qc) best = c;
+            continue;
+          }
+        }
+        // Phase 5.3B (opt-in): both plans already pass every mandatory gate
+        // (downstream mirror via eligibleWingPlans, dimension contract, circulation)
+        // — only then may programme adjacency decide, and only strictly.
+        if (preferAdj && c.dimContractOk && c.circulationOk && best.dimContractOk && best.circulationOk) {
+          const kc = adjKey(c), kb = adjKey(best);
+          if (kc[0] !== kb[0] || kc[1] !== kb[1]) {
+            if (kc[0] > kb[0] || (kc[0] === kb[0] && kc[1] > kb[1])) best = c;
+            continue;
+          }
+        }
+        if (c.imbalance < best.imbalance - 1e-9) best = c;
+        else if (c.imbalance <= best.imbalance + 1e-9 && c.totalResidual < best.totalResidual - 1e-9) best = c;
+        // P33-P3: on an EXACT tie of every existing metric (dimension contract,
+        // circulation connectivity, imbalance, residual), prefer the plan that
+        // keeps the master suite in one wing. Deterministic; never overrides a
+        // strictly better plan; weights and thresholds untouched.
+        else if (c.imbalance <= best.imbalance + 1e-9 && c.totalResidual <= best.totalResidual + 1e-9
+          && suiteAdjacent(c) && !suiteAdjacent(best)) best = c;
       }
-      if (c.imbalance < best.imbalance - 1e-9) best = c;
-      else if (c.imbalance <= best.imbalance + 1e-9 && c.totalResidual < best.totalResidual - 1e-9) best = c;
-      // P33-P3: on an EXACT tie of every existing metric (dimension contract,
-      // circulation connectivity, imbalance, residual), prefer the plan that
-      // keeps the master suite in one wing. Deterministic; never overrides a
-      // strictly better plan; weights and thresholds untouched.
-      else if (c.imbalance <= best.imbalance + 1e-9 && c.totalResidual <= best.totalResidual + 1e-9
-        && suiteAdjacent(c) && !suiteAdjacent(best)) best = c;
+      return best;
+    };
+    let best = selectWingPlan(null);
+    // Task 128 (opt-in): re-rank ONLY when the unchanged winner fails MBH4-ROOM-001 itself.
+    if (opts.roomQualitySelection === true) {
+      const large = mainRoomUnitIsLarge(buildableRects.reduce((t, r) => t + rArea(r), 0));
+      const th = mainRoomDimensionTarget(specs, large) ? room001Thresholds(large) : null;
+      if (th) {
+        const sel = selectWithRoomQuality(best, selectWingPlan, th);
+        if (sel.reranked) {
+          const room = sel.best.spaces.find(sp => roomQualityPreferred(sp, th))!;
+          explanation.push(`${L_ROOM_QUALITY_SELECTED}: the selected wing plan had no MBH4-ROOM-001 main room (≥ ${th.area} m² / ${th.width} m, pack thresholds); re-ranked the same eligible plans — ${room.id} ${room.rect.w.toFixed(2)}×${room.rect.h.toFixed(2)} m (${rArea(room.rect).toFixed(1)} m² ≤ ${L_ROOM_QUALITY_MAX_AREA} m² quality guard). No room moved or resized.`);
+          best = sel.best;
+        }
+      }
     }
     explanation.push(...best.lines);
     // Phase 5.6C (opt-in): post-selection wing-corridor link — never alters

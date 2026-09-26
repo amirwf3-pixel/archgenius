@@ -18,6 +18,10 @@ export const MM_PER_M = 1000;
 
 /** Geometric epsilon in meters (~1 micrometer). Used for overlap / equality tests. */
 export const EPS = 1e-6;
+/** One step of the Phase 15 M6 welded 0.01 m grid snap. */
+export const WELD_STEP = 0.01;
+/** Corridor-edge snap tolerance of the site-aware corridor/room snap (pre-weld seam closure). */
+export const CORRIDOR_SNAP_EPS = 0.02;
 
 /** Default wall thicknesses (meters). */
 export const WALL_EXT_THK = 0.35; // ~35 cm exterior (bearing + cladding)

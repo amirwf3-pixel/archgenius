@@ -10,6 +10,7 @@
 
 import type { ProjectInput } from '../model/project.js';
 import type { Floor } from '../model/floor.js';
+import type { Opening } from '../model/opening.js';
 import type { Space, SpaceSpec } from '../model/space.js';
 import type { Wall } from '../model/wall.js';
 import type { Furniture } from '../model/furniture.js';
@@ -41,7 +42,7 @@ import { placeFurniture } from './furniture.js';
 import type { Rect } from '../geometry/rect.js';
 import { rArea, rCorners, rIntersects } from '../geometry/rect.js';
 import { polygonArea } from '../geometry/polygon.js';
-import { EPS, CORRIDOR_MIN_WIDTH, DOOR_INT_WIDTH, DOOR_BATH_WIDTH } from '../units.js';
+import { EPS, CORRIDOR_MIN_WIDTH, DOOR_INT_WIDTH, DOOR_BATH_WIDTH, WELD_STEP, CORRIDOR_SNAP_EPS } from '../units.js';
 import { computeBuildableGeometry } from '../site/buildable.js';
 import type { Polygon } from '../geometry/polygon-ops.js';
 import type { AccessSide } from '../model/site.js';
@@ -57,7 +58,7 @@ import {
 } from '../geometry/polygon-ops.js';
 import { createRectangleRoomPolygon, roomPolygonToBoundingRect } from '../geometry/room-polygon.js';
 import { applyFloorCompaction } from '../layout/compaction.js';
-import { placeSpacesLShape, lAwareParkingEnvelope, L_WING_LINK_ADDED, L_ENTRY_FOYER_ALIGNED } from './l-shape.js';
+import { placeSpacesLShape, lAwareParkingEnvelope, L_WING_LINK_ADDED, L_ENTRY_FOYER_ALIGNED, L_ROOM_QUALITY_MAX_AREA } from './l-shape.js';
 
 export const ALL_STRATEGIES: CandidateStrategy[] = [
   'area-efficiency',
@@ -201,6 +202,32 @@ export interface GenerateLayoutsOptions {
    * (adoptStackedPairMinAreaVariant).
    */
   stackedPairMinArea?: boolean;
+  /**
+   * Phase 5.6F opt-in (default OFF): on upper floors of rectangular sites with an elevator,
+   * when the exact vertical-reuse pin leaves the shaft overlapping one corridor by a
+   * sub-tolerance depth (within the existing sameRect tolerance), that corridor is split
+   * into pieces tiling it minus the overlap strip (see findShaftCorridorNotch). The shaft,
+   * stair and rooms never move. Adopted per candidate only through the validator- and
+   * geometry-guarded comparison (adoptShaftCorridorNotchVariant).
+   */
+  notchShaftCorridorOverlap?: boolean;
+  /**
+   * Phase 5.6G opt-in (default OFF): on upper floors of L-shape sites the stair-hall spec is
+   * withheld from the wing planner, the hall is placed directly on the building's stair
+   * CoreAnchor rect, the planner judges circulation from that core
+   * (LShapePlacementOptions.coreAnchorRect) and does not emit a redundant wing spine. No
+   * room or corridor is moved or resized after placement. Adopted per candidate only through
+   * the validator- and geometry-guarded comparison (adoptLShapeUpperCoreCirculationVariant).
+   */
+  lShapeUpperCoreCirculation?: boolean;
+  /**
+   * Task 128 opt-in (default OFF): two-stage L-shape wing-plan selection. The unchanged
+   * selection runs first; only when its winner has no MBH4-ROOM-001 main room (pack area AND
+   * width thresholds) are the same eligible plans re-ranked to prefer one that has such a room
+   * no larger than L_ROOM_QUALITY_MAX_AREA (see LShapePlacementOptions.roomQualitySelection).
+   * Plans are only selected — no room is moved or resized; stair/elevator untouched.
+   */
+  lShapeRoomQualitySelection?: boolean;
 }
 
 export function generateLayouts(
@@ -225,6 +252,9 @@ export function generateLayouts(
   const linkLShapeWingCorridors = options.linkLShapeWingCorridors === true;
   const alignLShapeEntryFoyer = options.alignLShapeEntryFoyer === true;
   const stackedPairMinArea = options.stackedPairMinArea === true;
+  const notchShaftCorridorOverlap = options.notchShaftCorridorOverlap === true;
+  const lShapeUpperCoreCirculation = options.lShapeUpperCoreCirculation === true;
+  const lShapeRoomQualitySelection = options.lShapeRoomQualitySelection === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -269,7 +299,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false, wingLink = false, entryFoyer = false, pairMinArea = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false, wingLink = false, entryFoyer = false, pairMinArea = false, shaftNotch = false, upperCoreCirc = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -277,7 +307,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea, shaftNotch, upperCoreCirc, lShapeRoomQualitySelection));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -468,7 +498,28 @@ export function generateLayouts(
       withPairMinArea = adoptStackedPairMinAreaVariant(withEntryFoyer,
         buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, withElevatorBridge !== withMainDim, withWingLink !== withElevatorBridge, withEntryFoyer !== withWingLink, true));
     }
-    candidates.push(withPairMinArea);
+    // Phase 5.6F (opt-in): after 5.6E — the shaft / corridor overlap notch (post-pin, in
+    // the floor builder) is built on every option already adopted and adopted ONLY through
+    // its own guard, only on rectangular sites whose adopted candidate carries an
+    // ELEV_SHAFT_OVERLAP HARD.
+    let withShaftNotch = withPairMinArea;
+    if (notchShaftCorridorOverlap && input.site.shape === 'rectangle'
+      && withPairMinArea.findings.some(f => f.severity === 'hard' && f.code === SHAFT_OVERLAP_RULE)) {
+      withShaftNotch = adoptShaftCorridorNotchVariant(withPairMinArea,
+        buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, withElevatorBridge !== withMainDim, withWingLink !== withElevatorBridge, withEntryFoyer !== withWingLink, withPairMinArea !== withEntryFoyer, true));
+    }
+    // Phase 5.6G (opt-in): after 5.6F — the L-shape upper-floor core circulation (stair
+    // withheld from the wing planner and placed on its CoreAnchor, core-seeded circulation,
+    // redundant wing spine not emitted) is built on every option already adopted and adopted
+    // ONLY through its own guard, only on multi-floor L-shape sites whose adopted candidate
+    // carries a through-room / inaccessible-space / must-adjacent HARD.
+    let withUpperCore = withShaftNotch;
+    if (lShapeUpperCoreCirculation && input.site.shape === 'l-shape' && numFloors > 1
+      && withShaftNotch.findings.some(f => f.severity === 'hard' && UPPER_CORE_REACH.has(f.code))) {
+      withUpperCore = adoptLShapeUpperCoreCirculationVariant(withShaftNotch,
+        buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, withElevatorBridge !== withMainDim, withWingLink !== withElevatorBridge, withEntryFoyer !== withWingLink, withPairMinArea !== withEntryFoyer, withShaftNotch !== withPairMinArea, true));
+    }
+    candidates.push(withUpperCore);
   }
 
   sortCandidates(candidates);
@@ -823,8 +874,6 @@ export function adoptLShapeWingLinkVariant(base: LayoutCandidate, variant: Layou
 }
 
 const ENTRY_FOYER_RULE = 'CONSTRAINT_DIRECT_ACCESS';
-/** One step of the Phase 15 M6 welded 0.01 m grid snap. */
-const WELD_STEP = 0.01;
 
 /**
  * Phase 5.6D guard: adopt the L-shape entrance / foyer alignment variant only when:
@@ -991,6 +1040,230 @@ export function adoptStackedPairMinAreaVariant(base: LayoutCandidate, variant: L
   const bo = overlapPairs(base);
   for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
   variant.explanations.push(`Phase 5.6E: stacked-pair minArea variant adopted (${PAIR_MIN_AREA_RULE} ${minA(base)}→${minA(variant)}, HARD ${hardOf(base).length}→${hardOf(variant).length}; only the ${lo.b.type} / ${hi.b.type} shared boundary moved ${hi.b.rect.y.toFixed(2)}→${hi.v.rect.y.toFixed(2)} m, both keep minArea / minWidth; stair / elevator / corridors / exterior walls unchanged, openings unchanged except the pair's shared-wall door translated with the boundary, no overlap).`);
+  return variant;
+}
+
+const UPPER_CORE_REACH = new Set(['CIRC_ROOM_THROUGH_ROOM', 'CIRC_INACCESSIBLE_SPACE', 'CONSTRAINT_MUST_ADJACENT']);
+/** Floor-builder explanation prefix proving Phase 5.6G placed the stair hall on its anchor. */
+export const L_UPPER_CORE_RESERVED = 'Phase 5.6G L-wings upper-floor stair core reserved';
+/** Explanation fragments of a post-placement stair / blocker relocation (alignHallToAnchor). */
+const HALL_RELOCATION = ['stair-hall pinned to the', 'stair-hall re-created on the core anchor', 'core anchor cell could not be freed'];
+
+/**
+ * Phase 5.6G guard: adopt the L-shape upper-floor core-circulation variant only when:
+ *  1. the floor builder really reserved the stair core (explanation marker);
+ *  2. a valid candidate stays valid;  3. total HARD strictly decreases;
+ *  4. no HARD code increases (CIRC_ROOM_THROUGH_ROOM, CIRC_INACCESSIBLE_SPACE and
+ *     CONSTRAINT_MUST_ADJACENT included);
+ *  5. no circulation / access / daylight finding (WATCHED_FINDING, any severity) increases;
+ *  6. the ground floor is identical (whole floor record);
+ *  7. on every floor the stair / elevator halls are identical to the base (anchor rect);
+ *  8. the variant has no post-placement hall pin / blocker relocation and no more
+ *     site-aware room repairs than the base (no room moved after placement);
+ *  9. no new overlapping pair and every space inside the buildable area;
+ * 10. determinism: pure comparison of two deterministic builds;
+ * 11. quality guard (not a regulatory rule): a variant that is VALID must not introduce a
+ *     non-corridor space larger than L_UPPER_CORE_NEW_ROOM_MAX_AREA with no same-type /
+ *     same-rect counterpart in the base (an oversized room must never make a candidate valid).
+ */
+/** Clause 11 quality guard (m², rect area) — not a regulatory threshold (shared L_ROOM_QUALITY_MAX_AREA). */
+const L_UPPER_CORE_NEW_ROOM_MAX_AREA = L_ROOM_QUALITY_MAX_AREA;
+
+export function adoptLShapeUpperCoreCirculationVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (!variant.explanations.some(e => e.startsWith(L_UPPER_CORE_RESERVED))) return base;
+  if (variant.valid === true) {
+    const key = (sp: Space) => `${sp.type}|${[sp.rect.x, sp.rect.y, sp.rect.w, sp.rect.h].map(v => v.toFixed(2)).join(',')}`;
+    const oversized = (c: LayoutCandidate) => c.floors.flatMap(f => f.spaces)
+      .filter(sp => sp.type !== 'corridor' && sp.rect.w * sp.rect.h > L_UPPER_CORE_NEW_ROOM_MAX_AREA);
+    const baseKeys = new Set(oversized(base).map(key));
+    if (oversized(variant).some(sp => !baseKeys.has(key(sp)))) return base;
+  }
+  if (base.valid && !variant.valid) return base;
+  const hardOf = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard');
+  if (!(hardOf(variant).length < hardOf(base).length)) return base;
+  const count = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const pick = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const bc = count(base, pick);
+  for (const [k, v] of count(variant, pick)) if (v > (bc.get(k) ?? 0)) return base;
+  if (variant.floors.length !== base.floors.length) return base;
+  const J = (x: unknown) => JSON.stringify(x);
+  const E = 1e-6;
+  const same = (a: Rect, c: Rect) => Math.abs(a.x - c.x) < E && Math.abs(a.y - c.y) < E && Math.abs(a.w - c.w) < E && Math.abs(a.h - c.h) < E;
+  const rects = ((variant as any).buildableRects ?? []) as Rect[];
+  for (const vf of variant.floors) {
+    const bf = base.floors.find(x => x.level === vf.level);
+    if (!bf) return base;
+    if (vf.level === 0) { if (J(vf) !== J(bf)) return base; continue; }
+    for (const t of ['stair-hall', 'elevator-hall'] as const) {
+      const hb = bf.spaces.filter(s => s.type === t), hv = vf.spaces.filter(s => s.type === t);
+      if (hb.length !== hv.length) return base;
+      for (const h of hb) if (!hv.some(x => same(x.rect, h.rect))) return base;
+    }
+    if (rects.length > 0 && vf.spaces.some(s => s.rect && !insideBuildable(s.rect, rects))) return base;
+  }
+  if (variant.explanations.some(e => HALL_RELOCATION.some(m => e.includes(m)))) return base;
+  const repairs = (c: LayoutCandidate) => c.explanations.filter(e => e.startsWith('Site-aware repair:')).length;
+  if (repairs(variant) > repairs(base)) return base;
+  const bo = overlapPairs(base);
+  for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
+  variant.explanations.push(`Phase 5.6G: L-shape upper-floor core-circulation variant adopted (HARD ${hardOf(base).length}→${hardOf(variant).length}; no HARD code or circulation / access / daylight finding added, ground floor and stair / elevator halls identical, no post-placement room or hall relocation, no overlap, buildable containment held).`);
+  return variant;
+}
+
+const SHAFT_OVERLAP_RULE = 'ELEV_SHAFT_OVERLAP';
+const GEO_OVERLAP_RULE = 'GEO_OVERLAPPING_ROOMS';
+
+/**
+ * Phase 5.6F guard: adopt the shaft / corridor overlap notch variant only when
+ *  1. the marker is present;  2. a valid candidate stays valid;
+ *  3. ELEV_SHAFT_OVERLAP and  4. GEO_OVERLAPPING_ROOMS strictly decrease;
+ *  5. total HARD strictly decreases;  6. no HARD code increases;
+ *  7. no circulation / access / daylight finding (WATCHED_FINDING, any severity) increases;
+ *  8. only one corridor on one floor changes: it is replaced by pieces (its own id plus new
+ *     corridor ids) lying inside it, pairwise disjoint, disjoint from the shaft, each
+ *     ≥ CORRIDOR_MIN_WIDTH, whose areas sum to the corridor minus its shaft overlap;
+ *  9. the shaft, stair, rooms and every other floor field are identical;
+ * 10. every existing opening keeps its exact geometry; its only allowed change is to
+ *     re-reference the corridor piece it touches. Approved single exception: the door
+ *     between the floor's stair hall and the split corridor may change only its wall id,
+ *     swing, hinge, leafEnd and openEnd (hinge / leaf mirrored about the unchanged
+ *     center); center, width, height, wall direction, normal and spaces stay identical;
+ * 11. new openings are only the shaft landing door (≤ 1) and doors between corridor pieces;
+ * 12. hasExteriorWall unchanged;  13. no new overlapping pair;  14. pieces inside the
+ *     buildable area;  15. deterministic (pure comparison of two deterministic builds).
+ */
+export function adoptShaftCorridorNotchVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (!variant.explanations.some(e => e.includes(SHAFT_CORRIDOR_NOTCHED))) return base;
+  if (base.valid && !variant.valid) return base;
+  const hardOf = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard');
+  const n = (c: LayoutCandidate, code: string) => hardOf(c).filter(f => f.code === code).length;
+  if (!(n(variant, SHAFT_OVERLAP_RULE) < n(base, SHAFT_OVERLAP_RULE))) return base;
+  if (!(n(variant, GEO_OVERLAP_RULE) < n(base, GEO_OVERLAP_RULE))) return base;
+  if (!(hardOf(variant).length < hardOf(base).length)) return base;
+  const count = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const pick = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const bc = count(base, pick);
+  for (const [k, v] of count(variant, pick)) if (v > (bc.get(k) ?? 0)) return base;
+  if (variant.floors.length !== base.floors.length) return base;
+  const E = 1e-6;
+  const J = (x: unknown) => JSON.stringify(x);
+  const rects = ((variant as any).buildableRects ?? []) as Rect[];
+  const inRect = (r: Rect, K: Rect) => r.x >= K.x - E && r.y >= K.y - E && r.x + r.w <= K.x + K.w + E && r.y + r.h <= K.y + K.h + E;
+  const ovA = (a: Rect, b: Rect) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  const onEdge = (p: { x: number; y: number }, r: Rect) =>
+    ((Math.abs(p.x - r.x) < E || Math.abs(p.x - r.x - r.w) < E) && p.y >= r.y - E && p.y <= r.y + r.h + E)
+    || ((Math.abs(p.y - r.y) < E || Math.abs(p.y - r.y - r.h) < E) && p.x >= r.x - E && p.x <= r.x + r.w + E);
+  let changedFloor: { bf: Floor; vf: Floor } | null = null;
+  for (const vf of variant.floors) {
+    const bf = base.floors.find(x => x.level === vf.level);
+    if (!bf) return base;
+    const keys = new Set([...Object.keys(bf), ...Object.keys(vf)]);
+    const differing = [...keys].filter(k => J((bf as any)[k]) !== J((vf as any)[k]));
+    if (differing.length === 0) continue;
+    if (differing.some(k => k !== 'spaces' && k !== 'walls' && k !== 'openings')) return base;
+    if (changedFloor) return base;
+    changedFloor = { bf, vf };
+  }
+  if (!changedFloor) return base;
+  const { bf, vf } = changedFloor;
+  // 8 / 9 / 12: exactly one base corridor K changed; every other base space identical in
+  // geometry and attributes. Derived back-references (wallIds / openingIds renumbered,
+  // adjacentSpaceIds naming the corridor pieces) are checked separately below.
+  const DERIVED = new Set(['wallIds', 'openingIds', 'adjacentSpaceIds']);
+  const core = (x: Space) => J(Object.keys(x).filter(k => !DERIVED.has(k) && (x as any)[k] !== undefined).sort().map(k => [k, (x as any)[k]]));
+  let K: Space | null = null;
+  for (const s of bf.spaces) {
+    const v = vf.spaces.find(x => x.id === s.id);
+    if (v && core(v) === core(s)) continue;
+    if (s.type !== 'corridor' || K) return base;
+    if (!v || v.type !== 'corridor') return base;
+    K = s;
+  }
+  if (!K) return base;
+  const Kc = K;
+  const pieces = vf.spaces.filter(x => x.id === Kc.id || !bf.spaces.some(y => y.id === x.id));
+  {
+    // adjacency: identical once corridor pieces map back to the split corridor; only the
+    // shaft may additionally gain the corridor (its landing).
+    const pIds = new Set(pieces.map(p => p.id));
+    const norm = (ids: string[] | undefined) => [...new Set((ids ?? []).map(id => pIds.has(id) ? Kc.id : id))].sort();
+    for (const sp of bf.spaces) {
+      if (sp.id === Kc.id) continue;
+      const v = vf.spaces.find(x => x.id === sp.id)!;
+      const bn = norm((sp as any).adjacentSpaceIds), vn = norm((v as any).adjacentSpaceIds);
+      if (J(bn) === J(vn)) continue;
+      if (sp.type !== 'elevator-hall' || J([...new Set([...bn, Kc.id])].sort()) !== J(vn)) return base;
+    }
+  }
+  if (pieces.length < 2 || pieces.some(x => x.type !== 'corridor')) return base;
+  const shaft = vf.spaces.find(x => x.type === 'elevator-hall');
+  const shaftB = bf.spaces.find(x => x.type === 'elevator-hall');
+  if (!shaft || !shaftB || core(shaft) !== core(shaftB)) return base;
+  let sum = 0;
+  for (const [i, p] of pieces.entries()) {
+    if (!inRect(p.rect, Kc.rect) || Math.min(p.rect.w, p.rect.h) < CORRIDOR_MIN_WIDTH - E) return base;
+    if (ovA(p.rect, shaft.rect) > E) return base;
+    if (p.hasExteriorWall !== Kc.hasExteriorWall) return base;
+    if (rects.length > 0 && !insideBuildable(p.rect, rects)) return base;
+    for (const q of pieces.slice(i + 1)) if (ovA(p.rect, q.rect) > E) return base;
+    sum += p.rect.w * p.rect.h;
+  }
+  if (Math.abs(sum - (Kc.rect.w * Kc.rect.h - ovA(Kc.rect, shaft.rect))) > 1e-4) return base;
+  const pieceIds = new Set(pieces.map(p => p.id));
+  const stairId = bf.spaces.filter(x => x.type === 'stair-hall').length === 1 ? bf.spaces.find(x => x.type === 'stair-hall')!.id : null;
+  // 10 / 11: openings
+  const FIXED = ['type', 'center', 'wallDir', 'normal', 'width', 'height', 'sill', 'swing', 'hinge', 'leafEnd', 'openEnd', 'swingAngle', 'leafThickness', 'floor'] as const;
+  const STAIR_FIXED = ['type', 'center', 'wallDir', 'normal', 'width', 'height', 'sill', 'swingAngle', 'leafThickness', 'floor'] as const;
+  const extraKeys = (o: Opening) => Object.keys(o).filter(k => !['id', 'wallId', 'spaceA', 'spaceB', ...FIXED].includes(k));
+  const refOk = (bRef: string | undefined, vRef: string | undefined, center: { x: number; y: number }) =>
+    bRef === vRef ? (vRef !== Kc.id || onEdge(center, vf.spaces.find(x => x.id === vRef)!.rect))
+      : bRef === Kc.id && vRef !== undefined && pieceIds.has(vRef) && onEdge(center, vf.spaces.find(x => x.id === vRef)!.rect);
+  const used = new Set<number>();
+  let stairException = 0;
+  for (const o of bf.openings ?? []) {
+    const idx = (vf.openings ?? []).findIndex((m, j) => !used.has(j)
+      && FIXED.every(g => J((m as any)[g]) === J((o as any)[g]))
+      && J(extraKeys(m).map(k => (m as any)[k])) === J(extraKeys(o).map(k => (o as any)[k]))
+      && refOk(o.spaceA, m.spaceA, m.center) && refOk(o.spaceB, m.spaceB, m.center));
+    if (idx >= 0) { used.add(idx); continue; }
+    // approved exception: the stair hall ↔ split-corridor door, swing mirrored only
+    const sides = [o.spaceA, o.spaceB];
+    if (o.type !== 'door' || !stairId || !sides.includes(stairId) || !sides.includes(Kc.id) || stairException > 0) return base;
+    const j = (vf.openings ?? []).findIndex((m, jj) => !used.has(jj)
+      && STAIR_FIXED.every(g => J((m as any)[g]) === J((o as any)[g]))
+      && J(extraKeys(m).map(k => (m as any)[k])) === J(extraKeys(o).map(k => (o as any)[k]))
+      && refOk(o.spaceA, m.spaceA, m.center) && refOk(o.spaceB, m.spaceB, m.center));
+    if (j < 0) return base;
+    const m = vf.openings[j];
+    const mir = (p?: { x: number; y: number }, q?: { x: number; y: number }) => !!p && !!q
+      && Math.abs(q.x - (2 * o.center.x - p.x)) < E && Math.abs(q.y - (2 * o.center.y - p.y)) < E;
+    if (m.swing === o.swing || !mir(o.hinge, m.hinge) || !mir(o.leafEnd, m.leafEnd)) return base;
+    if (!o.openEnd || !m.openEnd || !o.hinge || !m.hinge
+      || Math.abs((m.openEnd.x - m.hinge.x) - (o.openEnd.x - o.hinge.x)) > E
+      || Math.abs((m.openEnd.y - m.hinge.y) - (o.openEnd.y - o.hinge.y)) > E) return base;
+    used.add(j);
+    stairException++;
+  }
+  let landing = 0;
+  for (const [j, m] of (vf.openings ?? []).entries()) {
+    if (used.has(j)) continue;
+    if (m.type !== 'door' || !m.spaceA || !m.spaceB) return base;
+    const a = pieceIds.has(m.spaceA), b = pieceIds.has(m.spaceB);
+    if (a && b) continue;
+    if ((a && m.spaceB === shaft.id) || (b && m.spaceA === shaft.id)) { if (++landing > 1) return base; continue; }
+    return base;
+  }
+  const bo = overlapPairs(base);
+  for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
+  variant.explanations.push(`Phase 5.6F: shaft / corridor overlap notch variant adopted (${SHAFT_OVERLAP_RULE} ${n(base, SHAFT_OVERLAP_RULE)}→${n(variant, SHAFT_OVERLAP_RULE)}, ${GEO_OVERLAP_RULE} ${n(base, GEO_OVERLAP_RULE)}→${n(variant, GEO_OVERLAP_RULE)}, HARD ${hardOf(base).length}→${hardOf(variant).length}; only ${Kc.id} split into ${pieces.length} pieces tiling it minus the shaft overlap, each ≥ CORRIDOR_MIN_WIDTH; shaft, stair, rooms and windows unchanged; existing doors unchanged except corridor-piece references${stairException ? ' and the stair-hall door swing (approved exception, center / width fixed)' : ''}; ${landing} landing door added; no overlap).`);
   return variant;
 }
 
@@ -1232,6 +1505,59 @@ export function findStairCoreConnector(
   return ok[0] ?? null;
 }
 
+/** Explanation prefix proving the Phase 5.6F shaft / corridor overlap notch was applied. */
+export const SHAFT_CORRIDOR_NOTCHED = 'Phase 5.6F shaft/corridor overlap notched';
+
+/**
+ * Phase 5.6F — pure search for a shaft / corridor overlap notch.
+ *
+ * Returns null unless the shaft overlaps EXACTLY ONE corridor, the overlap enters that
+ * corridor from one side with depth d > 0 small enough that the shaft moved back by d is
+ * still sameRect-equal to itself (the existing vertical-core tolerance — no new
+ * threshold), and the shaft's span along that corridor edge lies within the corridor.
+ * The corridor is then split like 5.4D / 5.6B: a notch piece over the shaft span (the
+ * corridor minus the d strip) plus the corridor's remainder pieces outside the span
+ * (zero-length pieces dropped). Every piece must keep CORRIDOR_MIN_WIDTH. The pieces tile
+ * the corridor minus the overlap; the shaft never moves.
+ */
+export function findShaftCorridorNotch(
+  shaft: Rect,
+  spaces: readonly { type: string; rect: Rect }[],
+): { corridorIndex: number; side: Side; depth: number; notch: Rect; remainders: Rect[] } | null {
+  const E = 1e-6;
+  const hit = spaces.map((s, i) => ({ s, i })).filter(x => x.s.type === 'corridor' && rectsOverlap(x.s.rect, shaft, E));
+  if (hit.length !== 1) return null;
+  const { s: k, i } = hit[0];
+  const K = k.rect, H = shaft;
+  const alongY = H.y >= K.y - E && H.y + H.h <= K.y + K.h + E;
+  const alongX = H.x >= K.x - E && H.x + H.w <= K.x + K.w + E;
+  let res: { side: Side; depth: number; notch: Rect; remainders: Rect[] } | null = null;
+  if (alongY && K.x > H.x + E && K.x < H.x + H.w) {
+    const d = H.x + H.w - K.x; // corridor east of the shaft
+    res = { side: 'east', depth: d, notch: { x: H.x + H.w, y: H.y, w: K.x + K.w - (H.x + H.w), h: H.h },
+      remainders: [{ x: K.x, y: K.y, w: K.w, h: H.y - K.y }, { x: K.x, y: H.y + H.h, w: K.w, h: K.y + K.h - (H.y + H.h) }] };
+  } else if (alongY && K.x + K.w < H.x + H.w - E && K.x + K.w > H.x) {
+    const d = K.x + K.w - H.x; // corridor west of the shaft
+    res = { side: 'west', depth: d, notch: { x: K.x, y: H.y, w: H.x - K.x, h: H.h },
+      remainders: [{ x: K.x, y: K.y, w: K.w, h: H.y - K.y }, { x: K.x, y: H.y + H.h, w: K.w, h: K.y + K.h - (H.y + H.h) }] };
+  } else if (alongX && K.y > H.y + E && K.y < H.y + H.h) {
+    const d = H.y + H.h - K.y; // corridor north of the shaft
+    res = { side: 'north', depth: d, notch: { x: H.x, y: H.y + H.h, w: H.w, h: K.y + K.h - (H.y + H.h) },
+      remainders: [{ x: K.x, y: K.y, w: H.x - K.x, h: K.h }, { x: H.x + H.w, y: K.y, w: K.x + K.w - (H.x + H.w), h: K.h }] };
+  } else if (alongX && K.y + K.h < H.y + H.h - E && K.y + K.h > H.y) {
+    const d = K.y + K.h - H.y; // corridor south of the shaft
+    res = { side: 'south', depth: d, notch: { x: H.x, y: K.y, w: H.w, h: H.y - K.y },
+      remainders: [{ x: K.x, y: K.y, w: H.x - K.x, h: K.h }, { x: H.x + H.w, y: K.y, w: K.x + K.w - (H.x + H.w), h: K.h }] };
+  }
+  if (!res || !(res.depth > E)) return null;
+  const back: Rect = res.side === 'east' ? { ...H, x: H.x - res.depth } : res.side === 'west' ? { ...H, x: H.x + res.depth }
+    : res.side === 'north' ? { ...H, y: H.y - res.depth } : { ...H, y: H.y + res.depth };
+  if (!sameRect(back, H)) return null;
+  const remainders = res.remainders.filter(r => r.w > E && r.h > E);
+  for (const r of [res.notch, ...remainders]) if (Math.min(r.w, r.h) < CORRIDOR_MIN_WIDTH - E) return null;
+  return { corridorIndex: i, side: res.side, depth: res.depth, notch: res.notch, remainders };
+}
+
 /**
  * Phase 5.4D — pure geometric search for a thin-gap stair bridge.
  *
@@ -1443,6 +1769,9 @@ function buildFloorSiteAware(
   linkLShapeWingCorridors = false,
   alignLShapeEntryFoyer = false,
   stackedPairMinArea = false,
+  notchShaftCorridorOverlap = false,
+  lShapeUpperCoreCirculation = false,
+  lShapeRoomQualitySelection = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -1609,17 +1938,45 @@ function buildFloorSiteAware(
     const multiSpecs = placedSpecs.some(sp => sp.type === 'elevator-hall')
       ? placedSpecs.filter(sp => sp.type !== 'elevator-hall')
       : placedSpecs;
-    const lres = input.site.shape === 'l-shape' && buildableRects.length === 2
-      ? (preferLShapeProgrammeAdjacency || rotateShallowStairPocket || mainRoomMinDimension || linkLShapeWingCorridors || alignLShapeEntryFoyer
-        ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace, {
-          ...(preferLShapeProgrammeAdjacency ? { preferProgrammeAdjacency: true } : {}),
-          ...(rotateShallowStairPocket ? { rotateShallowStairPocket: true } : {}),
-          ...(mainRoomMinDimension ? { mainRoomMinDimension: true } : {}),
-          ...(linkLShapeWingCorridors ? { linkWingCorridors: true } : {}),
-          ...(alignLShapeEntryFoyer ? { alignEntryFoyer: true } : {}),
-        })
-        : placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace))
-      : null;
+    const lOpts = {
+      ...(preferLShapeProgrammeAdjacency ? { preferProgrammeAdjacency: true } : {}),
+      ...(rotateShallowStairPocket ? { rotateShallowStairPocket: true } : {}),
+      ...(mainRoomMinDimension ? { mainRoomMinDimension: true } : {}),
+      ...(linkLShapeWingCorridors ? { linkWingCorridors: true } : {}),
+      ...(alignLShapeEntryFoyer ? { alignEntryFoyer: true } : {}),
+      ...(lShapeRoomQualitySelection ? { roomQualitySelection: true } : {}),
+    };
+    // Phase 5.6G (opt-in): on upper L-shape floors with a valid stair CoreAnchor, the
+    // stair-hall spec is withheld from the wing planner and the hall is placed directly
+    // on the anchor rect; the planner judges circulation from that core. A planner
+    // failure falls back to the unchanged legacy call.
+    const stairAnchor = coreAnchors.get('stair-hall');
+    const stairSpecs = multiSpecs.filter(sp => sp.type === 'stair-hall');
+    const coreRect: Rect | null = lShapeUpperCoreCirculation && input.site.shape === 'l-shape' && buildableRects.length === 2
+      && stairAnchor && level > stairAnchor.originLevel && needStairForFloor(input, level)
+      && stairSpecs.length === 1
+      && rectInsidePolygon(stairAnchor.rect, buildableBoundary, 1e-3)
+      && insideBuildable(stairAnchor.rect, buildableRects)
+      ? { ...stairAnchor.rect } : null;
+    let lres: ReturnType<typeof placeSpacesLShape> = null;
+    if (coreRect) {
+      const coreRes = placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs.filter(sp => sp.type !== 'stair-hall'), strategy, access, mkSpace, { ...lOpts, coreAnchorRect: coreRect });
+      if (coreRes) {
+        const sp = stairSpecs[0];
+        lres = {
+          ...coreRes,
+          spaces: [...coreRes.spaces, mkSpace('stair-hall', { ...coreRect }, sp.placedLabel, sp.placedId, 'circulation')],
+          explanation: [...coreRes.explanation, `${L_UPPER_CORE_RESERVED}: level ${level} stair hall placed on the core anchor (${coreRect.x.toFixed(2)}, ${coreRect.y.toFixed(2)}, ${coreRect.w.toFixed(2)}×${coreRect.h.toFixed(2)}); wing plan circulation judged from the stair core.`],
+        };
+      }
+    }
+    if (!lres) {
+      lres = input.site.shape === 'l-shape' && buildableRects.length === 2
+        ? (Object.keys(lOpts).length > 0
+          ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace, lOpts)
+          : placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace))
+        : null;
+    }
     const result = lres ?? placeSpacesAcrossRects(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace);
     placedRooms = result.spaces;
     corridors = result.corridors;
@@ -1872,6 +2229,21 @@ function buildFloorSiteAware(
       && (elevatorHall.rect.x !== anchor.rect.x || elevatorHall.rect.y !== anchor.rect.y
         || elevatorHall.rect.w !== anchor.rect.w || elevatorHall.rect.h !== anchor.rect.h)) {
       rePinHall(elevatorHall, anchor.rect);
+    }
+  }
+  // Phase 5.6F (opt-in): the exact pin above may leave the shaft overlapping one corridor
+  // by a sub-tolerance depth. Split that corridor (5.4D / 5.6B piece pattern) so it tiles
+  // the original minus the overlap strip; the shaft, stair and rooms never move.
+  if (notchShaftCorridorOverlap && elevatorRequested && elevatorHall && level > 0 && input.site.shape === 'rectangle') {
+    const nt = findShaftCorridorNotch(elevatorHall.rect, finalSpaces);
+    if (nt) {
+      const K = finalSpaces[nt.corridorIndex];
+      const piece = (r: Rect, id: string): Space => {
+        const g = mkSpace('corridor', r, K.label, id, K.zone);
+        return { ...K, id, rect: g.rect, polygon: g.polygon, area: g.area };
+      };
+      finalSpaces.splice(nt.corridorIndex, 1, piece(nt.notch, K.id), ...nt.remainders.map(r => piece(r, nextId('corridor'))));
+      explanations.push(`Level ${level}: ${SHAFT_CORRIDOR_NOTCHED}: ${K.id} gives up a ${nt.depth.toFixed(3)} m strip on the shaft's ${nt.side} side — notch ${nt.notch.w.toFixed(2)}×${nt.notch.h.toFixed(2)} m at (${nt.notch.x.toFixed(2)}, ${nt.notch.y.toFixed(2)}) plus ${nt.remainders.length} remainder piece(s); shaft, stair and rooms unchanged.`);
     }
   }
   if (elevatorRequested && level === 0 && !coreAnchors.has('elevator-hall')) {
@@ -2604,7 +2976,7 @@ function snapCorridorsToRoomsSiteAware(
   buildableRect: Rect,
   buildableRects: Rect[]
 ) {
-  const eps = 0.02;
+  const eps = CORRIDOR_SNAP_EPS;
   const corridors = spaces.filter(s => s.type === 'corridor');
   for (const c of corridors) {
     const edges = {

@@ -537,7 +537,15 @@ export function upperFloorFrontPrivateSplit(
 export const MAIN_ROOM_DIMENSION_APPLIED = 'Phase 5.5C main-room minimum dimension';
 
 /** MBH4-ROOM-001's main-room types (the rule's own list). */
-const ROOM001_MAIN_TYPES = new Set(['living', 'master-bedroom', 'family-room', 'dining', 'bedroom']);
+export const ROOM001_MAIN_TYPES: ReadonlySet<string> = new Set(['living', 'master-bedroom', 'family-room', 'dining', 'bedroom']);
+
+/**
+ * Phase 5.5C `large` predicate: the placer's existing main-habitable preference applies on
+ * units whose footprint is at least 60 m² (the same predicate the 5.5C sizing site uses).
+ */
+export function mainRoomUnitIsLarge(footprintArea: number): boolean {
+  return footprintArea >= 60;
+}
 
 /**
  * Phase 5.5C: the verified MBH4-ROOM-001 thresholds, read from the regulation pack
@@ -865,7 +873,7 @@ function placeSpacesFacingSouth(
   // Phase 5.5C (opt-in): the one main room sized to MBH4-ROOM-001's minimum width. The
   // raise is requested explicitly (`raise`) only by the slack-checked sizing sites.
   const mainDim = opts.mainRoomMinDimension === true
-    ? mainRoomDimensionTarget(specs, footprint.w * footprint.h >= 60) : null;
+    ? mainRoomDimensionTarget(specs, mainRoomUnitIsLarge(footprint.w * footprint.h)) : null;
   const raisesMain = (spec: PlacedSpec, raise: boolean): boolean =>
     raise && mainDim !== null && spec.placedId === mainDim.placedId;
   let mainDimApplied = false;
