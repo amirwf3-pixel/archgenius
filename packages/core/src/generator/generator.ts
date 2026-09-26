@@ -228,6 +228,17 @@ export interface GenerateLayoutsOptions {
    * Plans are only selected — no room is moved or resized; stair/elevator untouched.
    */
   lShapeRoomQualitySelection?: boolean;
+  /**
+   * Task 135 opt-in (default OFF): a second, separate adoption path for the Phase 5.4B
+   * stair-core connector variant that is ALREADY built when connectStairCore is on. It is
+   * consulted only when the unchanged 5.4B guard (adoptStairCoreConnectorVariant) rejected
+   * the variant, and adopts it only through adoptStairConnectorHardReductionVariant: total
+   * HARD strictly decreases (no HARD code and no circulation / access / daylight finding of
+   * any severity increases), validity is kept, every existing space is unchanged and the only
+   * additions are corridor connectors inside the footprint that overlap nothing. No new
+   * geometry; the 5.4A–5.5D guards are untouched.
+   */
+  stairConnectorHardReduction?: boolean;
 }
 
 export function generateLayouts(
@@ -255,6 +266,7 @@ export function generateLayouts(
   const notchShaftCorridorOverlap = options.notchShaftCorridorOverlap === true;
   const lShapeUpperCoreCirculation = options.lShapeUpperCoreCirculation === true;
   const lShapeRoomQualitySelection = options.lShapeRoomQualitySelection === true;
+  const stairConnectorHardReduction = options.stairConnectorHardReduction === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -405,9 +417,17 @@ export function generateLayouts(
     // Phase 5.4B (opt-in): the stair-core connector variant (built on the same adopted
     // options) is adopted ONLY when the validator confirms strictly fewer
     // corridor↔stair-hall and inaccessible-space findings at no other cost.
-    const withConnector = connectStairCore
-      ? adoptStairCoreConnectorVariant(withFront, buildCandidate(strategy, lAdjUsed, galleryUsed, true, false, false, false, facadeUsed, false, false, entryUsed, frontUsed))
+    const connectorVariant = connectStairCore
+      ? buildCandidate(strategy, lAdjUsed, galleryUsed, true, false, false, false, facadeUsed, false, false, entryUsed, frontUsed)
+      : null;
+    let withConnector = connectorVariant
+      ? adoptStairCoreConnectorVariant(withFront, connectorVariant)
       : withFront;
+    // Task 135 (opt-in): the SAME already-built connector variant, reconsidered only when the
+    // unchanged 5.4B guard rejected it, through its own HARD-reduction guard.
+    if (stairConnectorHardReduction && connectorVariant && withConnector === withFront) {
+      withConnector = adoptStairConnectorHardReductionVariant(withFront, connectorVariant);
+    }
     // Phase 5.4C (opt-in): deterministic order 5.3B → 5.4A → 5.4B → 5.4C. The public
     // stack variant is built on the options already adopted; in the placer a 5.4A
     // gallery that already placed living/dining takes precedence (stack never runs).
@@ -1434,6 +1454,131 @@ export function adoptStairCoreConnectorVariant(base: LayoutCandidate, variant: L
   const inB = n(base, 'CIRC_INACCESSIBLE_SPACE'), inV = n(variant, 'CIRC_INACCESSIBLE_SPACE');
   if (!(adjV < adjB) || !(inV < inB)) return base;
   variant.explanations.push(`Phase 5.4B: stair-core connector variant adopted (CONSTRAINT_MUST_ADJACENT ${adjB}→${adjV}, CIRC_INACCESSIBLE_SPACE ${inB}→${inV}) — validator confirmed no lost validity, no added HARD / circulation / access / daylight finding.`);
+  return variant;
+}
+
+/** Explanation prefix proving the Task 135 stair-connector HARD-reduction adoption fired. */
+export const STAIR_CONNECTOR_HARD_REDUCTION_ADOPTED = 'Task 135: stair-core connector variant adopted by HARD reduction';
+
+/**
+ * Task 135 — separate adoption guard for the already-built Phase 5.4B stair-core connector
+ * variant (the 5.4B guard itself is unchanged). The variant replaces `base` only when:
+ *   - it differs from `base` and keeps validity when `base` was valid,
+ *   - total HARD findings strictly decrease and no HARD code increases,
+ *   - no circulation / access / daylight finding of any severity increases (per code),
+ *   - both have the same floors and footprints; every base space (hence programme, stair
+ *     and elevator halls) is present unchanged; exterior walls are unchanged except exactly
+ *     the intervals coincident with an added connector's edges (remaining pieces compared),
+ *   - the only added spaces are corridors lying inside their floor footprint and inside the
+ *     buildable rects, overlapping no other space, none above L_ROOM_QUALITY_MAX_AREA.
+ * Otherwise `base` is returned untouched. Deterministic.
+ */
+export function adoptStairConnectorHardReductionVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (JSON.stringify(variant.floors) === JSON.stringify(base.floors)) return base;
+  if (base.valid && !variant.valid) return base;
+  const hardOf = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard').length;
+  if (!(hardOf(variant) < hardOf(base))) return base;
+  const counts = (c: LayoutCandidate) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) {
+      if (f.severity !== 'hard' && !WATCHED_FINDING.test(f.code)) continue;
+      m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    }
+    return m;
+  };
+  const bc = counts(base), vc = counts(variant);
+  for (const [k, n] of vc) if (n > (bc.get(k) ?? 0)) return base;
+  if (variant.floors.length !== base.floors.length) return base;
+  const E = 1e-6;
+  const EDGE_TOL = 1e-3;
+  const within = (r: Rect, o: Rect) => r.x >= o.x - E && r.y >= o.y - E && r.x + r.w <= o.x + o.w + E && r.y + r.h <= o.y + o.h + E;
+  // buildableRects is attached to candidates at build time (not part of the LayoutCandidate type).
+  const buildable: readonly Rect[] = (variant as LayoutCandidate & { buildableRects?: readonly Rect[] }).buildableRects ?? [];
+  // Exterior walls: only the part of an exterior wall that is exactly coincident with an added
+  // connector's edge is exempt. A wall that lies on a connector edge line and overlaps / touches
+  // that edge's span is "affected": the coincident interval is subtracted and every remaining
+  // piece (merged per line and thickness) must match the base. All other exterior walls must be
+  // identical segment-for-segment.
+  type Seg = { o: 'h' | 'v'; c: number; a: number; b: number; t: number };
+  const segOf = (w: { start: { x: number; y: number }; end: { x: number; y: number }; thickness: number }): Seg | null => {
+    if (Math.abs(w.start.y - w.end.y) < EDGE_TOL) return { o: 'h', c: w.start.y, a: Math.min(w.start.x, w.end.x), b: Math.max(w.start.x, w.end.x), t: w.thickness };
+    if (Math.abs(w.start.x - w.end.x) < EDGE_TOL) return { o: 'v', c: w.start.x, a: Math.min(w.start.y, w.end.y), b: Math.max(w.start.y, w.end.y), t: w.thickness };
+    return null;
+  };
+  /** Connector edges as segments (bottom, top, left, right). */
+  const edgesOf = (r: Rect): Seg[] => [
+    { o: 'h', c: r.y, a: r.x, b: r.x + r.w, t: 0 }, { o: 'h', c: r.y + r.h, a: r.x, b: r.x + r.w, t: 0 },
+    { o: 'v', c: r.x, a: r.y, b: r.y + r.h, t: 0 }, { o: 'v', c: r.x + r.w, a: r.y, b: r.y + r.h, t: 0 },
+  ];
+  const collinearTouching = (s: Seg, e: Seg) => s.o === e.o && Math.abs(s.c - e.c) < EDGE_TOL && s.a <= e.b + EDGE_TOL && s.b >= e.a - EDGE_TOL;
+  /** Subtract the closed interval [e.a, e.b] from every interval in `iv`. */
+  const subtract = (iv: [number, number][], e: Seg): [number, number][] => iv.flatMap(([a, b]) => {
+    const out: [number, number][] = [];
+    if (e.a > a + EDGE_TOL) out.push([a, Math.min(b, e.a)]);
+    if (e.b < b - EDGE_TOL) out.push([Math.max(a, e.b), b]);
+    return out.filter(([x, y]) => y - x >= EDGE_TOL);
+  });
+  const wallSignature = (fl: LayoutCandidate['floors'][number], addedRects: readonly Rect[]) => {
+    const edges = addedRects.flatMap(edgesOf);
+    const exact: string[] = [];
+    const residual = new Map<string, { o: 'h' | 'v'; c: number; t: number; iv: [number, number][] }>();
+    for (const w of fl.walls) {
+      if (w.kind !== 'exterior') continue;
+      const s = segOf(w);
+      const hit = s ? edges.filter(e => collinearTouching(s, e)) : [];
+      if (!s || hit.length === 0) { exact.push(JSON.stringify([w.start, w.end, w.thickness])); continue; }
+      let iv: [number, number][] = [[s.a, s.b]];
+      for (const e of hit) iv = subtract(iv, e);
+      const key = `${s.o}|${s.c.toFixed(3)}|${s.t}`;
+      const r = residual.get(key) ?? { o: s.o, c: s.c, t: s.t, iv: [] };
+      r.iv.push(...iv);
+      residual.set(key, r);
+    }
+    // merge touching / overlapping residual pieces per line + thickness
+    const merged: { key: string; iv: [number, number][] }[] = [];
+    for (const [key, r] of residual) {
+      const sorted = [...r.iv].sort((p, q) => p[0] - q[0]);
+      const m: [number, number][] = [];
+      for (const [a, b] of sorted) {
+        const last = m[m.length - 1];
+        if (last && a <= last[1] + EDGE_TOL) last[1] = Math.max(last[1], b); else m.push([a, b]);
+      }
+      if (m.length > 0) merged.push({ key, iv: m });
+    }
+    merged.sort((p, q) => (p.key < q.key ? -1 : p.key > q.key ? 1 : 0));
+    return { exact: exact.sort(), residual: merged };
+  };
+  const sameWalls = (fb: LayoutCandidate['floors'][number], fv: LayoutCandidate['floors'][number], addedRects: readonly Rect[]) => {
+    const B = wallSignature(fb, addedRects), V = wallSignature(fv, addedRects);
+    if (JSON.stringify(B.exact) !== JSON.stringify(V.exact)) return false;
+    if (B.residual.length !== V.residual.length) return false;
+    return B.residual.every((r, k) => {
+      const q = V.residual[k];
+      return r.key === q.key && r.iv.length === q.iv.length
+        && r.iv.every(([a, b], j) => Math.abs(a - q.iv[j][0]) < EDGE_TOL && Math.abs(b - q.iv[j][1]) < EDGE_TOL);
+    });
+  };
+  for (let i = 0; i < base.floors.length; i++) {
+    const fb = base.floors[i], fv = variant.floors[i];
+    if (fv.level !== fb.level || JSON.stringify(fv.footprint) !== JSON.stringify(fb.footprint)) return base;
+    const vById = new Map(fv.spaces.map(s => [s.id, s]));
+    for (const s of fb.spaces) {
+      const v = vById.get(s.id);
+      if (!v || v.type !== s.type || JSON.stringify(v.rect) !== JSON.stringify(s.rect) || JSON.stringify(v.polygon) !== JSON.stringify(s.polygon)) return base;
+    }
+    const baseIds = new Set(fb.spaces.map(s => s.id));
+    const added = fv.spaces.filter(s => !baseIds.has(s.id));
+    for (const a of added) {
+      if (a.type !== 'corridor' || !(a.rect.w > 0 && a.rect.h > 0)) return base;
+      if (a.rect.w * a.rect.h > L_ROOM_QUALITY_MAX_AREA + E) return base;
+      if (!within(a.rect, fv.footprint)) return base;
+      if (buildable.length > 0 && !buildable.some(r => within(a.rect, r))) return base;
+      if (fv.spaces.some(o => o.id !== a.id && rectsOverlap(a.rect, o.rect))) return base;
+    }
+    const addedRects = added.map(a => a.rect);
+    if (!sameWalls(fb, fv, addedRects)) return base;
+  }
+  variant.explanations.push(`${STAIR_CONNECTOR_HARD_REDUCTION_ADOPTED} (HARD ${hardOf(base)}→${hardOf(variant)}) — the unchanged 5.4B guard rejected it; validator confirmed no lost validity, no added HARD / circulation / access / daylight finding, existing spaces and exterior walls unchanged, only in-footprint non-overlapping corridor connectors added.`);
   return variant;
 }
 
