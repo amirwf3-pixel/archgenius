@@ -173,6 +173,12 @@ export interface GenerateOptions {
    * elevator identical, no overlap. Omitted or false = legacy output.
    */
   alignLShapeEntryFoyer?: boolean;
+  /**
+   * Phase 5.6E opt-in (default OFF): forwarded to generateLayouts — the stacked-pair
+   * minArea cap in the rectangular placer's generic column fallback, adopted only through
+   * adoptStackedPairMinAreaVariant.
+   */
+  stackedPairMinArea?: boolean;
 }
 
 /**
@@ -307,6 +313,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.bridgeElevatorLandingGap === true ? { bridgeElevatorLandingGap: true } : {}),
     ...(opts.linkLShapeWingCorridors === true ? { linkLShapeWingCorridors: true } : {}),
     ...(opts.alignLShapeEntryFoyer === true ? { alignLShapeEntryFoyer: true } : {}),
+    ...(opts.stackedPairMinArea === true ? { stackedPairMinArea: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

@@ -478,7 +478,21 @@ export interface PlacerOptions {
    * capacity checks and every painted room touches the corridor; otherwise legacy.
    */
   upperFloorFrontPrivate?: boolean;
+  /**
+   * Phase 5.6E: in the Phase 13 generic column fallback, a two-room stacked pair (first
+   * room against the band edge, second room filling the rest) sizes the first room by the
+   * legacy bath-strip heuristic without checking the second room's minArea. When the
+   * second room would fall below its own spec minArea, cap the first room's depth
+   * (snapped DOWN to the placer's 0.01 m grid) so the second room keeps its minArea —
+   * only when the capped first room still keeps its own minimum depth and minArea.
+   * Column x / width and outer edges are unchanged; only the shared boundary moves.
+   * Default OFF.
+   */
+  stackedPairMinArea?: boolean;
 }
+
+/** Placer explanation prefix proving the Phase 5.6E stacked-pair minArea cap fired. */
+export const STACKED_PAIR_MIN_AREA_APPLIED = 'Phase 5.6E stacked-pair minArea cap';
 
 /** Placer explanation prefix proving the Phase 5.6A upper-floor front split fired. */
 export const UPPER_FLOOR_FRONT_PRIVATE_APPLIED = 'Phase 5.6A upper-floor front private split';
@@ -1562,6 +1576,19 @@ function placeSpacesFacingSouth(
                 bh = Math.max(firstMinH, firstWant);
                 secondH = Math.max(secondMinH, Math.min(colRect.h - bh, cappedBandDepth(second, colRect.w, colRect.h - bh)));
                 pairDepthCapped = true;
+              }
+            }
+            // Phase 5.6E (opt-in): keep the second room at its spec minArea by capping the
+            // first room's depth — only when needed and when the first room keeps its own
+            // minimum depth / minArea (existing spec values only, no new threshold).
+            if (opts.stackedPairMinArea === true && !pairDepthCapped && colRect.h >= totalMinH - 1e-6 && colRect.w > 1e-6) {
+              const secondNeedH = second.minArea / colRect.w;
+              const cap = Math.floor((colRect.h - secondNeedH) * 100 + 1e-9) / 100;
+              if (secondH < secondNeedH - 1e-9 && cap < bh - 1e-9
+                && cap >= firstMinH - 1e-9 && cap * colRect.w >= first.minArea - 1e-9) {
+                explanation.push(`${STACKED_PAIR_MIN_AREA_APPLIED}: ${first.type} depth ${bh.toFixed(2)}→${cap.toFixed(2)} m so ${second.type} keeps its minArea ${second.minArea.toFixed(2)} m² (${first.type} keeps its minimum depth / minArea).`);
+                bh = cap;
+                secondH = colRect.h - bh;
               }
             }
             // P16-C: with the cap active, pack the stack against the corridor-facing band

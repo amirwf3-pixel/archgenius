@@ -32,7 +32,7 @@ import { generateWalls } from './walls.js';
 import { placeOpenings, programmeDoorRequirements } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
 import { validateLayout } from '../validation/validator.js';
-import { placeSpaces, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, UPPER_FLOOR_FRONT_PRIVATE_APPLIED, type PlacedSpec } from '../layout/placer.js';
+import { placeSpaces, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, UPPER_FLOOR_FRONT_PRIVATE_APPLIED, STACKED_PAIR_MIN_AREA_APPLIED, type PlacedSpec } from '../layout/placer.js';
 import { rectPartitions, contactConnected, contactLen } from '../layout/regions.js';
 import { solveRow, solveCol, type BandCellDemand } from '../layout/topology.js';
 import { sortCandidates } from '../layout/ranking.js';
@@ -192,6 +192,15 @@ export interface GenerateLayoutsOptions {
    * geometry-guarded comparison (adoptLShapeEntryFoyerVariant).
    */
   alignLShapeEntryFoyer?: boolean;
+  /**
+   * Phase 5.6E opt-in (default OFF): in the Phase 13 generic column fallback of the
+   * rectangular placer, a two-room stacked pair whose second room would fall below its
+   * spec minArea gets the first room's depth capped so the second keeps its minArea (see
+   * PlacerOptions.stackedPairMinArea). Only the two stacked rooms' shared boundary moves.
+   * Adopted per candidate only through the validator- and geometry-guarded comparison
+   * (adoptStackedPairMinAreaVariant).
+   */
+  stackedPairMinArea?: boolean;
 }
 
 export function generateLayouts(
@@ -215,6 +224,7 @@ export function generateLayouts(
   const bridgeElevatorLandingGap = options.bridgeElevatorLandingGap === true;
   const linkLShapeWingCorridors = options.linkLShapeWingCorridors === true;
   const alignLShapeEntryFoyer = options.alignLShapeEntryFoyer === true;
+  const stackedPairMinArea = options.stackedPairMinArea === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -259,7 +269,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false, wingLink = false, entryFoyer = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false, wingLink = false, entryFoyer = false, pairMinArea = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -267,7 +277,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -448,7 +458,17 @@ export function generateLayouts(
       withEntryFoyer = adoptLShapeEntryFoyerVariant(withWingLink,
         buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, withElevatorBridge !== withMainDim, withWingLink !== withElevatorBridge, true));
     }
-    candidates.push(withEntryFoyer);
+    // Phase 5.6E (opt-in): after 5.6D — the stacked-pair minArea cap (in the rectangular
+    // placer's generic column fallback) is built on every option already adopted and
+    // adopted ONLY through its own guard, only when the adopted candidate carries a
+    // ROOM_CONSTRAINT_MIN_AREA HARD.
+    let withPairMinArea = withEntryFoyer;
+    if (stackedPairMinArea
+      && withEntryFoyer.findings.some(f => f.severity === 'hard' && f.code === PAIR_MIN_AREA_RULE)) {
+      withPairMinArea = adoptStackedPairMinAreaVariant(withEntryFoyer,
+        buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, withElevatorBridge !== withMainDim, withWingLink !== withElevatorBridge, withEntryFoyer !== withWingLink, true));
+    }
+    candidates.push(withPairMinArea);
   }
 
   sortCandidates(candidates);
@@ -871,6 +891,106 @@ export function adoptLShapeEntryFoyerVariant(base: LayoutCandidate, variant: Lay
   const bo = overlapPairs(base);
   for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
   variant.explanations.push(`Phase 5.6D: L-shape entrance / foyer alignment variant adopted (${ENTRY_FOYER_RULE} ${da(base)}→${da(variant)}, HARD ${hardOf(base).length}→${hardOf(variant).length}; no HARD code or circulation / access / daylight finding added, only entrance / foyer changed (others within one 0.01 m weld step), stair / elevator halls identical, no corridor shortened, exterior walls kept, no overlap).`);
+  return variant;
+}
+
+const PAIR_MIN_AREA_RULE = 'ROOM_CONSTRAINT_MIN_AREA';
+
+/**
+ * Phase 5.6E guard: adopt the stacked-pair minArea variant only when
+ *  1. the placer marker is present (the cap really fired);
+ *  2. a valid candidate stays valid;
+ *  3. ROOM_CONSTRAINT_MIN_AREA strictly decreases;
+ *  4. total HARD findings strictly decrease;
+ *  5. no HARD code increases;
+ *  6. no circulation / access / daylight finding (WATCHED_FINDING, any severity) increases;
+ *  7. exactly two spaces change, on one floor: a vertically stacked pair with the same
+ *     x / width and the same outer edges — only their shared boundary moves;
+ *  8. both keep their minArea / minWidth;
+ *  9. stair / elevator halls and corridors identical (every other space identical);
+ * 10. openings identical — the single exception is the door between exactly the two
+ *     stacked rooms, which sits on their shared wall and may only translate with it
+ *     along the stacking axis by exactly the boundary shift (same id, wall, type, width,
+ *     spaces; no other field changes);
+ * 11. every hasExteriorWall unchanged, no new overlapping pair, inside the buildable area;
+ *     deterministic (pure comparison of two deterministic builds).
+ */
+export function adoptStackedPairMinAreaVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (!variant.explanations.some(e => e.includes(STACKED_PAIR_MIN_AREA_APPLIED))) return base;
+  if (base.valid && !variant.valid) return base;
+  const hardOf = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard');
+  const minA = (c: LayoutCandidate) => hardOf(c).filter(f => f.code === PAIR_MIN_AREA_RULE).length;
+  if (!(minA(variant) < minA(base))) return base;
+  if (!(hardOf(variant).length < hardOf(base).length)) return base;
+  const count = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const pick = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const b = count(base, pick);
+  for (const [k, n] of count(variant, pick)) if (n > (b.get(k) ?? 0)) return base;
+  if (variant.floors.length !== base.floors.length) return base;
+  const E = 1e-6;
+  const same = (a: Rect, c: Rect) => Math.abs(a.x - c.x) < E && Math.abs(a.y - c.y) < E && Math.abs(a.w - c.w) < E && Math.abs(a.h - c.h) < E;
+  const rects = ((variant as any).buildableRects ?? []) as Rect[];
+  const changed: { b: Space; v: Space }[] = [];
+  let changedFloors = 0;
+  for (const fl of variant.floors) {
+    const bf = base.floors.find(x => x.level === fl.level);
+    if (!bf || bf.spaces.length !== fl.spaces.length) return base;
+    if ((bf.openings ?? []).length !== (fl.openings ?? []).length) return base;
+    let here = 0;
+    for (const s of bf.spaces) {
+      const v = fl.spaces.find(x => x.id === s.id);
+      if (!v || v.type !== s.type || v.hasExteriorWall !== s.hasExteriorWall) return base;
+      if (same(v.rect, s.rect)) continue;
+      if (s.type === 'stair-hall' || s.type === 'elevator-hall' || s.type === 'corridor') return base;
+      changed.push({ b: s, v });
+      here++;
+    }
+    if (here > 0) changedFloors++;
+  }
+  if (changed.length !== 2 || changedFloors !== 1) return base;
+  const [p, q] = changed;
+  for (const { b: s, v } of changed) {
+    if (Math.abs(v.rect.x - s.rect.x) > E || Math.abs(v.rect.w - s.rect.w) > E) return base;
+    if (v.area < v.minArea - E) return base;
+    if (typeof v.minWidth === 'number' && Math.min(v.rect.w, v.rect.h) < v.minWidth - E) return base;
+    if (rects.length > 0 && !insideBuildable(v.rect, rects)) return base;
+  }
+  if (Math.abs(p.b.rect.x - q.b.rect.x) > E || Math.abs(p.b.rect.w - q.b.rect.w) > E) return base;
+  // stacked in both builds; outer edges fixed; only the shared boundary moves
+  const [lo, hi] = p.b.rect.y < q.b.rect.y ? [p, q] : [q, p];
+  if (Math.abs(lo.b.rect.y + lo.b.rect.h - hi.b.rect.y) > E) return base;
+  if (Math.abs(lo.v.rect.y + lo.v.rect.h - hi.v.rect.y) > E) return base;
+  if (Math.abs(lo.v.rect.y - lo.b.rect.y) > E) return base;
+  if (Math.abs(hi.v.rect.y + hi.v.rect.h - (hi.b.rect.y + hi.b.rect.h)) > E) return base;
+  // 10. openings: identical except the pair's shared-wall door, translated by exactly dy
+  const dy = hi.v.rect.y - hi.b.rect.y;
+  const pairIds = new Set([p.b.id, q.b.id]);
+  const MOVED = new Set(['center', 'hinge', 'leafEnd', 'openEnd']);
+  for (const fl of variant.floors) {
+    const bo = base.floors.find(x => x.level === fl.level)!.openings ?? [];
+    const vo = fl.openings ?? [];
+    for (let i = 0; i < bo.length; i++) {
+      const a = bo[i] as unknown as Record<string, unknown>, c = vo[i] as unknown as Record<string, unknown>;
+      if (JSON.stringify(a) === JSON.stringify(c)) continue;
+      const o = bo[i];
+      if (o.type !== 'door' || !o.spaceA || !o.spaceB || o.spaceA === o.spaceB
+        || !pairIds.has(o.spaceA) || !pairIds.has(o.spaceB)) return base;
+      const keys = new Set([...Object.keys(a), ...Object.keys(c)]);
+      for (const k of keys) {
+        if (JSON.stringify(a[k]) === JSON.stringify(c[k])) continue;
+        if (!MOVED.has(k)) return base;
+        const u = a[k] as { x: number; y: number } | undefined, w = c[k] as { x: number; y: number } | undefined;
+        if (!u || !w || Math.abs(w.x - u.x) > E || Math.abs(w.y - u.y - dy) > E) return base;
+      }
+    }
+  }
+  const bo = overlapPairs(base);
+  for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
+  variant.explanations.push(`Phase 5.6E: stacked-pair minArea variant adopted (${PAIR_MIN_AREA_RULE} ${minA(base)}→${minA(variant)}, HARD ${hardOf(base).length}→${hardOf(variant).length}; only the ${lo.b.type} / ${hi.b.type} shared boundary moved ${hi.b.rect.y.toFixed(2)}→${hi.v.rect.y.toFixed(2)} m, both keep minArea / minWidth; stair / elevator / corridors / exterior walls unchanged, openings unchanged except the pair's shared-wall door translated with the boundary, no overlap).`);
   return variant;
 }
 
@@ -1322,6 +1442,7 @@ function buildFloorSiteAware(
   bridgeElevatorLandingGap = false,
   linkLShapeWingCorridors = false,
   alignLShapeEntryFoyer = false,
+  stackedPairMinArea = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -1467,6 +1588,7 @@ function buildFloorSiteAware(
       ...(mainRoomMinDimension ? { mainRoomMinDimension: true } : {}),
       ...(galleryDaylightAware && diningEntryColumn ? { diningEntryColumn: true } : {}),
       ...(upperFloorFrontPrivate && level > 0 && input.site.shape === 'rectangle' ? { upperFloorFrontPrivate: true } : {}),
+      ...(stackedPairMinArea ? { stackedPairMinArea: true } : {}),
     };
     const result = Object.keys(placerOpts).length > 0
       ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, placerOpts)
