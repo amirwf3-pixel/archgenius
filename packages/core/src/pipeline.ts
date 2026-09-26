@@ -153,6 +153,16 @@ export interface GenerateOptions {
    * stair / elevator, no shortened corridor, no overlap. Omitted or false = legacy output.
    */
   bridgeElevatorLandingGap?: boolean;
+  /**
+   * Phase 5.6C (opt-in, default OFF): on L-shape sites, when the selected wing plan's bridge
+   * strip and a parallel wing corridor face each other across an empty gap without being
+   * circulation-connected, one L_CONNECTOR_W corridor link is added across the gap; adopted
+   * only when the validator confirms strictly fewer through-room / inaccessible-space and
+   * HARD findings, no added HARD code or circulation / access / daylight finding, no lost
+   * validity, no moved room / stair / elevator / corridor, no overlap, exterior walls kept.
+   * Omitted or false = legacy output.
+   */
+  linkLShapeWingCorridors?: boolean;
 }
 
 /**
@@ -285,6 +295,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.diningEntryColumn === true ? { diningEntryColumn: true } : {}),
     ...(opts.upperFloorFrontPrivate === true ? { upperFloorFrontPrivate: true } : {}),
     ...(opts.bridgeElevatorLandingGap === true ? { bridgeElevatorLandingGap: true } : {}),
+    ...(opts.linkLShapeWingCorridors === true ? { linkLShapeWingCorridors: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

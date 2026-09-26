@@ -57,7 +57,7 @@ import {
 } from '../geometry/polygon-ops.js';
 import { createRectangleRoomPolygon, roomPolygonToBoundingRect } from '../geometry/room-polygon.js';
 import { applyFloorCompaction } from '../layout/compaction.js';
-import { placeSpacesLShape, lAwareParkingEnvelope } from './l-shape.js';
+import { placeSpacesLShape, lAwareParkingEnvelope, L_WING_LINK_ADDED } from './l-shape.js';
 
 export const ALL_STRATEGIES: CandidateStrategy[] = [
   'area-efficiency',
@@ -174,6 +174,15 @@ export interface GenerateLayoutsOptions {
    * geometry-guarded comparison (adoptElevatorLandingBridgeVariant).
    */
   bridgeElevatorLandingGap?: boolean;
+  /**
+   * Phase 5.6C opt-in (default OFF): on L-shape sites, after wing-plan selection, when the
+   * bridge strip and a parallel wing corridor face each other across an empty gap without
+   * being circulation-connected, one cut-perpendicular corridor link of L_CONNECTOR_W is
+   * added across the gap (see LShapePlacementOptions.linkWingCorridors). Selection, rooms,
+   * stair / elevator halls and existing corridors never change. Adopted per candidate only
+   * through the validator- and geometry-guarded comparison (adoptLShapeWingLinkVariant).
+   */
+  linkLShapeWingCorridors?: boolean;
 }
 
 export function generateLayouts(
@@ -195,6 +204,7 @@ export function generateLayouts(
   const diningEntryColumn = options.diningEntryColumn === true;
   const upperFloorFrontPrivate = options.upperFloorFrontPrivate === true;
   const bridgeElevatorLandingGap = options.bridgeElevatorLandingGap === true;
+  const linkLShapeWingCorridors = options.linkLShapeWingCorridors === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -239,7 +249,7 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
-  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false): LayoutCandidate => {
+  const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false, wingLink = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
     const floors: Floor[] = [];
@@ -247,7 +257,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink));
     }
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
@@ -410,7 +420,16 @@ export function generateLayouts(
       withElevatorBridge = adoptElevatorLandingBridgeVariant(withMainDim,
         buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, true));
     }
-    candidates.push(withElevatorBridge);
+    // Phase 5.6C (opt-in): last — the L-shape wing-corridor link (post-selection, in the
+    // wing placer) is built on every option already adopted and adopted ONLY through its
+    // own guard, only when the adopted candidate still carries a reachability HARD.
+    let withWingLink = withElevatorBridge;
+    if (linkLShapeWingCorridors && input.site.shape === 'l-shape'
+      && withElevatorBridge.findings.some(f => f.severity === 'hard' && WING_LINK_REACH.has(f.code))) {
+      withWingLink = adoptLShapeWingLinkVariant(withElevatorBridge,
+        buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, withElevatorBridge !== withMainDim, true));
+    }
+    candidates.push(withWingLink);
   }
 
   sortCandidates(candidates);
@@ -674,6 +693,93 @@ export function adoptElevatorLandingBridgeVariant(base: LayoutCandidate, variant
   const bo = overlapPairs(base);
   for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
   variant.explanations.push(`Phase 5.6B: elevator-landing bridge variant adopted (${ELEV_NO_LANDING} ${landing(base)}→${landing(variant)}, HARD ${hardOf(base).length}→${hardOf(variant).length}; no other HARD / circulation / access / daylight finding added, rooms and stair / elevator halls unmoved, no corridor shortened, no overlap, corridor minimum and buildable containment held).`);
+  return variant;
+}
+
+const WING_LINK_REACH = new Set(['CIRC_ROOM_THROUGH_ROOM', 'CIRC_INACCESSIBLE_SPACE']);
+/** Shared-edge length of two touching rects (0 when they do not touch), 5 mm edge tolerance. */
+function wingLinkContact(p: Rect, q: Rect): number {
+  const T = 0.005;
+  const ox = Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x);
+  const oy = Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y);
+  if (Math.abs(p.x + p.w - q.x) < T || Math.abs(q.x + q.w - p.x) < T) return Math.max(0, oy);
+  if (Math.abs(p.y + p.h - q.y) < T || Math.abs(q.y + q.h - p.y) < T) return Math.max(0, ox);
+  return 0;
+}
+
+/**
+ * Phase 5.6C guard: adopt the L-shape wing-corridor link variant only when:
+ *  1. the wing placer really added a link (explanation marker);
+ *  2. a valid candidate stays valid;
+ *  3. CIRC_ROOM_THROUGH_ROOM + CIRC_INACCESSIBLE_SPACE HARD strictly decreases;
+ *  4. total HARD strictly decreases;  5. no HARD code increases;
+ *  6. no circulation / access / daylight finding (WATCHED_FINDING, any severity) increases;
+ *  7. every non-corridor space (rooms, stair / elevator halls) is identical by id, type, rect;
+ *  8. every base corridor is present with an identical rect — only new pieces are added;
+ *  9. each new piece keeps CORRIDOR_MIN_WIDTH, is inside the buildable area, overlaps
+ *     nothing, and shares ≥ 0.8 m (L_CIRC_LINK) with two corridors that are not
+ *     connected to each other without it;
+ * 10. every space's hasExteriorWall is unchanged;
+ * 11. determinism: pure comparison of two deterministic builds.
+ */
+export function adoptLShapeWingLinkVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  if (!variant.explanations.some(e => e.startsWith(L_WING_LINK_ADDED))) return base;
+  if (base.valid && !variant.valid) return base;
+  const hardOf = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard');
+  const reach = (c: LayoutCandidate) => hardOf(c).filter(f => WING_LINK_REACH.has(f.code)).length;
+  if (!(reach(variant) < reach(base))) return base;
+  if (!(hardOf(variant).length < hardOf(base).length)) return base;
+  const count = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const pick = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const b = count(base, pick);
+  for (const [k, n] of count(variant, pick)) if (n > (b.get(k) ?? 0)) return base;
+  if (variant.floors.length !== base.floors.length) return base;
+  const E = 1e-6;
+  const LINK = 0.8; // mirrors l-shape.ts L_CIRC_LINK (minimum shared edge for a viable door)
+  const same = (a: Rect, c: Rect) => Math.abs(a.x - c.x) < E && Math.abs(a.y - c.y) < E && Math.abs(a.w - c.w) < E && Math.abs(a.h - c.h) < E;
+  const rects = ((variant as any).buildableRects ?? []) as Rect[];
+  let added = 0;
+  for (const fl of variant.floors) {
+    const bf = base.floors.find(x => x.level === fl.level);
+    if (!bf) return base;
+    const fixedB = bf.spaces.filter(s => s.type !== 'corridor'), fixedV = fl.spaces.filter(s => s.type !== 'corridor');
+    if (fixedB.length !== fixedV.length) return base;
+    for (const s of fixedB) {
+      const v = fixedV.find(x => x.id === s.id);
+      if (!v || v.type !== s.type || !same(v.rect, s.rect) || v.hasExteriorWall !== s.hasExteriorWall) return base;
+    }
+    const corrB = bf.spaces.filter(s => s.type === 'corridor'), corrV = fl.spaces.filter(s => s.type === 'corridor');
+    for (const k of corrB) {
+      const v = corrV.find(x => x.id === k.id);
+      if (!v || !same(v.rect, k.rect) || v.hasExteriorWall !== k.hasExteriorWall) return base;
+    }
+    for (const k of corrV) {
+      if (corrB.some(o => o.id === k.id)) continue;
+      added++;
+      if (Math.min(k.rect.w, k.rect.h) < CORRIDOR_MIN_WIDTH - E) return base;
+      if (rects.length > 0 && !insideBuildable(k.rect, rects)) return base;
+      // the piece must join two base corridors that are not connected without it
+      const touching = corrB.filter(o => wingLinkContact(k.rect, o.rect) >= LINK);
+      const joined = new Set<string>();
+      if (touching.length > 0) {
+        joined.add(touching[0].id);
+        const q = [touching[0]];
+        while (q.length) {
+          const cur = q.shift()!;
+          for (const o of corrB) if (!joined.has(o.id) && wingLinkContact(cur.rect, o.rect) >= LINK) { joined.add(o.id); q.push(o); }
+        }
+      }
+      if (!touching.some(o => !joined.has(o.id))) return base;
+    }
+  }
+  if (added === 0) return base;
+  const bo = overlapPairs(base);
+  for (const k of overlapPairs(variant)) if (!bo.has(k)) return base;
+  variant.explanations.push(`Phase 5.6C: L-shape wing-corridor link variant adopted (through-room + inaccessible ${reach(base)}→${reach(variant)}, HARD ${hardOf(base).length}→${hardOf(variant).length}; no HARD code or circulation / access / daylight finding added, rooms, stair / elevator halls and existing corridors unmoved, exterior walls kept, no overlap, corridor minimum and buildable containment held).`);
   return variant;
 }
 
@@ -1123,6 +1229,7 @@ function buildFloorSiteAware(
   diningEntryColumn = false,
   upperFloorFrontPrivate = false,
   bridgeElevatorLandingGap = false,
+  linkLShapeWingCorridors = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -1289,11 +1396,12 @@ function buildFloorSiteAware(
       ? placedSpecs.filter(sp => sp.type !== 'elevator-hall')
       : placedSpecs;
     const lres = input.site.shape === 'l-shape' && buildableRects.length === 2
-      ? (preferLShapeProgrammeAdjacency || rotateShallowStairPocket || mainRoomMinDimension
+      ? (preferLShapeProgrammeAdjacency || rotateShallowStairPocket || mainRoomMinDimension || linkLShapeWingCorridors
         ? placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace, {
           ...(preferLShapeProgrammeAdjacency ? { preferProgrammeAdjacency: true } : {}),
           ...(rotateShallowStairPocket ? { rotateShallowStairPocket: true } : {}),
           ...(mainRoomMinDimension ? { mainRoomMinDimension: true } : {}),
+          ...(linkLShapeWingCorridors ? { linkWingCorridors: true } : {}),
         })
         : placeSpacesLShape(buildableRects, buildableBoundary, multiSpecs, strategy, access, mkSpace))
       : null;

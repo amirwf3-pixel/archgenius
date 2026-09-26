@@ -47,7 +47,7 @@ import { rectInsidePolygon } from '../geometry/polygon-ops.js';
 import { placeSpaces, hasOverlappingRooms, type PlacedSpec } from '../layout/placer.js';
 import { contactLen } from '../layout/regions.js';
 import { solveRow, solveCol, type BandCellDemand, type BandSolution } from '../layout/topology.js';
-import { EPS } from '../units.js';
+import { EPS, CORRIDOR_MIN_WIDTH } from '../units.js';
 
 /**
  * P29-B FIX 2 — wing-residual stats for the balance selection (pure, exported
@@ -417,6 +417,80 @@ export interface LShapePlacementOptions {
    * PlacerOptions.mainRoomMinDimension (default OFF — wings placed exactly as before).
    */
   mainRoomMinDimension?: boolean;
+  /**
+   * Phase 5.6C: after selection, when the selected plan's bridge strip and a
+   * parallel wing corridor face each other across an empty gap without being
+   * circulation-connected, add one cut-perpendicular corridor link of
+   * L_CONNECTOR_W across the gap (findWingCorridorLink). Default OFF — the
+   * selected plan is returned exactly as before. Selection, gates, rooms and
+   * existing corridors are never changed.
+   */
+  linkWingCorridors?: boolean;
+}
+
+/** Explanation prefix proving the Phase 5.6C wing-corridor link was added. */
+export const L_WING_LINK_ADDED = 'Phase 5.6C L-wings corridor link';
+
+/**
+ * Phase 5.6C — deterministic cut-perpendicular link between the bridge strip
+ * (`corridor-bridge`) and a parallel corridor it faces across a gap when the
+ * two are not circulation-connected (corridor-only, shared edge ≥ L_CIRC_LINK).
+ * The link spans exactly the gap between the facing long edges and is
+ * L_CONNECTOR_W thick. Positions tried in ascending order: the start of the
+ * facing overlap, then every space edge inside it; the first rect that
+ * overlaps no space and lies inside the buildable boundary wins. Returns null
+ * when nothing qualifies. Pure: no input is modified.
+ */
+export function findWingCorridorLink(
+  spaces: ReadonlyArray<Space>,
+  corridors: ReadonlyArray<Space>,
+  buildableBoundary: Polygon,
+): { rect: Rect; fromId: string; toId: string } | null {
+  const seen = new Set<string>();
+  const corr: Space[] = [];
+  for (const c of corridors) { if (!seen.has(c.id)) { seen.add(c.id); corr.push(c); } }
+  const bridge = corr.find(c => c.id === 'corridor-bridge');
+  if (!bridge) return null;
+  // corridor-only connectivity (same shared-edge rule as circulationComponent)
+  const comp = new Set<string>([bridge.id]);
+  const q = [bridge];
+  while (q.length) {
+    const cur = q.shift()!;
+    for (const c of corr) {
+      if (comp.has(c.id)) continue;
+      if (sharedEdgeLen(cur.rect, c.rect) >= L_CIRC_LINK) { comp.add(c.id); q.push(c); }
+    }
+  }
+  const all = [...spaces, ...corr];
+  const vertical = (r: Rect) => r.h > r.w;
+  const b = bridge.rect;
+  for (const other of corr) {
+    if (comp.has(other.id)) continue;
+    const o = other.rect;
+    if (vertical(o) !== vertical(b)) continue;
+    const v = vertical(b);
+    const [lo, hi] = v ? (o.x < b.x ? [o, b] : [b, o]) : (o.y < b.y ? [o, b] : [b, o]);
+    const g0 = v ? lo.x + lo.w : lo.y + lo.h;
+    const g1 = v ? hi.x : hi.y;
+    if (g1 - g0 < CORRIDOR_MIN_WIDTH - 1e-6) continue;
+    const o0 = v ? Math.max(o.y, b.y) : Math.max(o.x, b.x);
+    const o1 = v ? Math.min(o.y + o.h, b.y + b.h) : Math.min(o.x + o.w, b.x + b.w);
+    if (o1 - o0 < L_CONNECTOR_W - 1e-6) continue;
+    const starts = new Set<number>([o0]);
+    for (const sp of all) {
+      for (const t of v ? [sp.rect.y, sp.rect.y + sp.rect.h] : [sp.rect.x, sp.rect.x + sp.rect.w]) {
+        if (t > o0 + 1e-9 && t + L_CONNECTOR_W <= o1 + 1e-6) starts.add(t);
+      }
+    }
+    for (const t of [...starts].sort((p, r) => p - r)) {
+      const rect: Rect = v ? { x: g0, y: t, w: g1 - g0, h: L_CONNECTOR_W } : { x: t, y: g0, w: L_CONNECTOR_W, h: g1 - g0 };
+      if (all.some(sp => rOverlapArea(rect, sp.rect) > 1e-3)) continue;
+      if (!rectInsidePolygon(rect, buildableBoundary, 1e-3)) continue;
+      if (sharedEdgeLen(rect, o) < L_CIRC_LINK || sharedEdgeLen(rect, b) < L_CIRC_LINK) continue;
+      return { rect, fromId: other.id, toId: bridge.id };
+    }
+  }
+  return null;
 }
 
 /**
@@ -1104,6 +1178,16 @@ export function placeSpacesLShape(
         && suiteAdjacent(c) && !suiteAdjacent(best)) best = c;
     }
     explanation.push(...best.lines);
+    // Phase 5.6C (opt-in): post-selection wing-corridor link — never alters
+    // selection or any existing space; adds one corridor piece or nothing.
+    if (opts.linkWingCorridors === true) {
+      const link = findWingCorridorLink(best.spaces, best.corridors, buildableBoundary);
+      if (link) {
+        const linkSpace = mkSpace('corridor', link.rect, 'Corridor', 'corridor-wing-link', 'circulation');
+        explanation.push(`${L_WING_LINK_ADDED}: ${link.rect.w.toFixed(2)}×${link.rect.h.toFixed(2)} m at (${link.rect.x.toFixed(2)}, ${link.rect.y.toFixed(2)}) joins ${link.fromId} to ${link.toId} across the empty gap (L_CONNECTOR_W, inside the buildable boundary, no overlap).`);
+        return { spaces: best.spaces, corridors: [...best.corridors, linkSpace], explanation };
+      }
+    }
     return {
       spaces: best.spaces,
       corridors: best.corridors,
