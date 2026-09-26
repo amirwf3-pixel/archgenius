@@ -163,6 +163,16 @@ export interface GenerateOptions {
    * Omitted or false = legacy output.
    */
   linkLShapeWingCorridors?: boolean;
+  /**
+   * Phase 5.6D (opt-in, default OFF): on L-shape sites, when the entry band's entrance sits
+   * on the living room and the foyer touches living by less than a door-viable edge, the
+   * entrance / foyer boundary moves so the foyer overlaps living by L_CIRC_LINK; adopted
+   * only when the validator confirms strictly fewer CONSTRAINT_DIRECT_ACCESS and HARD
+   * findings, no added HARD code or circulation / access / daylight finding, no lost
+   * validity, only entrance / foyer changed (others within one 0.01 m weld step), stair /
+   * elevator identical, no overlap. Omitted or false = legacy output.
+   */
+  alignLShapeEntryFoyer?: boolean;
 }
 
 /**
@@ -296,6 +306,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.upperFloorFrontPrivate === true ? { upperFloorFrontPrivate: true } : {}),
     ...(opts.bridgeElevatorLandingGap === true ? { bridgeElevatorLandingGap: true } : {}),
     ...(opts.linkLShapeWingCorridors === true ? { linkLShapeWingCorridors: true } : {}),
+    ...(opts.alignLShapeEntryFoyer === true ? { alignLShapeEntryFoyer: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

@@ -426,6 +426,66 @@ export interface LShapePlacementOptions {
    * existing corridors are never changed.
    */
   linkWingCorridors?: boolean;
+  /**
+   * Phase 5.6D: after selection, when the entry band's entrance sits directly on
+   * the living room and the foyer beside it touches living by less than
+   * L_CIRC_LINK, the entrance / foyer boundary moves so the foyer overlaps
+   * living's edge by exactly L_CIRC_LINK (findEntryFoyerAlignment). Default OFF.
+   * Only the entrance and foyer rects change; selection, gates, every other
+   * space and all corridors are untouched.
+   */
+  alignEntryFoyer?: boolean;
+}
+
+/** Explanation prefix proving the Phase 5.6D entrance / foyer boundary moved. */
+export const L_ENTRY_FOYER_ALIGNED = 'Phase 5.6D L-wings entry/foyer boundary aligned';
+
+/**
+ * Phase 5.6D — deterministic entrance / foyer boundary shift in a horizontal
+ * entry band. Fires only when: exactly one entrance, foyer and living exist;
+ * entrance and foyer share the band row (same y and h) and touch end-to-end;
+ * the entrance lies directly on living's edge (shared horizontal edge);
+ * foyer–living shared edge < L_CIRC_LINK; living is at least L_CIRC_LINK wide.
+ * New boundary = living's far edge (the edge toward the foyer) − L_CIRC_LINK,
+ * applied only when it moves toward the entrance, keeps the entrance's spec
+ * minWidth / minArea (entry-band defaults 1.2 m / 2 m²) and both rects stay
+ * inside the buildable boundary. Returns the two new rects or null. Pure.
+ */
+export function findEntryFoyerAlignment(
+  spaces: ReadonlyArray<Space>,
+  entranceMin: { minWidth: number; minArea: number },
+  buildableBoundary: Polygon,
+): { entrance: Rect; foyer: Rect; boundary: number } | null {
+  const one = (t: string) => { const xs = spaces.filter(x => x.type === t); return xs.length === 1 ? xs[0] : null; };
+  const en = one('entrance'), fo = one('foyer'), lv = one('living');
+  if (!en || !fo || !lv) return null;
+  const E = en.rect, F = fo.rect, L = lv.rect;
+  const eps = 1e-6;
+  if (Math.abs(E.y - F.y) > eps || Math.abs(E.h - F.h) > eps) return null;
+  const onLiving = Math.abs(E.y + E.h - L.y) < eps || Math.abs(L.y + L.h - E.y) < eps;
+  if (!onLiving) return null;
+  const xOv = Math.min(E.x + E.w, L.x + L.w) - Math.max(E.x, L.x);
+  if (xOv <= eps) return null;
+  if (sharedEdgeLen(F, L) >= L_CIRC_LINK) return null;
+  if (L.w < L_CIRC_LINK - eps) return null;
+  let nE: Rect, nF: Rect, nx: number;
+  if (Math.abs(E.x + E.w - F.x) < eps) {
+    // entrance west of the foyer: foyer grows west over living's east edge
+    nx = L.x + L.w - L_CIRC_LINK;
+    if (!(nx < F.x - eps) || !(nx > E.x + eps)) return null;
+    nE = { x: E.x, y: E.y, w: nx - E.x, h: E.h };
+    nF = { x: nx, y: F.y, w: F.x + F.w - nx, h: F.h };
+  } else if (Math.abs(F.x + F.w - E.x) < eps) {
+    // entrance east of the foyer: foyer grows east over living's west edge
+    nx = L.x + L_CIRC_LINK;
+    if (!(nx > E.x + eps) || !(nx < E.x + E.w - eps)) return null;
+    nE = { x: nx, y: E.y, w: E.x + E.w - nx, h: E.h };
+    nF = { x: F.x, y: F.y, w: nx - F.x, h: F.h };
+  } else return null;
+  if (nE.w < entranceMin.minWidth - 1e-9 || nE.w * nE.h < entranceMin.minArea - 1e-9) return null;
+  if (!rectInsidePolygon(nE, buildableBoundary, 1e-3) || !rectInsidePolygon(nF, buildableBoundary, 1e-3)) return null;
+  if (sharedEdgeLen(nF, L) < L_CIRC_LINK - eps) return null;
+  return { entrance: nE, foyer: nF, boundary: nx };
 }
 
 /** Explanation prefix proving the Phase 5.6C wing-corridor link was added. */
@@ -1180,17 +1240,32 @@ export function placeSpacesLShape(
     explanation.push(...best.lines);
     // Phase 5.6C (opt-in): post-selection wing-corridor link — never alters
     // selection or any existing space; adds one corridor piece or nothing.
+    let outSpaces = best.spaces;
+    let outCorridors = best.corridors;
     if (opts.linkWingCorridors === true) {
       const link = findWingCorridorLink(best.spaces, best.corridors, buildableBoundary);
       if (link) {
         const linkSpace = mkSpace('corridor', link.rect, 'Corridor', 'corridor-wing-link', 'circulation');
         explanation.push(`${L_WING_LINK_ADDED}: ${link.rect.w.toFixed(2)}×${link.rect.h.toFixed(2)} m at (${link.rect.x.toFixed(2)}, ${link.rect.y.toFixed(2)}) joins ${link.fromId} to ${link.toId} across the empty gap (L_CONNECTOR_W, inside the buildable boundary, no overlap).`);
-        return { spaces: best.spaces, corridors: [...best.corridors, linkSpace], explanation };
+        outCorridors = [...best.corridors, linkSpace];
+      }
+    }
+    // Phase 5.6D (opt-in): post-selection entrance / foyer boundary alignment —
+    // only the entrance and foyer rects may change.
+    if (opts.alignEntryFoyer === true) {
+      const en = outSpaces.find(x => x.type === 'entrance');
+      const enSpec = en ? specs.find(sp => sp.placedId === en.id) : undefined;
+      const al = en ? findEntryFoyerAlignment(outSpaces, { minWidth: enSpec?.minWidth ?? 1.2, minArea: enSpec?.minArea ?? 2 }, buildableBoundary) : null;
+      if (al) {
+        const prevX = outSpaces.find(x => x.type === 'foyer')!.rect.x;
+        outSpaces = outSpaces.map(x => x.type === 'entrance' ? mkSpace(x.type, al.entrance, x.label, x.id, x.zone)
+          : x.type === 'foyer' ? mkSpace(x.type, al.foyer, x.label, x.id, x.zone) : x);
+        explanation.push(`${L_ENTRY_FOYER_ALIGNED}: entrance / foyer boundary ${prevX.toFixed(4)}→${al.boundary.toFixed(4)} m so the foyer overlaps the living room by L_CIRC_LINK (entrance minimum width / area kept, inside the buildable boundary).`);
       }
     }
     return {
-      spaces: best.spaces,
-      corridors: best.corridors,
+      spaces: outSpaces,
+      corridors: outCorridors,
       explanation,
     };
   }
