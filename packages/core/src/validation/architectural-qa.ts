@@ -20,6 +20,8 @@ import type { Finding } from './types.js';
 import { ROOM_MIN_SIDE, ROOM_MIN_AREA, CORRIDOR_MIN_WIDTH } from '../units.js';
 import type { Space } from '../model/space.js';
 
+/** ROOM_BAD_PROPORTION: long side / short side above this ratio is a soft proportion finding. */
+export const ROOM_BAD_PROPORTION_RATIO = 3.5;
 const CIRC_TYPES = new Set(['corridor', 'foyer', 'entrance', 'stair-hall', 'elevator-hall']);
 
 function f(code: string, severity: Finding['severity'], msg: string, entityIds?: string[], bbox?: Finding['bbox']): Finding {
@@ -49,7 +51,7 @@ export function validateArchitecturalQA(floor: Floor): Finding[] {
     if (minSide < 1.0 && !['guest-wc', 'storage', 'utility'].includes(s.type)) {
       findings.push(f('ROOM_TOO_NARROW', 'soft', `Room "${s.label}" is too narrow: min side ${minSide.toFixed(2)} m.`, [s.id]));
     }
-    if (ratio > 3.5 && s.type !== 'corridor') {
+    if (ratio > ROOM_BAD_PROPORTION_RATIO && s.type !== 'corridor') {
       findings.push(f('ROOM_BAD_PROPORTION', 'soft', `Room "${s.label}" has bad proportion: ${maxSide.toFixed(2)} / ${minSide.toFixed(2)} = ${ratio.toFixed(1)}.`, [s.id]));
     }
     // P16-C: healthy daylight depth — the 7 m window-depth ceiling cited in MBH4-DYL-001's

@@ -34,7 +34,8 @@ import { generateWalls } from './walls.js';
 import { placeOpenings, programmeDoorRequirements } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
 import { validateLayout } from '../validation/validator.js';
-import { placeSpaces, CORRIDOR_W as PLACER_CORRIDOR_W, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, UPPER_FLOOR_FRONT_PRIVATE_APPLIED, STACKED_PAIR_MIN_AREA_APPLIED, type PlacedSpec } from '../layout/placer.js';
+import { ROOM_BAD_PROPORTION_RATIO } from '../validation/architectural-qa.js';
+import { placeSpaces, CORRIDOR_W as PLACER_CORRIDOR_W, room001Thresholds, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, UPPER_FLOOR_FRONT_PRIVATE_APPLIED, STACKED_PAIR_MIN_AREA_APPLIED, type PlacedSpec } from '../layout/placer.js';
 import { rectPartitions, contactConnected, contactLen } from '../layout/regions.js';
 import { solveRow, solveCol, type BandCellDemand } from '../layout/topology.js';
 import { sortCandidates } from '../layout/ranking.js';
@@ -804,27 +805,10 @@ export function placeParkingCutoutFloor(
     const ent = one('entrance'), foy = one('foyer'), kit = one('kitchen'), liv = one('living'), din = one('dining');
     const gwc = one('guest-wc'), sto = one('storage');
     if (!ent || !foy || !kit || !liv || !din || gwc === undefined || sto === undefined) return null;
-    // street annex (u in [run, W], v in [0, Da])
-    const an = annexOf(specs);
-    if (!an) return null;
-    const { Wa, gw, r1, Dk, fw, kw } = an;
-    if (gwc) put(gwc, L(run, gw, 0, r1));
-    put(ent, L(run + gw, Wa - gw, 0, r1));
-    put(kit, L(run, kw, r1, Dk));
-    put(foy, L(run + kw, fw, r1, Dk));
-    // rear band: [stair hall | dining | living]; living spans the foyer's back edge
     if (!fitsDepth(din, Db) || !fitsDepth(liv, Db)) return null;
-    const dw = need(din, Db);
-    const lw = W - hall.w - dw;
-    if (lw + 1e-9 < Math.max(need(liv, Db), fw)) return null;
-    put(din, L(hall.w, dw, Da, Db));
-    put(liv, L(hall.w + dw, lw, Da, Db));
-    if (sto) {
-      if (!(Rr > EPS) || !fitsDepth(sto, Rr)) return null;
-      const sw = need(sto, Rr);
-      if (sw > W + 1e-9) return null;
-      put(sto, L(0, sw, Da + Db + cw, Rr));
-    }
+    const plan = planCutoutGround(cut, hall.w, Db, cw, Rr, { ent, foy, kit, liv, din, gwc, sto }, need, fitsDepth, up);
+    if (!plan) return null;
+    for (const [sp, r] of plan) put(sp, L(r.u, r.uLen, r.v, r.vLen));
   } else {
     const beds = of('bedroom');
     const rear = [...of('master-bedroom'), ...of('master-bathroom'), ...of('bathroom')];
@@ -847,6 +831,123 @@ export function placeParkingCutoutFloor(
     spaces: out, corridors,
     explanation: [`${PARKING_CUTOUT_APPLIED} on level ${level}: L ${W.toFixed(2)}m wide (annex ${(W - run).toFixed(2)}x${Da.toFixed(2)}m, slab ${W.toFixed(2)}x${Ds.toFixed(2)}m); stair hall ${hall.w.toFixed(2)}x${Db.toFixed(2)}m, corridor ${cw.toFixed(2)}m.`],
   };
+}
+
+/** Strict lexicographic order of two equal-length rank keys (first difference decides). */
+function lexLess(a: number[], b: number[]): boolean {
+  for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return a[k] < b[k];
+  return false;
+}
+
+/** Local (u, v) cell of the parking-cutout frame. */
+interface CutoutCell { u: number; uLen: number; v: number; vLen: number }
+
+/**
+ * Ground floor of the parking-cutout fallback. The stair hall, the full-width corridor and
+ * the band depths are fixed by the caller; this only arranges the programme rooms around
+ * them. A small, deterministic set of arrangements is enumerated — back row of the street
+ * annex [foyer | kitchen] or [kitchen | foyer], front row = the entrance with the guest WC
+ * and/or storage (any order), or those two behind the corridor — each sized from the
+ * programme minima. Hard contacts are kept (entrance↔foyer and living↔foyer wide enough
+ * for an interior door, every front-row room opening onto the entrance or foyer and every
+ * rear room onto the corridor, every room at its programme minimum); the band room over the
+ * foyer is the living room, the one over the kitchen the dining room. Arrangements are
+ * ranked in this order: dining at the verified MBH4-ROOM-001 minimum width (pack value,
+ * unit-size dependent), dining↔kitchen door contact, no room beyond the existing
+ * ROOM_BAD_PROPORTION ratio, circulation ratio, assigned area,
+ * foyer↔guest-WC, kitchen↔storage, guest WC apart from the kitchen. Null when none fits.
+ */
+function planCutoutGround(
+  cut: ParkingCutout, hw: number, Db: number, cw: number, Rr: number,
+  sp: { ent: PlacedSpec; foy: PlacedSpec; kit: PlacedSpec; liv: PlacedSpec; din: PlacedSpec; gwc: PlacedSpec | null; sto: PlacedSpec | null },
+  need: (s: PlacedSpec, depth: number) => number,
+  fitsDepth: (s: PlacedSpec, depth: number) => boolean,
+  up: (x: number) => number,
+): Array<[PlacedSpec, CutoutCell]> | null {
+  const { W, run, Da } = cut;
+  const Wa = W - run;
+  const minW = (s: PlacedSpec) => s.minWidth ?? 0;
+  // A door needs its width plus the openings' minimum 2 × CORRIDOR_SNAP_EPS jamb margin.
+  const doorFit = (w: number) => w + 2 * CORRIDOR_SNAP_EPS;
+  const ov = (a0: number, a1: number, b0: number, b1: number) => Math.min(a1, b1) - Math.max(a0, b0);
+  const vBand = Da, vRear = Da + Db + cw;
+  type Item = 'ent' | 'gwc' | 'sto';
+  const perms = (xs: Item[]): Item[][] => xs.length <= 1 ? [xs] : xs.flatMap((x, k) => perms([...xs.slice(0, k), ...xs.slice(k + 1)]).map(p => [x, ...p]));
+  const locs = (s: PlacedSpec | null): Array<'row' | 'rear' | null> => s ? ['row', 'rear'] : [null];
+  let best: { key: number[]; cells: Array<[PlacedSpec, CutoutCell]> } | null = null;
+  for (const gLoc of locs(sp.gwc)) for (const sLoc of locs(sp.sto)) for (const kitFirst of [true, false]) {
+    const rowItems: Item[] = ['ent', ...(gLoc === 'row' ? ['gwc' as Item] : []), ...(sLoc === 'row' ? ['sto' as Item] : [])];
+    const gw = sp.gwc ? up(minW(sp.gwc)) : 0;
+    const r1 = up(Math.max(minW(sp.ent),
+      gLoc === 'row' && sp.gwc ? (sp.gwc.targetArea ?? sp.gwc.minArea ?? 0) / Math.max(gw, EPS) : 0,
+      sLoc === 'row' && sp.sto ? minW(sp.sto) : 0));
+    const Dk = Da - r1;
+    if (!(Dk > EPS) || !fitsDepth(sp.foy, Dk) || !fitsDepth(sp.kit, Dk)) continue;
+    const fw = need(sp.foy, Dk), kw = Wa - fw;
+    if (kw + 1e-9 < need(sp.kit, Dk)) continue;
+    const f0 = kitFirst ? run + kw : run, f1 = f0 + fw;
+    const k0 = kitFirst ? run : run + fw, k1 = k0 + kw;
+    const sw = sLoc === 'row' && sp.sto ? need(sp.sto, r1) : 0;
+    const ew = Wa - (gLoc === 'row' ? gw : 0) - sw;
+    if (ew + 1e-9 < need(sp.ent, r1)) continue;
+    // band beside the hall: living over the foyer, dining over the kitchen
+    const livMin = need(sp.liv, Db), dinMin = need(sp.din, Db);
+    let lu: number, lw: number, du: number, dw: number;
+    if (kitFirst) { lw = Math.max(livMin, W - f0); lu = W - lw; du = hw; dw = lu - hw; }
+    else { lu = hw; lw = Math.max(livMin, f1 - hw); du = hw + lw; dw = W - du; }
+    if (dw + 1e-9 < dinMin || lw + 1e-9 < livMin || ov(lu, lu + lw, f0, f1) + 1e-9 < doorFit(DOOR_INT_WIDTH)) continue;
+    // rear band behind the corridor, from the stall side
+    const rear: Array<[PlacedSpec, number]> = [];
+    for (const [s, loc] of [[sp.sto, sLoc], [sp.gwc, gLoc]] as const) {
+      if (!s || loc !== 'rear') continue;
+      if (!(Rr > EPS) || !fitsDepth(s, Rr)) { rear.length = 0; rear.push([s, Infinity]); break; }
+      // opens onto the corridor it backs onto
+      rear.push([s, Math.max(need(s, Rr), up(doorFit(s === sp.gwc ? DOOR_BATH_WIDTH : DOOR_INT_WIDTH)))]);
+    }
+    if (rear.reduce((a, [, w]) => a + w, 0) > W + 1e-9) continue;
+    for (const order of perms(rowItems)) {
+      const cells: Array<[PlacedSpec, CutoutCell]> = [];
+      let u = run;
+      const at: Partial<Record<Item, [number, number]>> = {};
+      for (const it of order) {
+        const w = it === 'ent' ? ew : it === 'gwc' ? gw : sw;
+        at[it] = [u, u + w];
+        cells.push([it === 'ent' ? sp.ent : it === 'gwc' ? sp.gwc! : sp.sto!, { u, uLen: w, v: 0, vLen: r1 }]);
+        u += w;
+      }
+      const [e0, e1] = at.ent!;
+      if (ov(e0, e1, f0, f1) + 1e-9 < doorFit(DOOR_INT_WIDTH)) continue;
+      // every other front-row room opens onto circulation (entrance beside it or foyer
+      // behind it) — never only through the kitchen (CIRC_ROOM_THROUGH_ROOM)
+      const reachable = (it: Item) => {
+        const [a0, a1] = at[it]!;
+        const dw0 = it === 'gwc' ? DOOR_BATH_WIDTH : DOOR_INT_WIDTH;
+        const besideEntrance = (Math.abs(a1 - e0) < 1e-6 || Math.abs(a0 - e1) < 1e-6) && r1 + 1e-9 >= doorFit(dw0);
+        return besideEntrance || ov(a0, a1, f0, f1) + 1e-9 >= doorFit(dw0);
+      };
+      if (order.some(it => it !== 'ent' && !reachable(it))) continue;
+      cells.push([sp.kit, { u: k0, uLen: kw, v: r1, vLen: Dk }], [sp.foy, { u: f0, uLen: fw, v: r1, vLen: Dk }]);
+      cells.push([sp.din, { u: du, uLen: dw, v: vBand, vLen: Db }], [sp.liv, { u: lu, uLen: lw, v: vBand, vLen: Db }]);
+      let ru = 0;
+      for (const [s, w] of rear) { cells.push([s, { u: ru, uLen: w, v: vRear, vLen: Rr }]); ru += w; }
+      // ranking
+      const area = (c: CutoutCell) => c.uLen * c.vLen;
+      const total = cells.reduce((a, [, c]) => a + area(c), 0) + hw * Db + W * cw;
+      const circ = cells.filter(([s]) => s === sp.ent || s === sp.foy).reduce((a, [, c]) => a + area(c), 0) + hw * Db + W * cw;
+      const th = room001Thresholds(total >= 75);
+      const dinOk = !th || dw + 1e-9 >= th.width;
+      const dk = ov(du, du + dw, k0, k1) + 1e-9 >= doorFit(DOOR_INT_WIDTH);
+      const g = at.gwc, st = at.sto;
+      const fg = !!g && ov(g[0], g[1], f0, f1) + 1e-9 >= doorFit(DOOR_BATH_WIDTH);
+      const ks = !!st && ov(st[0], st[1], k0, k1) > EPS;
+      const gk = !!g && ov(g[0], g[1], k0, k1) > EPS;
+      // never trade a new soft proportion defect (existing ROOM_BAD_PROPORTION ratio) for area
+      const badProp = cells.filter(([, c]) => Math.max(c.uLen, c.vLen) / Math.max(Math.min(c.uLen, c.vLen), EPS) > ROOM_BAD_PROPORTION_RATIO).length;
+      const key = [dinOk ? 0 : 1, dk ? 0 : 1, badProp, Math.round((circ / total) * 100), -Math.round(total), fg ? 0 : 1, ks ? 0 : 1, gk ? 1 : 0];
+      if (!best || lexLess(key, best.key)) best = { key, cells };
+    }
+  }
+  return best ? best.cells : null;
 }
 
 function cutoutZone(type: string): string {
