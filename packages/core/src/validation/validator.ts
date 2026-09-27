@@ -11,6 +11,7 @@ import { validateSite } from './site.js';
 import { validateProgramCompleteness } from './program-completeness.js';
 import { validateBalconies } from './balcony.js';
 import { validateYards } from './yard.js';
+import { validateFamilyRooms } from './family-room.js';
 import { validateParametricConstraints, createInstanceConstraintsFromTypes } from '../layout/parametric-constraints.js';
 import { DEFAULT_RESIDENTIAL_CONSTRAINTS } from '../layout/constraints.js';
 import { validateRoomSizeConstraints } from '../model/room-constraints.js';
@@ -76,6 +77,8 @@ export function validateLayout(candidate: LayoutCandidate): ValidationResult {
   findings.push(...validateBalconies(candidate));
   // Task 154: a placed yard must be valid open ground reachable from the street (no-op without a yard).
   findings.push(...validateYards(candidate));
+  // Task 160: a family room must stay within its program M4 cap (no-op without one).
+  findings.push(...validateFamilyRooms(candidate));
 
   // Include generator/regulator pre-findings, but deduplicate CONSTRAINT_/ROOM_CONSTRAINT_ etc that are already freshly validated
   // to avoid double counting when validateLayout is called on a candidate that already had findings from previous validation (generator does cand.findings = vr.findings)

@@ -2506,18 +2506,30 @@ function placeSpacesFacingSouth(
       // result INFEASIBLE (existing gate). Balcony-free programs skip this entirely.
       // Only when balconies are the band's sole program (other public rooms keep the
       // legacy split; an oversized balcony there is caught by BALCONY_OVERSIZED).
-      if (publicSpecs.length > 0 && publicSpecs.every(s => s.type === 'balcony')) {
-        const balconies = [...publicSpecs];
+      // Task 160: the same holds for a family room — on an upper floor it is the band's
+      // only room, and splitBinary handed it the WHOLE band (~80–200 m² for a 12 m²
+      // program). It is bounded the same way (size from its own program: target /
+      // minArea / minWidth), family rooms first so a balcony may open from one.
+      // Bands with living / dining (ground floor) never reach this branch.
+      const boundedTypes = (t: string) => t === 'balcony' || t === 'family-room';
+      if (publicSpecs.length > 0 && publicSpecs.every(s => boundedTypes(s.type))) {
+        const bounded = [...publicSpecs.filter(s => s.type === 'family-room'), ...publicSpecs.filter(s => s.type === 'balcony')];
         publicSpecs.length = 0;
         const corrRects = layout.corridors.filter(c => c !== layout.entrancePatch && c.w > 0.05 && c.h > 0.05);
         const roomRects = placed.filter(p => BALCONY_HOST_TYPES.has(p.type)).map(p => p.rect);
         const taken: Rect[] = [];
-        for (const b of balconies) {
+        for (const b of bounded) {
+          const tag = b.type === 'family-room' ? 'Task160: family room' : 'Task152: balcony';
           const r = boundedBalconyRect(publicRect, corrRects, roomRects, taken, b);
-          if (!r) { explanation.push(`Task152: balcony ${b.placedId} has no bounded spot on a circulation/room edge of the band — left unplaced (program completeness reports it)`); continue; }
+          if (!r) { explanation.push(`${tag} ${b.placedId} has no bounded spot on a circulation/room edge of the band — left unplaced (program completeness reports it)`); continue; }
           taken.push(r);
-          placed.push(mkSpace('balcony', r, b.placedLabel, b.placedId, 'public'));
-          explanation.push(`Task152: balcony ${b.placedId} bounded to ${r.w.toFixed(2)}×${r.h.toFixed(2)} m on a host edge (program target ${b.targetArea} m²)`);
+          if (b.type === 'family-room') {
+            placed.push(mkSpace('family-room', r, b.placedLabel, b.placedId, 'semi-private'));
+            roomRects.push(r);
+          } else {
+            placed.push(mkSpace('balcony', r, b.placedLabel, b.placedId, 'public'));
+          }
+          explanation.push(`${tag} ${b.placedId} bounded to ${r.w.toFixed(2)}×${r.h.toFixed(2)} m on a host edge (program target ${b.targetArea} m²)`);
         }
       }
       // Ensure candidate positions bounded ≤ MAX_CANDIDATE_POSITIONS
