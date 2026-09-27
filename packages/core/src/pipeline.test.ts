@@ -3,6 +3,7 @@ import { createProject, generate, exportDXF, validateCandidate } from './pipelin
 import type { ProjectInput } from './model/project.js';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 
 function baseInput(): ProjectInput {
   return {
@@ -95,7 +96,7 @@ describe('End-to-end pipeline', () => {
     expect(dxf).toContain('A-DIMS');
     expect(dxf.trim().endsWith('EOF')).toBe(true);
     // Save for inspection.
-    writeFileSync(join('/home/user/archgenius', 'test-output-villa.dxf'), dxf, 'utf8');
+    writeFileSync(join(tmpdir(), 'test-output-villa.dxf'), dxf, 'utf8');
   });
 
   it('works for a 3-bedroom apartment', () => {
@@ -143,7 +144,7 @@ describe('End-to-end pipeline', () => {
     expect(vr.hard).toEqual([]);
     const { dxf, validation } = exportDXF(res.bestCandidate, '2-story-villa');
     expect(validation.ok).toBe(true);
-    writeFileSync(join('/home/user/archgenius', 'test-output-2story.dxf'), dxf, 'utf8');
+    writeFileSync(join(tmpdir(), 'test-output-2story.dxf'), dxf, 'utf8');
   });
 
   it('rejects invalid input (bad dimensions)', () => {
