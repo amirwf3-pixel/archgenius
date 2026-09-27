@@ -50,6 +50,23 @@ export function computeBounds(candidate: LayoutCandidate, floor: Floor): Bounds 
   return { minX, minY, maxX, maxY };
 }
 
+/** Room area label: technical value "<area> m² <vertices>v" (existing canvas formatting). */
+export function roomAreaLabel(s: { area: number; polygon: readonly unknown[] }): string {
+  return `${s.area.toFixed(1)} m² ${s.polygon.length}v`;
+}
+
+/**
+ * Draw a technical value in an explicit LTR run, then restore the previous
+ * direction. The canvas inherits the RTL page direction, which would otherwise
+ * render "56.1 m² 4v" as "m² 4v 56.1"; Persian room names keep RTL.
+ */
+export function fillLtrText(ctx: Pick<CanvasRenderingContext2D, 'direction' | 'fillText'>, text: string, x: number, y: number): void {
+  const prev = ctx.direction;
+  ctx.direction = 'ltr';
+  ctx.fillText(text, x, y);
+  ctx.direction = prev;
+}
+
 /** Fit transform: world (y-up) → screen pixels (y-down), view = identity. */
 function fitBounds(b: Bounds, cssW: number, cssH: number) {
   const worldW = Math.max(1e-6, b.maxX - b.minX);
@@ -475,11 +492,11 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
       ctx.fillText(spaceLabel(s.label), tx(cx), ty(cy) + fs * 0.2);
       ctx.font = fontStr(fs * 0.75);
       ctx.fillStyle = isSel ? '#fde68a' : '#94a3b8';
-      ctx.fillText(`${s.area.toFixed(1)} m² ${s.polygon.length}v`, tx(cx), ty(cy) + fs * 1.1);
+      fillLtrText(ctx, roomAreaLabel(s), tx(cx), ty(cy) + fs * 1.1);
       ctx.fillStyle = '#e2e8f0';
       if (selectedSpaceId) {
         // Screen boxes of this room's name + area labels, so dimension callouts avoid covering them.
-        const areaW = ctx.measureText(`${s.area.toFixed(1)} m² ${s.polygon.length}v`).width;
+        const areaW = ctx.measureText(roomAreaLabel(s)).width;
         ctx.font = fontStr(fs);
         const halfW = Math.max(ctx.measureText(spaceLabel(s.label)).width, areaW) / 2;
         labelBoxes.push({ x0: tx(cx) - halfW, y0: ty(cy) - fs * 0.8, x1: tx(cx) + halfW, y1: ty(cy) + fs * 1.3 });
