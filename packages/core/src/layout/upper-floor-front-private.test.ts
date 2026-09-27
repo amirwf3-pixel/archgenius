@@ -267,14 +267,17 @@ describe('Phase 5.6A OFF identity', () => {
       expect(snap(gen(inp, { ...ALL12, upperFloorFrontPrivate: false }))).toBe(snap(gen(inp, ALL12)));
     }
   });
-  it('pipeline DXF: omitted and false identical; R12 header is only $ACADVER = AC1009', () => {
+  it('pipeline DXF: default (omitted) equals ON; false keeps every legacy plan byte-identical; R12 header is only $ACADVER = AC1009', () => {
     const dxfs = (opts: object) => {
       const r = generate(createProject(RECT14_B4(42)), { allStrategies: true, topCandidates: 4, ...ALL12, ...opts });
       return r.candidates.map(c => writeDXF(c, 'QA'));
     };
     const a = dxfs({}), b = dxfs({ upperFloorFrontPrivate: false }), on = dxfs({ upperFloorFrontPrivate: true });
-    expect(b).toEqual(a);
-    expect(on.length).toBeGreaterThan(a.length);
+    // generate() enables the guarded 5.6A split by default (12×18 upper-floor fix);
+    // explicit false is the legacy output, and every legacy usable plan survives unchanged.
+    expect(a).toEqual(on);
+    expect(on.length).toBeGreaterThan(b.length);
+    expect(b.every(d => on.includes(d))).toBe(true);
     for (const d of [...a, ...on]) {
       const hdr = d.slice(0, d.indexOf('ENDSEC'));
       expect([...hdr.matchAll(/\n\s*9\r?\n(\$\w+)/g)].map(m => m[1])).toEqual(['$ACADVER']);

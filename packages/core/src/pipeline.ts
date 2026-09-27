@@ -134,14 +134,17 @@ export interface GenerateOptions {
    */
   diningEntryColumn?: boolean;
   /**
-   * Phase 5.6A (opt-in, default OFF): on upper floors of rectangular sites with a
+   * Phase 5.6A (default ON in `generate()` since the 12×18 upper-floor fix): on upper
+   * floors of rectangular sites with a
    * horizontal / L-spur corridor and no public or semi-private programme, when the private
    * band behind the corridor fails the existing capacity check, the minimum number of
    * trailing private clusters moves (order kept) to the empty front zone across the
    * corridor, every room touching it; adopted only when the validator confirms strictly
    * fewer ARCH_PROGRAM_UNPLACED with no added HARD / circulation / access / daylight
    * finding, no lost validity, an identical ground floor and stair / elevator halls, no
-   * shortened corridor, no overhang, no overlap. Omitted or false = legacy output.
+   * shortened corridor, no overhang, no overlap. Omitted or true = enabled (the guard
+   * only ever adopts it on a candidate that would otherwise drop upper-floor rooms);
+   * false = legacy output (private rooms dropped instead of using the empty band).
    */
   upperFloorFrontPrivate?: boolean;
   /**
@@ -323,7 +326,10 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.rotateShallowStairPocket === true ? { rotateShallowStairPocket: true } : {}),
     ...(opts.mainRoomMinDimension === true ? { mainRoomMinDimension: true } : {}),
     ...(opts.diningEntryColumn === true ? { diningEntryColumn: true } : {}),
-    ...(opts.upperFloorFrontPrivate === true ? { upperFloorFrontPrivate: true } : {}),
+    // Default ON: an upper floor with no public programme leaves its front band empty;
+    // when the private band behind the corridor cannot host the private rooms, the
+    // guarded Phase 5.6A split uses that empty band instead of dropping rooms.
+    ...(opts.upperFloorFrontPrivate !== false ? { upperFloorFrontPrivate: true } : {}),
     ...(opts.bridgeElevatorLandingGap === true ? { bridgeElevatorLandingGap: true } : {}),
     ...(opts.linkLShapeWingCorridors === true ? { linkLShapeWingCorridors: true } : {}),
     ...(opts.alignLShapeEntryFoyer === true ? { alignLShapeEntryFoyer: true } : {}),
