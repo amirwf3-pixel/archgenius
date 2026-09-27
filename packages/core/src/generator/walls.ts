@@ -30,6 +30,8 @@ export function generateWalls(spaces: Space[], floorLevel: number): Wall[] {
   const candidates: WallCandidate[] = [];
 
   for (const s of spaces) {
+    // Task 154: a yard is open ground — never walled (the DXF writer skips it likewise).
+    if (s.type === 'yard') continue;
     const poly = s.polygon;
     if (!poly || poly.length < 3) continue;
     const area = polygonSignedArea(poly);

@@ -110,7 +110,8 @@ export function validateGeometric(floor: Floor, footprintStrict = true): Finding
       }
     }
 
-    if (footprintStrict && !rContains(floor.footprint, s.rect, 1e-3)) {
+    // Task 154: a yard is exterior open ground, outside the building envelope by definition.
+    if (footprintStrict && s.type !== 'yard' && !rContains(floor.footprint, s.rect, 1e-3)) {
       findings.push(f('GEO_ROOM_OUTSIDE_FOOTPRINT', 'hard',
         `Space "${s.label}" bounding extends outside the buildable footprint.`,
         [s.id], bbox(s)));

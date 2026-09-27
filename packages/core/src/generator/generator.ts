@@ -17,10 +17,11 @@ import type { Furniture } from '../model/furniture.js';
 import type { LayoutCandidate, CandidateStrategy, LayoutMetadata } from '../model/layout.js';
 import type { Finding } from '../validation/types.js';
 import { computeAdjacencyMetrics, programAdjacencyByType } from '../quality/metrics-v1.js';
-import { programForFloor, allocateBuildingProgram, labelFor } from '../programming/program.js';
+import { programForFloor, allocateBuildingProgram, labelFor, getTypicalArea } from '../programming/program.js';
 import type { FloorProgramAllocation } from '../programming/program.js';
 import { composePacks, computeBuildableArea, runPackRules, runPackRulesOnCandidate } from '../regulations/engine.js';
 import { placeParking, placeParkingSiteAware, reserveParkingBand } from './parking.js';
+import { placeYard } from './yard.js';
 import { DEFAULT_FLOOR_HEIGHT } from './stairs.js';
 import { solveStair } from './stair-solver.js';
 import {
@@ -321,6 +322,10 @@ export function generateLayouts(
     for (let level = 0; level < numFloors; level++) {
       floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea, shaftNotch, upperCoreCirc, lShapeRoomQualitySelection));
     }
+    // Task 154: yard — placed once ALL floors exist (it must be open-air), as an
+    // exterior ground-floor space (no walls, no doors — like parking). Absent the
+    // flag nothing here runs, so hasYard=false output is byte-identical.
+    if (input.building.hasYard === true && floors.length > 0) addYard(input, buildableGeom, floors, explanations);
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
     const meta: LayoutMetadata = { strategy, seed, generatedAt: Date.now(), regulationPacks: packs.map(p => ({ id: p.id, edition: p.edition })) };
@@ -333,6 +338,8 @@ export function generateLayouts(
       level: fl.level,
       byType: { ...(((fl as any).assignedProgram ?? {}) as Record<string, number>) },
     }));
+    // Task 154: a requested yard is a ground-floor program item — never silently dropped.
+    if (input.building.hasYard === true) (cand as any).programRequirements[0].byType.yard = 1;
     (cand as any).siteBoundary = buildableGeom.siteBoundary;
     (cand as any).buildableBoundary = buildableGeom.buildableBoundary;
     (cand as any).buildableRects = buildableGeom.buildableRects;
@@ -3223,6 +3230,43 @@ export function snapSpacesToWeldedGrid(spaces: Space[], weldEps = 0.03): void {
 function needStairForFloor(input: ProjectInput, level: number): boolean {
   if (!input.building.hasStair && input.building.floors <= 1) return false;
   return level < Math.max(1, input.building.floors);
+}
+
+/** Task 154: place the requested yard on the ground floor (see generator/yard.ts). */
+function addYard(input: ProjectInput, geom: ReturnType<typeof computeBuildableGeometry>, floors: Floor[], explanations: string[]): void {
+  const g = floors[0];
+  const prog = getTypicalArea('yard');
+  const parkingRects: Rect[] = [
+    ...((g.parkingStalls ?? []) as any[]).map(s => s.rect as Rect).filter(Boolean),
+    ...(g.parkingArea?.aisleRect ? [g.parkingArea.aisleRect as Rect] : []),
+  ];
+  const res = placeYard({
+    siteBoundary: geom.siteBoundary,
+    buildableBoundary: geom.buildableBoundary,
+    access: input.site.accessSide,
+    groundRects: g.spaces.map(s => s.rect),
+    allFloorRects: floors.flatMap(f => f.spaces.map(s => s.rect)),
+    groundBlockers: [...g.spaces.map(s => s.rect), ...((g.parkingStalls ?? []) as any[]).map(s => s.rect as Rect).filter(Boolean)],
+    parkingRects,
+    targetArea: prog.target,
+    minArea: prog.min,
+  });
+  explanations.push(res.explanation);
+  if (!res.rect) return;
+  const r = res.rect;
+  const poly = createRectangleRoomPolygon(r);
+  g.spaces.push({
+    id: 'yard-0-000', type: 'yard', label: labelFor('yard'),
+    privacy: privacyOf('yard'), zone: 'public', orientation: orientationOf('yard'),
+    daylightRequired: false,
+    polygon: poly, rect: r, area: polygonArea(poly),
+    targetArea: prog.target, minArea: prog.min,
+    shapeType: 'rectangle',
+    constraints: { minArea: prog.min, targetArea: prog.target },
+    locked: {}, wallIds: [], openingIds: [], adjacentSpaceIds: [],
+    hasExteriorWall: false,
+    floor: 0,
+  } as Space);
 }
 
 function privacyOf(t: Space['type']): Space['privacy'] {
