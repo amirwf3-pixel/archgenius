@@ -28,7 +28,7 @@ import { bandCanHost, chooseSpineFraction, solveRow, solveCol, type BandCellDema
 import { DOOR_INT_WIDTH } from '../units.js';
 import { IR_NATIONAL_MBR_PACK } from '../regulations/packs/ir-national-mbr.js';
 
-const CORRIDOR_W = 1.5;
+export const CORRIDOR_W = 1.5;
 const MIN_SIDE = 1.0;
 const BATH_STRIP_H = 2.6; // corridor-edge wet strip, m
 const KITCHEN_W = 2.4;

@@ -20,7 +20,7 @@ import { computeAdjacencyMetrics, programAdjacencyByType } from '../quality/metr
 import { programForFloor, allocateBuildingProgram, labelFor, getTypicalArea } from '../programming/program.js';
 import type { FloorProgramAllocation } from '../programming/program.js';
 import { composePacks, computeBuildableArea, runPackRules, runPackRulesOnCandidate } from '../regulations/engine.js';
-import { placeParking, placeParkingSiteAware, reserveParkingBand } from './parking.js';
+import { placeParking, placeParkingSiteAware, reserveParkingBand, subtractRects } from './parking.js';
 import { placeYard } from './yard.js';
 import { DEFAULT_FLOOR_HEIGHT } from './stairs.js';
 import { solveStair } from './stair-solver.js';
@@ -34,7 +34,7 @@ import { generateWalls } from './walls.js';
 import { placeOpenings, programmeDoorRequirements } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
 import { validateLayout } from '../validation/validator.js';
-import { placeSpaces, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, UPPER_FLOOR_FRONT_PRIVATE_APPLIED, STACKED_PAIR_MIN_AREA_APPLIED, type PlacedSpec } from '../layout/placer.js';
+import { placeSpaces, CORRIDOR_W as PLACER_CORRIDOR_W, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, UPPER_FLOOR_FRONT_PRIVATE_APPLIED, STACKED_PAIR_MIN_AREA_APPLIED, type PlacedSpec } from '../layout/placer.js';
 import { rectPartitions, contactConnected, contactLen } from '../layout/regions.js';
 import { solveRow, solveCol, type BandCellDemand } from '../layout/topology.js';
 import { sortCandidates } from '../layout/ranking.js';
@@ -43,7 +43,7 @@ import { placeFurniture } from './furniture.js';
 import type { Rect } from '../geometry/rect.js';
 import { rArea, rCorners, rIntersects } from '../geometry/rect.js';
 import { polygonArea } from '../geometry/polygon.js';
-import { EPS, CORRIDOR_MIN_WIDTH, DOOR_INT_WIDTH, DOOR_BATH_WIDTH, WELD_STEP, CORRIDOR_SNAP_EPS } from '../units.js';
+import { EPS, CORRIDOR_MIN_WIDTH, DOOR_INT_WIDTH, DOOR_BATH_WIDTH, WELD_STEP, CORRIDOR_SNAP_EPS, PARKING_STALL_WIDTH, PARKING_STALL_LENGTH, PARKING_AISLE_MIN_WIDTH } from '../units.js';
 import { computeBuildableGeometry } from '../site/buildable.js';
 import type { Polygon } from '../geometry/polygon-ops.js';
 import type { AccessSide } from '../model/site.js';
@@ -312,6 +312,8 @@ export function generateLayouts(
   const allocations = allocateBuildingProgram(input.building, numFloors);
   const candidates: LayoutCandidate[] = [];
 
+  // Parking-cutout fallback mode (only ever true inside the guarded post-pass below).
+  let parkingCutoutMode = false;
   const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false, wingLink = false, entryFoyer = false, pairMinArea = false, shaftNotch = false, upperCoreCirc = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
@@ -320,7 +322,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea, shaftNotch, upperCoreCirc, lShapeRoomQualitySelection));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea, shaftNotch, upperCoreCirc, lShapeRoomQualitySelection, parkingCutoutMode));
     }
     // Task 154: yard — placed once ALL floors exist (it must be open-air), as an
     // exterior ground-floor space (no walls, no doors — like parking). Absent the
@@ -549,8 +551,335 @@ export function generateLayouts(
     candidates.push(withUpperCore);
   }
 
+  // Guarded parking-cutout fallback: ONLY when no candidate of this run is valid on a
+  // single-rectangle site that requested (non-parallel) parking, each strategy whose
+  // candidate failed to place that parking is rebuilt once in the real L left by a corner
+  // perpendicular row, and the rebuild is adopted ONLY through adoptParkingCutoutVariant
+  // (fully valid, zero HARD). Otherwise nothing here runs and output is unchanged.
+  const requestedStalls = input.building.parkingSpaces ?? 0;
+  if (requestedStalls > 0 && input.site.shape === 'rectangle' && buildableGeom.buildableRects.length === 1
+    && input.site.parkingLayout !== 'parallel' && candidates.length > 0 && candidates.every(c => !c.valid)) {
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      if (!c.findings.some(f => f.severity === 'hard' && f.code === 'PARKING_PROGRAM_UNPLACED')) continue;
+      parkingCutoutMode = true;
+      const v = buildCandidate(c.metadata.strategy, false);
+      parkingCutoutMode = false;
+      candidates[i] = adoptParkingCutoutVariant(c, v, requestedStalls);
+    }
+  }
+
   sortCandidates(candidates);
   return candidates;
+}
+
+/** Explanation prefix: a floor laid out by the guarded parking-cutout fallback. */
+export const PARKING_CUTOUT_APPLIED = 'Parking cutout fallback';
+
+/** Real remaining buildable geometry around a corner perpendicular parking row. */
+export interface ParkingCutout {
+  /** The remaining L as two rects (street annex, full-width rear slab), world coords. */
+  rects: Rect[];
+  /** CCW outline of the remaining L. */
+  polygon: Polygon;
+  /** Aisle strip taken out of the buildable (null when the setback already hosts the aisle). */
+  strip: Rect | null;
+  /** Stall block (count × PARKING_STALL_WIDTH along the access edge, PARKING_STALL_LENGTH deep). */
+  block: Rect;
+  /** L frame: along width W, stall run, annex depth Da, slab depth Ds. */
+  W: number; run: number; Da: number; Ds: number;
+  /** Local (u along the access edge from the buildable's min corner, v away from the street
+   *  from the L's front line) → world rect. */
+  toWorld: (u: number, uLen: number, v: number, vLen: number) => Rect;
+  /** The side of a local rect facing away from the street. */
+  backSide: AccessSide;
+}
+
+/**
+ * Remaining buildable geometry of a single-rectangle envelope when a perpendicular parking
+ * row takes one corner — derived only from the buildable rect, the access side and the
+ * existing parking constants, mirroring the scan `placeParkingSiteAware` performs on the
+ * access side: the aisle (PARKING_AISLE_MIN_WIDTH, starting in the setback when the setback
+ * is shallower) runs along the whole access edge of the buildable, the stalls sit behind it
+ * from the buildable's min-along corner. Null unless the remainder is a genuine L (a street
+ * annex beside the row and a slab behind it).
+ */
+export function parkingCutoutGeometry(siteRect: Rect, buildable: Rect, access: AccessSide, count: number): ParkingCutout | null {
+  if (!(count > 0)) return null;
+  const horizontal = access === 'south' || access === 'north';
+  const b = buildable;
+  const a0 = horizontal ? b.x - siteRect.x : b.y - siteRect.y;
+  const W = horizontal ? b.w : b.h;
+  const d0 = access === 'south' ? b.y - siteRect.y
+    : access === 'north' ? siteRect.y + siteRect.h - (b.y + b.h)
+    : access === 'west' ? b.x - siteRect.x
+    : siteRect.x + siteRect.w - (b.x + b.w);
+  const d1 = d0 + (horizontal ? b.h : b.w);
+  const run = count * PARKING_STALL_WIDTH;
+  const aisleEnd = Math.max(0, d0 - PARKING_AISLE_MIN_WIDTH) + PARKING_AISLE_MIN_WIDTH;
+  const front = Math.max(d0, aisleEnd);
+  const stallEnd = aisleEnd + PARKING_STALL_LENGTH;
+  if (!(W - run > EPS) || !(d1 - stallEnd > EPS) || !(stallEnd - front > EPS)) return null;
+  const mk = (along0: number, alongLen: number, depth0: number, depthLen: number): Rect => {
+    if (horizontal) {
+      const y = access === 'south' ? siteRect.y + depth0 : siteRect.y + siteRect.h - depth0 - depthLen;
+      return { x: siteRect.x + along0, y, w: alongLen, h: depthLen };
+    }
+    const x = access === 'west' ? siteRect.x + depth0 : siteRect.x + siteRect.w - depth0 - depthLen;
+    return { x, y: siteRect.y + along0, w: depthLen, h: alongLen };
+  };
+  const strip = aisleEnd > d0 + EPS ? mk(a0, W, d0, aisleEnd - d0) : null;
+  const block = mk(a0, run, front, stallEnd - front);
+  const main = strip ? subtractRects([b], strip) : [b];
+  if (main.length !== 1) return null;
+  const rest = subtractRects(main, block);
+  if (rest.length !== 2 || contactLen(rest[0], rest[1]) <= EPS) return null;
+  const Da = stallEnd - front, Ds = d1 - stallEnd;
+  const toWorld = (u: number, uLen: number, v: number, vLen: number): Rect => mk(a0 + u, uLen, front + v, vLen);
+  const annex = toWorld(run, W - run, 0, Da);
+  const slab = toWorld(0, W, Da, Ds);
+  // CCW outline: the main rect with the block's corner replaced by the inner notch.
+  const m = main[0];
+  const V = [{ x: m.x, y: m.y }, { x: m.x + m.w, y: m.y }, { x: m.x + m.w, y: m.y + m.h }, { x: m.x, y: m.y + m.h }];
+  const bc = [{ x: block.x, y: block.y }, { x: block.x + block.w, y: block.y }, { x: block.x + block.w, y: block.y + block.h }, { x: block.x, y: block.y + block.h }];
+  const near = (p: number, q: number) => Math.abs(p - q) < 1e-6;
+  const k = V.findIndex((v, i) => near(v.x, bc[i].x) && near(v.y, bc[i].y));
+  if (k < 0) return null;
+  const inner = bc[(k + 2) % 4];
+  const cur = V[k];
+  const onEdge = (from: { x: number; y: number }) => near(from.x, cur.x) ? { x: cur.x, y: inner.y } : { x: inner.x, y: cur.y };
+  const polygon: Polygon = [];
+  for (let i = 1; i <= 4; i++) {
+    const idx = (k + i) % 4;
+    if (idx === k) polygon.push(onEdge(V[(k + 3) % 4]), { x: inner.x, y: inner.y }, onEdge(V[(k + 1) % 4]));
+    else polygon.push({ ...V[idx] });
+  }
+  const backSide: AccessSide = access === 'south' ? 'north' : access === 'north' ? 'south' : access === 'west' ? 'east' : 'west';
+  return { rects: [annex, slab], polygon, strip, block, W, run, Da, Ds, toWorld, backSide };
+}
+
+const CUTOUT_GROUND = new Set(['entrance', 'foyer', 'guest-wc', 'kitchen', 'living', 'dining', 'storage', 'corridor', 'stair-hall']);
+const CUTOUT_UPPER = new Set(['stair-hall', 'corridor', 'master-bedroom', 'master-bathroom', 'bedroom', 'bathroom']);
+/** Rooms of the band beside the stair hall / of the band behind the corridor. */
+const CUTOUT_FRONT_BAND = new Set(['dining', 'living', 'bedroom']);
+const CUTOUT_REAR_BAND = new Set(['storage', 'master-bedroom', 'master-bathroom', 'bathroom']);
+
+/**
+ * Smallest stair hall (local w along × d deep) the unchanged stair solver accepts with its
+ * entry on the back side, searched on the WELD_STEP grid; minimum area, then shallower.
+ * The depth is bounded by the building-wide band demand [minD, maxD] so every floor derives
+ * the SAME hall.
+ */
+function cutoutStairHall(cut: ParkingCutout, minSide: number, maxW: number, minD: number, maxD: number): { w: number; d: number } | null {
+  if (maxD + 1e-9 < minD) return null;
+  const cfg = { ...DEFAULT_STAIR_CONFIG, floorHeight: DEFAULT_FLOOR_HEIGHT };
+  const fits = (w: number, d: number) => solveStair(cut.toWorld(0, w, cut.Da, d), cfg, cut.backSide, 'core-main', 0).ok;
+  const q = (x: number) => Math.round(x / WELD_STEP) * WELD_STEP;
+  let best: { w: number; d: number } | null = null;
+  for (let w = q(Math.max(minSide, WELD_STEP)); w <= maxW + 1e-9; w = q(w + WELD_STEP)) {
+    if (!fits(w, maxD)) continue;
+    let lo = q(Math.max(minSide, minD)), hi = q(maxD);
+    if (fits(w, lo)) hi = lo;
+    while (hi - lo > WELD_STEP + 1e-9) {
+      const mid = q((lo + hi) / 2);
+      if (mid <= lo || mid >= hi) break;
+      if (fits(w, mid)) hi = mid; else lo = mid;
+    }
+    if (!best || w * hi < best.w * best.d - 1e-9 || (Math.abs(w * hi - best.w * best.d) <= 1e-9 && hi < best.d)) best = { w, d: hi };
+  }
+  return best;
+}
+
+/**
+ * Guarded parking-cutout fallback: lays one floor out in the remaining L with the fixed
+ * topology — ground: street annex = [guest WC | entrance] front row, [kitchen | foyer]
+ * behind; rear slab = [stair hall | dining | living] band, full-width corridor, storage in
+ * the rear residual. Upper: the same stair hall, bedrooms beside it, full-width corridor,
+ * master suite and bathrooms behind. Every dimension comes from the programme specs, the
+ * stair solver and the placer's corridor width; positions are relative to the L frame.
+ * Null when any room of the level falls outside this topology or does not fit.
+ */
+export function placeParkingCutoutFloor(
+  cut: ParkingCutout, specs: PlacedSpec[], level: number,
+  allFloorSpecs: Array<Array<{ type: string; minWidth?: number; minArea?: number; targetArea?: number }>>,
+  mkSpace: (type: Space['type'], r: Rect, label: string, id: string, zone: string) => Space,
+): { spaces: Space[]; corridors: Space[]; explanation: string[] } | null {
+  const allowed = level === 0 ? CUTOUT_GROUND : CUTOUT_UPPER;
+  if (specs.some(sp => !allowed.has(sp.type))) return null;
+  const of = (t: string) => specs.filter(sp => sp.type === t);
+  const one = (t: string) => { const l = of(t); return l.length === 1 ? l[0] : l.length === 0 ? null : undefined; };
+  const hallSpec = one('stair-hall'), corrSpec = one('corridor');
+  if (!hallSpec || !corrSpec) return null;
+  const { W, run, Da, Ds } = cut;
+  const up = (x: number) => Math.ceil(x / WELD_STEP - 1e-9) * WELD_STEP;
+  const down = (x: number) => Math.floor(x / WELD_STEP + 1e-9) * WELD_STEP;
+  type SpecLike = { type: string; minWidth?: number; minArea?: number; targetArea?: number };
+  const minW = (sp: SpecLike) => sp.minWidth ?? 0;
+  const need = (sp: SpecLike, depth: number) => up(Math.max(minW(sp), (sp.minArea ?? 0) / depth));
+  const fitsDepth = (sp: SpecLike, depth: number) => depth + 1e-9 >= minW(sp);
+  // Street annex of the ground floor: [guest WC | entrance] front row, [kitchen | foyer] behind.
+  const annexOf = (fs: SpecLike[]) => {
+    const pick = (t: string) => { const l = fs.filter(sp => sp.type === t); return l.length === 1 ? l[0] : l.length === 0 ? null : undefined; };
+    const ent = pick('entrance'), foy = pick('foyer'), kit = pick('kitchen'), gwc = pick('guest-wc');
+    if (!ent || !foy || !kit || gwc === undefined) return null;
+    const Wa = W - run;
+    const gw = gwc ? up(minW(gwc)) : 0;
+    const r1 = up(Math.max(minW(ent), gwc ? (gwc.targetArea ?? gwc.minArea ?? 0) / Math.max(gw, EPS) : 0, (ent.minArea ?? 0) / Math.max(Wa - gw, EPS)));
+    const Dk = Da - r1;
+    if (!(Dk > EPS) || !fitsDepth(foy, Dk) || !fitsDepth(kit, Dk)) return null;
+    const fw = need(foy, Dk);
+    const kw = Wa - fw;
+    if (kw + 1e-9 < need(kit, Dk) || Wa - gw + 1e-9 < fw || Wa - gw + 1e-9 < minW(ent)) return null;
+    return { Wa, gw, r1, Dk, fw, kw };
+  };
+  const cw = Math.max(PLACER_CORRIDOR_W, minW(corrSpec), CORRIDOR_MIN_WIDTH);
+  const all = allFloorSpecs.flat();
+  const bandMin = (set: Set<string>) => all.filter(sp => set.has(sp.type)).reduce((a, sp) => Math.max(a, sp.minWidth ?? 0), 0);
+  const hallMinSide = all.filter(sp => sp.type === 'stair-hall').reduce((a, sp) => Math.max(a, sp.minWidth ?? 0), DEFAULT_STAIR_CONFIG.minWidth);
+  const hallMin = cutoutStairHall(cut, hallMinSide, W, bandMin(CUTOUT_FRONT_BAND), Ds - cw - bandMin(CUTOUT_REAR_BAND));
+  if (!hallMin) return null;
+  const Db0 = hallMin.d;
+  // The band beside the stair hall (dining + living on the ground floor, bedrooms upstairs)
+  // shares its surplus width over the programme minima equally among its cells — the hall
+  // included; the hall takes the smallest share over all floors so it stays identical on
+  // every floor, and the stair solver must still accept the widened hall.
+  let share = Infinity;
+  for (let l = 0; l < allFloorSpecs.length; l++) {
+    const fs = allFloorSpecs[l];
+    const cells: number[] = [];
+    if (l === 0) {
+      const an = annexOf(fs);
+      const din = fs.find(sp => sp.type === 'dining'), liv = fs.find(sp => sp.type === 'living');
+      if (!an || !din || !liv) return null;
+      cells.push(need(din, Db0), Math.max(need(liv, Db0), an.fw));
+    } else {
+      for (const b of fs.filter(sp => sp.type === 'bedroom')) cells.push(need(b, Db0));
+    }
+    const surplus = W - hallMin.w - cells.reduce((a, x) => a + x, 0);
+    if (surplus < -1e-9) return null;
+    share = Math.min(share, down(surplus / (cells.length + 1)));
+  }
+  // Widest hall in [minimum, minimum + share] (WELD_STEP grid) for which the solver accepts
+  // some depth within the band bounds and both bands still fit on every floor; the depth is
+  // the shallowest the solver accepts for that width.
+  const cfgHall = { ...DEFAULT_STAIR_CONFIG, floorHeight: DEFAULT_FLOOR_HEIGHT };
+  const fitsHall = (w: number, d: number) => solveStair(cut.toWorld(0, w, Da, d), cfgHall, cut.backSide, 'core-main', 0).ok;
+  const q = (x: number) => Math.round(x / WELD_STEP) * WELD_STEP;
+  const maxD = Ds - cw - bandMin(CUTOUT_REAR_BAND);
+  const bandsFit = (w: number, d: number) => {
+    const rr = Ds - d - cw;
+    return allFloorSpecs.every((fs, l) => {
+      const front: number[] = l === 0
+        ? (() => { const an = annexOf(fs)!; const din = fs.find(sp => sp.type === 'dining')!, liv = fs.find(sp => sp.type === 'living')!; return [need(din, d), Math.max(need(liv, d), an.fw)]; })()
+        : fs.filter(sp => sp.type === 'bedroom').map(sp => need(sp, d));
+      const rear = fs.filter(sp => CUTOUT_REAR_BAND.has(sp.type) && (l > 0 || sp.type === 'storage'));
+      return W - w - front.reduce((a, x) => a + x, 0) >= -1e-9
+        && rear.every(sp => fitsDepth(sp, rr))
+        && rear.reduce((a, sp) => a + need(sp, rr), 0) <= W + 1e-9;
+    });
+  };
+  let hall = hallMin;
+  if (Number.isFinite(share) && share > 0) {
+    for (let w = q(hallMin.w + share); w > hallMin.w + 1e-9; w = q(w - WELD_STEP)) {
+      if (!fitsHall(w, maxD)) continue;
+      let lo = q(hallMin.d), hi = q(maxD);
+      if (fitsHall(w, lo)) hi = lo;
+      while (hi - lo > WELD_STEP + 1e-9) {
+        const mid = q((lo + hi) / 2);
+        if (mid <= lo || mid >= hi) break;
+        if (fitsHall(w, mid)) hi = mid; else lo = mid;
+      }
+      if (bandsFit(w, hi)) { hall = { w, d: hi }; break; }
+    }
+  }
+  const Db = hall.d;
+  const Rr = Ds - Db - cw;
+  const out: Space[] = [];
+  const corridors: Space[] = [];
+  const put = (sp: PlacedSpec, r: Rect) => out.push(mkSpace(sp.type as Space['type'], r, sp.placedLabel, sp.placedId, cutoutZone(sp.type)));
+  const L = (u: number, uLen: number, v: number, vLen: number) => cut.toWorld(u, uLen, v, vLen);
+  put(hallSpec, L(0, hall.w, Da, Db));
+  corridors.push(mkSpace('corridor', L(0, W, Da + Db, cw), corrSpec.placedLabel, corrSpec.placedId, 'circulation'));
+  if (level === 0) {
+    const ent = one('entrance'), foy = one('foyer'), kit = one('kitchen'), liv = one('living'), din = one('dining');
+    const gwc = one('guest-wc'), sto = one('storage');
+    if (!ent || !foy || !kit || !liv || !din || gwc === undefined || sto === undefined) return null;
+    // street annex (u in [run, W], v in [0, Da])
+    const an = annexOf(specs);
+    if (!an) return null;
+    const { Wa, gw, r1, Dk, fw, kw } = an;
+    if (gwc) put(gwc, L(run, gw, 0, r1));
+    put(ent, L(run + gw, Wa - gw, 0, r1));
+    put(kit, L(run, kw, r1, Dk));
+    put(foy, L(run + kw, fw, r1, Dk));
+    // rear band: [stair hall | dining | living]; living spans the foyer's back edge
+    if (!fitsDepth(din, Db) || !fitsDepth(liv, Db)) return null;
+    const dw = need(din, Db);
+    const lw = W - hall.w - dw;
+    if (lw + 1e-9 < Math.max(need(liv, Db), fw)) return null;
+    put(din, L(hall.w, dw, Da, Db));
+    put(liv, L(hall.w + dw, lw, Da, Db));
+    if (sto) {
+      if (!(Rr > EPS) || !fitsDepth(sto, Rr)) return null;
+      const sw = need(sto, Rr);
+      if (sw > W + 1e-9) return null;
+      put(sto, L(0, sw, Da + Db + cw, Rr));
+    }
+  } else {
+    const beds = of('bedroom');
+    const rear = [...of('master-bedroom'), ...of('master-bathroom'), ...of('bathroom')];
+    if (beds.length > 0) {
+      const bw = (W - hall.w) / beds.length;
+      for (const b of beds) if (!fitsDepth(b, Db) || bw + 1e-9 < need(b, Db)) return null;
+      beds.forEach((b, i) => put(b, L(hall.w + i * bw, bw, Da, Db)));
+    }
+    if (rear.length > 0) {
+      if (!(Rr > EPS) || rear.some(sp => !fitsDepth(sp, Rr))) return null;
+      const widths = rear.map(sp => need(sp, Rr));
+      const spare = W - widths.reduce((a, x) => a + x, 0);
+      if (spare < -1e-9) return null;
+      widths[0] += spare; // the first rear cell (master bedroom when present) takes the rest
+      let u = 0;
+      rear.forEach((sp, i) => { put(sp, L(u, widths[i], Da + Db + cw, Rr)); u += widths[i]; });
+    }
+  }
+  return {
+    spaces: out, corridors,
+    explanation: [`${PARKING_CUTOUT_APPLIED} on level ${level}: L ${W.toFixed(2)}m wide (annex ${(W - run).toFixed(2)}x${Da.toFixed(2)}m, slab ${W.toFixed(2)}x${Ds.toFixed(2)}m); stair hall ${hall.w.toFixed(2)}x${Db.toFixed(2)}m, corridor ${cw.toFixed(2)}m.`],
+  };
+}
+
+function cutoutZone(type: string): string {
+  switch (type) {
+    case 'entrance': case 'foyer': case 'living': case 'guest-wc': return 'public';
+    case 'dining': return 'semi-private';
+    case 'kitchen': case 'storage': return 'service';
+    case 'corridor': case 'stair-hall': return 'circulation';
+    default: return 'private';
+  }
+}
+
+/**
+ * Adoption guard of the parking-cutout fallback: only for a base candidate that is invalid
+ * and failed to place its requested parking; the variant is adopted ONLY when every floor
+ * was laid out by the fallback, the full validator passes (valid, zero HARD findings), the
+ * requested stalls are all placed and no space on the parking level touches a stall or the
+ * aisle, and every floor that needs a stair carries one.
+ */
+export function adoptParkingCutoutVariant(base: LayoutCandidate, variant: LayoutCandidate, requestedStalls: number): LayoutCandidate {
+  if (base.valid) return base;
+  if (!base.findings.some(f => f.severity === 'hard' && f.code === 'PARKING_PROGRAM_UNPLACED')) return base;
+  if (!variant.valid || variant.findings.some(f => f.severity === 'hard')) return base;
+  const applied = new Set(variant.explanations.filter(e => e.startsWith(PARKING_CUTOUT_APPLIED)).map(e => e.split(':')[0]));
+  if (applied.size !== variant.floors.length) return base;
+  const f0 = variant.floors[0];
+  if (!f0 || f0.parkingStalls.length !== requestedStalls) return base;
+  const cuts = [...f0.parkingStalls.map(s => s.rect), ...(f0.parkingArea?.aisleRect ? [f0.parkingArea.aisleRect] : [])];
+  const ov = (p: Rect, q: Rect) =>
+    Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x) > 0.02 && Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y) > 0.02;
+  if (f0.spaces.some(s => cuts.some(c => ov(s.rect, c)))) return base;
+  if (variant.floors.length > 1 && variant.floors.some(f => f.stairs.length === 0)) return base;
+  return variant;
 }
 
 /** Programme adjacency key from the frozen quality metric (read-only): [doorRequired weight, total weight] satisfied. */
@@ -1924,6 +2253,7 @@ function buildFloorSiteAware(
   notchShaftCorridorOverlap = false,
   lShapeUpperCoreCirculation = false,
   lShapeRoomQualitySelection = false,
+  parkingCutout = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -1934,7 +2264,10 @@ function buildFloorSiteAware(
   // reserved. floor.footprint keeps the original envelope (reconciliation
   // semantics unchanged).
   let sliceRect: Rect = buildableGeom.buildableRect;
-  const buildableBoundary = buildableGeom.buildableBoundary;
+  // Parking-cutout fallback (guarded, see adoptParkingCutoutVariant): the floor-local
+  // boundary / rects become the REAL remaining L so every later containment check keeps
+  // rooms out of the parking corner.
+  let buildableBoundary = buildableGeom.buildableBoundary;
   const siteBoundary = buildableGeom.siteBoundary;
   let buildableRects = buildableGeom.buildableRects;
 
@@ -2013,7 +2346,24 @@ function buildFloorSiteAware(
   // headroom rule). Otherwise the reservation is refused: the floor keeps its
   // sane diagnostic geometry and parking surfaces honestly as
   // PARKING_PROGRAM_UNPLACED instead of crushing rooms into slivers.
-  if ((input.building.parkingSpaces ?? 0) > 0) {
+  let cutoutPlan: { spaces: Space[]; corridors: Space[]; explanation: string[] } | null = null;
+  if (parkingCutout && (input.building.parkingSpaces ?? 0) > 0 && input.site.shape === 'rectangle' && buildableRects.length === 1) {
+    const cut = parkingCutoutGeometry(siteRect, buildableRects[0], access, input.building.parkingSpaces ?? 0);
+    const floorCount = Math.max(1, input.building.floors);
+    const allocs = allocateBuildingProgram(input.building, floorCount);
+    const allFloorSpecs = allocs.map((al, l) => programForFloor(input.building, l, isOnlyFloor, al));
+    cutoutPlan = cut ? placeParkingCutoutFloor(cut, placedSpecs, level, allFloorSpecs, mkSpace) : null;
+    if (cut && cutoutPlan) {
+      buildableRects = cut.rects;
+      buildableBoundary = cut.polygon;
+      const rx0 = Math.min(...cut.rects.map(r => r.x));
+      const ry0 = Math.min(...cut.rects.map(r => r.y));
+      const rx1 = Math.max(...cut.rects.map(r => r.x + r.w));
+      const ry1 = Math.max(...cut.rects.map(r => r.y + r.h));
+      sliceRect = { x: rx0, y: ry0, w: rx1 - rx0, h: ry1 - ry0 };
+    }
+  }
+  if (!cutoutPlan && (input.building.parkingSpaces ?? 0) > 0) {
     const reserve = reserveParkingBand(
       siteRect, buildableGeom.buildableRects, input.site.accessSide,
       (input.site.parkingLayout ?? 'auto') as any,
@@ -2059,6 +2409,10 @@ function buildFloorSiteAware(
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation.map(e => `[DECOMPOSITION-FAILURE-FALLBACK bounding] ${e}`);
+  } else if (cutoutPlan) {
+    placedRooms = cutoutPlan.spaces;
+    corridors = cutoutPlan.corridors;
+    placeExpl = cutoutPlan.explanation;
   } else if (buildableRects.length === 1 || input.site.shape === 'rectangle') {
     const placerOpts = {
       ...(preferDiningKitchenAdjacency ? { preferDiningKitchenAdjacency: true } : {}),

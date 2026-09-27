@@ -7,10 +7,11 @@
  * production `generate()` path now enables the existing, validator-guarded Phase 5.6A
  * split by default, so the trailing private clusters use that empty band instead.
  *
- * The 12×18 / 2-floor / 3-bedroom / 2-parking / south-access input still ends INFEASIBLE
- * because of its (separately diagnosed, out-of-scope) parking defect; this suite pins
- * only the upper-floor behaviour. Explicit `upperFloorFrontPrivate: false` restores
- * the legacy output.
+ * With 2 parking the 12×18 / 2-floor / 3-bedroom / south-access input is now solved by the
+ * guarded parking-cutout fallback (no normal candidate is valid, the parking corner is cut
+ * out of the buildable rect): VALID, zero HARD, every programme space and both stalls
+ * placed — with or without the 5.6A option. The 5.6A split itself stays pinned by the
+ * parking-free suite below.
  */
 import { describe, it, expect } from 'vitest';
 import { createProject, generate, validateCandidate } from './pipeline.js';
@@ -18,6 +19,7 @@ import { getTypicalArea } from './programming/program.js';
 import { hasOverlappingRooms } from './layout/placer.js';
 import type { ProjectInput } from './model/project.js';
 import type { LayoutCandidate } from './model/layout.js';
+import { PARKING_CUTOUT_APPLIED } from './generator/generator.js';
 
 const input = (parkingSpaces: number): ProjectInput => ({
   name: '12x18 upper-floor regression',
@@ -79,7 +81,7 @@ describe('12×18 2F 3-bed 2-parking: upper-floor private rooms use the empty fro
       for (const sp of upperPrivate(c)) counts[sp.type] = (counts[sp.type] ?? 0) + 1;
       expect(counts).toEqual(UPPER_PROGRAM);
       expect(unplacedUpper(c)).toEqual([]);
-      expect(c.explanations.some(e => e.startsWith('Phase 5.6A: upper-floor front private split adopted'))).toBe(true);
+      expect(c.explanations.some(e => e.startsWith(PARKING_CUTOUT_APPLIED))).toBe(true);
     });
 
     it(`${s}: programme minimum area and width are kept`, () => {
@@ -116,15 +118,21 @@ describe('12×18 2F 3-bed 2-parking: upper-floor private rooms use the empty fro
     });
   }
 
-  it('functional-circulation: the only residual HARD findings are the out-of-scope parking / ground-floor ones', () => {
-    const c = byStrategy(r, 'functional-circulation')!;
-    const hard = validateCandidate(c).findings.filter(f => f.severity === 'hard');
-    // HARD_RULE_VIOLATION is the Phase 15 M2 gate's summary of the two findings below.
-    expect(hard.map(f => f.code).sort()).toEqual(['ARCH_PROGRAM_UNPLACED', 'HARD_RULE_VIOLATION', 'PARKING_PROGRAM_UNPLACED']);
-    expect(hard.find(f => f.code === 'ARCH_PROGRAM_UNPLACED')!.message).toMatch(/^Floor 0:/);
-    // Parking is not fixed here: the input is still reported honestly as INFEASIBLE.
-    expect(r.bestCandidate).toBeNull();
-    expect(r.infeasible).not.toBeNull();
+  it('the input is feasible: valid best candidate, zero HARD, parking and every programme space placed', () => {
+    expect(r.bestCandidate).not.toBeNull();
+    expect(r.infeasible ?? null).toBeNull();
+    const c = r.bestCandidate!;
+    expect(c.valid).toBe(true);
+    const findings = validateCandidate(c).findings;
+    expect(findings.filter(f => f.severity === 'hard')).toEqual([]);
+    expect(findings.some(f => f.code === 'PARKING_PROGRAM_UNPLACED')).toBe(false);
+    expect(findings.some(f => f.code === 'ARCH_PROGRAM_UNPLACED')).toBe(false);
+    expect(c.floors[0].parkingStalls).toHaveLength(2);
+    for (const req of c.programRequirements ?? []) {
+      const got: Record<string, number> = {};
+      for (const sp of c.floors[req.level].spaces) got[sp.type] = (got[sp.type] ?? 0) + 1;
+      for (const [t, n] of Object.entries(req.byType)) expect(got[t] ?? 0, `floor ${req.level} ${t}`).toBeGreaterThanOrEqual(n as number);
+    }
   });
 
   it('deterministic: repeated generation is identical', () => {
@@ -134,12 +142,14 @@ describe('12×18 2F 3-bed 2-parking: upper-floor private rooms use the empty fro
     a.forEach((c, i) => expect(content(b[i])).toBe(content(c)));
   });
 
-  it('explicit upperFloorFrontPrivate: false restores the legacy output (upper rooms dropped)', () => {
+  it('explicit upperFloorFrontPrivate: false — no 5.6A split, the same guarded cutout fallback places the upper rooms', () => {
     const legacy = run(2, { upperFloorFrontPrivate: false });
     for (const s of SPLIT_STRATEGIES) {
       const c = byStrategy(legacy, s)!;
-      expect(upperPrivate(c)).toEqual([]);
-      expect(unplacedUpper(c).length).toBeGreaterThan(0);
+      expect(c.explanations.some(e => e.startsWith('Phase 5.6A: upper-floor front private split adopted'))).toBe(false);
+      expect(c.explanations.some(e => e.startsWith(PARKING_CUTOUT_APPLIED))).toBe(true);
+      expect(unplacedUpper(c)).toEqual([]);
+      expect(c.valid).toBe(true);
     }
   });
 });
