@@ -220,6 +220,71 @@ ProjectInput (same as Phase10.1)
 - **Remaining 94 unmet:** 80 have no shared wall (placement — out of scope for 3b: corridor→stair-hall 24, foyer→guest-wc 24, master-bedroom→master-bathroom 8, bedroom→corridor 6, master-bedroom→corridor 6, foyer→living 6, dining→kitchen 6); 6 foyer→living shared wall < 1.5 m; 6 master-bedroom→master-bathroom blocked by the through-room guard (master bedroom not yet connected); 2 dining→kitchen rolled back for swing clash.
 - **Tests:** `generator/programme-doors.test.ts` (21).
 
+## Phase 5 bounded geometry-fix cycle — quality status (closed)
+
+Status record at commit `86b5121`. This cycle is **closed**: the bounded investigation found no further production geometry change that is justified, so none is proposed.
+
+- **Benchmark:** 128 candidates (4 sites `rect` / `rectE` / `rect14` / `lshape` × 4 programmes `b1` / `b2` / `b3lift` / `b4` × seeds 42, 7 × 4 strategies), generated with all current Phase 5 opt-in options plus `stairConnectorHardReduction: true`. Result: **110 valid / 70 HARD findings**. With `stairConnectorHardReduction` off, the result is 110 valid / 74 HARD.
+- **Determinism:** two consecutive full benchmark runs produce byte-identical candidate JSON (with `generatedAt` zeroed).
+- **All Phase 5 geometry options stay opt-in:** default `false`, checked with `=== true`. With the options omitted or `false`, output is byte-identical to the legacy output.
+
+### Fixed (committed, guarded, opt-in)
+
+These are the guarded geometry fixes up to `fbce409`, then `380d8a3` and `86b5121`, each covered by focused tests:
+
+- programme adjacency (rectangular and L-shape);
+- daylight-aware entry gallery;
+- stair-core connector;
+- daylight public-room stacking;
+- thin stair-gap bridge;
+- isolated-room access connectors;
+- dining façade arrangement;
+- shallow stair-pocket rotation;
+- main-room minimum dimension;
+- dining entry column;
+- upper-floor private programme split;
+- elevator landing-gap bridge;
+- L-shape wing corridor link;
+- L-shape entry-foyer alignment;
+- stacked-pair minimum area;
+- shaft/corridor notch;
+- L-shape upper-core circulation;
+- L-shape room-quality selection;
+- the `stairConnectorHardReduction` adoption path (Task 135; 74 → 70 HARD).
+
+### Remaining HARD findings — investigated, intentionally unresolved
+
+Every one of the 70 remaining HARD findings belongs to one of six root-cause groups, and each group was investigated in Tasks 130–141. Seeds 42 and 7 produce identical findings within each group. No uninvestigated HARD subgroup remains (Task 142 audit).
+
+| # | Candidates | HARD findings | Count | Root cause | Investigation |
+|---|---|---|---|---|---|
+| 1 | `lshape/b3lift`: daylight-orientation, alternative-zoning, area-efficiency (6) | `ELEV_SHAFT_MISSING` ×3 each | 18 | The elevator shaft cannot be kept on every floor of the L-shape plan without coordinated multi-floor core planning | Task 131 |
+| 2 | `lshape/{b2,b3lift,b4}` area-efficiency (6) | `MBH4-DYL-001` on dining and kitchen | 12 | The L0 day-wing dining and kitchen are enclosed by the entry band, corridor and living; no genuine façade edge is available | Task 130 |
+| 3 | `lshape/b4` alternative-zoning (2) | `CIRC_INACCESSIBLE_SPACE` ×8, `CONSTRAINT_MUST_ADJACENT` ×1, `MBH4-DYL-001` ×1 (L0 kitchen) | 20 | L1: the stair is re-pinned without a door and three corridors stay disjoint. L0: the kitchen column sits in a pocket whose façade edges are taken by the entry band, the rear corridor and the spur corridor | Tasks 129, 137, 140 |
+| 4 | `rectE/b4` daylight-orientation (2) | `CONSTRAINT_DIRECT_ACCESS` ×3, `CIRC_ROOM_THROUGH_ROOM` ×2, `MBH4-DYL-001` ×1 (L1 bedroom) | 12 | Phase13 private-band fallback: the paired bedroom sits in the middle row, between the façade-end bathroom and the stair hall, and is reached through the stair hall | Tasks 132, 134, 141 |
+| 5 | `rect14/b3lift` alternative-zoning (2) | `ROOM_CONSTRAINT_MIN_AREA` ×2, `MBH4-ROOM-001` ×1 | 6 | On the narrow 14 m site, the L1 master bedroom is 2.90 × 3.40 m (9.86 m²), below its 12 m² minArea, so no habitable room on L1 reaches 12 m² / 2.7 m | Tasks 129–133 |
+| 6 | `lshape/b4` functional-circulation (2) | `MBH4-DYL-001` ×1 (L0 kitchen) | 2 | The P16-C depth cap and corridor-side anchoring leave the service-band slack void at the street façade | Task 139 |
+| | **18 invalid candidates** | | **70** | | |
+
+Rejected prototypes (not adopted) include:
+
+- façade-anchoring the capped kitchen, which only counted as exterior through a void wall;
+- swapping the order of the stacked bedroom/bathroom pair, which raised HARD from 6 to 7 and added through-room chains;
+- a stricter adoption guard for the 5.6G variant, which did remove HARD findings but added soft findings.
+
+### Known architectural limitations (future larger planning redesign)
+
+Groups 1, 3 and 4 need coordinated multi-floor core and corridor planning, or a redesign of the Phase13 private-band fallback. Groups 2, 3 (L0), 4 and 6 need façade-aware tiling of enclosed pockets. These are outside a bounded, generic fix. They would require moving unrelated rooms and changing the frozen stair and corridor algorithms.
+
+### What is not done
+
+- Remaining blockers are **not** suppressed, downgraded or filtered.
+- Validation rules, severities, thresholds and tolerances are unchanged.
+- No existing guard was relaxed.
+- No void wall or interior wall is counted as a daylight/exterior edge by any fix.
+- No compliance claim is made for the invalid candidates.
+- **DXF:** the frozen DXF R12 ASCII profile (header `$ACADVER = AC1009` only, existing layer/entity architecture) is unchanged. No DXF writer, header or layer change was made in this cycle. Real AutoCAD compatibility is not claimed without testing in AutoCAD.
+
 ## Persistence
 
 - Projects serializable JSON, plain data, schema version 6 (Phase11), preserve saved projects, locked state persisted, polygon canonical
