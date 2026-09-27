@@ -110,6 +110,9 @@ export interface DimensionLayoutOptions {
   minEdgePx: number;
 }
 
+/** Fractions along the dimension line where a label may sit, in preference order. */
+export const LABEL_POSITIONS: readonly number[] = [0.5, 0.25, 0.75];
+
 export const DEFAULT_DIM_LAYOUT: DimensionLayoutOptions = { offsetPx: 14, fontPx: 11, minEdgePx: 24 };
 
 export interface DimensionCallout {
@@ -129,8 +132,13 @@ export interface DimensionCallout {
   textH: number;
 }
 
+/** Axis-aligned screen box (px). */
+export interface ScreenBox { x0: number; y0: number; x1: number; y1: number }
+
+const boxesIntersect = (a: ScreenBox, b: ScreenBox) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+
 /** Axis-aligned box of a rotated label. */
-function labelBox(c: DimensionCallout) {
+export function labelBox(c: DimensionCallout): ScreenBox {
   const cos = Math.abs(Math.cos(c.angle)), sin = Math.abs(Math.sin(c.angle));
   const hw = (c.textW * cos + c.textH * sin) / 2;
   const hh = (c.textW * sin + c.textH * cos) / 2;
@@ -142,7 +150,9 @@ function labelBox(c: DimensionCallout) {
  * - offset and font size are constant in pixels (zoom-independent readability);
  * - edges too short on screen for their label are skipped;
  * - overlap culling is greedy: longest edge first, ties by edge index; a label
- *   whose box intersects an already accepted label is skipped.
+ *   is slid along its dimension line (centre, ¼, ¾) to avoid already accepted
+ *   labels and `obstacles` (e.g. the room name / area labels already drawn on
+ *   the canvas); if no position is free, that callout is skipped.
  * The result is returned in edge-index order.
  */
 export function layoutDimensionCallouts(
@@ -150,6 +160,7 @@ export function layoutDimensionCallouts(
   tx: (x: number) => number,
   ty: (y: number) => number,
   opts: DimensionLayoutOptions = DEFAULT_DIM_LAYOUT,
+  obstacles: readonly ScreenBox[] = [],
 ): DimensionCallout[] {
   const candidates: DimensionCallout[] = [];
   for (const e of edges) {
@@ -182,12 +193,17 @@ export function layoutDimensionCallouts(
   const order = [...candidates].sort((p, q) => (q.length - p.length) || (p.index - q.index));
   const accepted: DimensionCallout[] = [];
   for (const c of order) {
-    const bb = labelBox(c);
-    const hit = accepted.some(a => {
-      const ab = labelBox(a);
-      return bb.x0 < ab.x1 && bb.x1 > ab.x0 && bb.y0 < ab.y1 && bb.y1 > ab.y0;
-    });
-    if (!hit) accepted.push(c);
+    // Label positions along the dimension line, tried in fixed order: centre, then ¼ and ¾
+    // (only where the label still lies within the line). First collision-free one wins.
+    const [x1, y1, x2, y2] = c.line;
+    const lineLen = Math.hypot(x2 - x1, y2 - y1);
+    for (const tPos of LABEL_POSITIONS) {
+      if (Math.min(tPos, 1 - tPos) * lineLen < c.textW / 2 + 2) continue;
+      const placed = { ...c, textX: x1 + (x2 - x1) * tPos, textY: y1 + (y2 - y1) * tPos };
+      const bb = labelBox(placed);
+      const hit = obstacles.some(o => boxesIntersect(bb, o)) || accepted.some(a => boxesIntersect(bb, labelBox(a)));
+      if (!hit) { accepted.push(placed); break; }
+    }
   }
   return accepted.sort((p, q) => p.index - q.index);
 }
@@ -205,11 +221,49 @@ export function selectedRoomCallouts(
   tx: (x: number) => number,
   ty: (y: number) => number,
   opts: DimensionLayoutOptions = DEFAULT_DIM_LAYOUT,
+  obstacles: readonly ScreenBox[] = [],
 ): DimensionCallout[] {
   if (!selectedSpaceId) return [];
   const sp = floor.spaces.find(s => s.id === selectedSpaceId);
   if (!sp) return [];
-  return layoutDimensionCallouts(roomEdgeDimensions(sp.polygon), tx, ty, opts);
+  return layoutDimensionCallouts(roomEdgeDimensions(sp.polygon), tx, ty, opts, obstacles);
+}
+
+/** The subset of CanvasRenderingContext2D the callout painter uses. */
+export type DimCtx = Pick<CanvasRenderingContext2D,
+  'save' | 'restore' | 'beginPath' | 'moveTo' | 'lineTo' | 'stroke' | 'translate' | 'rotate' | 'fillRect' | 'fillText'
+  | 'strokeStyle' | 'fillStyle' | 'lineWidth' | 'font' | 'textAlign' | 'textBaseline' | 'direction'>;
+
+/**
+ * Paint callouts. Labels are technical values drawn in an explicit LTR run:
+ * the page (and therefore the canvas) is RTL, which would otherwise reorder
+ * "2.40 m" into "m 2.40".
+ */
+export function drawDimensionCallouts(ctx: DimCtx, dims: readonly DimensionCallout[], font: string): void {
+  if (dims.length === 0) return;
+  ctx.save();
+  ctx.strokeStyle = '#fbbf24';
+  ctx.lineWidth = 1;
+  for (const d of dims) {
+    ctx.beginPath();
+    for (const [x1, y1, x2, y2] of [...d.ext, d.line]) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
+    ctx.stroke();
+  }
+  ctx.font = font;
+  ctx.direction = 'ltr';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const d of dims) {
+    ctx.save();
+    ctx.translate(d.textX, d.textY);
+    ctx.rotate(d.angle);
+    ctx.fillStyle = '#0b1220e6';
+    ctx.fillRect(-d.textW / 2 - 2, -d.textH / 2, d.textW + 4, d.textH);
+    ctx.fillStyle = '#fde68a';
+    ctx.fillText(d.label, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
 }
 
 /** Persian caption for the selected room's dimension overlay (existing i18n system). */

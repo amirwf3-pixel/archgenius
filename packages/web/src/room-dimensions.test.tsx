@@ -11,7 +11,7 @@ import { renderToString } from 'react-dom/server';
 import { generateLayouts } from '@archgenius/core';
 import {
   roomEdgeDimensions, layoutDimensionCallouts, selectedRoomCallouts, dimensionCaption,
-  formatDimension, DEFAULT_DIM_LAYOUT, type Pt, type DimensionCallout,
+  formatDimension, drawDimensionCallouts, labelBox, DEFAULT_DIM_LAYOUT, type Pt, type DimensionCallout, type DimCtx,
 } from './room-dimensions';
 import { PlanCanvas, computeBounds, makeTransform } from './PlanCanvas';
 import { t, isPersianText } from './i18n';
@@ -232,5 +232,68 @@ describe('Persian / i18n', () => {
 
   it('dimension values stay technical (Western digits, LTR) like the rest of the canvas', () => {
     for (const e of roomEdgeDimensions(L)) expect(e.label).toMatch(/^\d+\.\d{2} m$/);
+  });
+});
+
+describe('Task 146 browser findings', () => {
+  it('draws dimension text in an explicit LTR run (RTL page must not render "m 2.40")', () => {
+    const log: Array<{ text: string; direction: string }> = [];
+    const ctx: any = {
+      direction: 'inherit', font: '', textAlign: 'start', textBaseline: 'alphabetic', fillStyle: '', strokeStyle: '', lineWidth: 1,
+      save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, translate() {}, rotate() {}, fillRect() {},
+      fillText(text: string) { log.push({ text, direction: this.direction }); },
+    };
+    const dims = layoutDimensionCallouts(roomEdgeDimensions(rect(0, 0, 2.4, 5.6)), screen(40).tx, screen(40).ty);
+    drawDimensionCallouts(ctx as DimCtx, dims, '11px sans-serif');
+    expect(log.map(l => l.text)).toEqual(['2.40 m', '5.60 m', '2.40 m', '5.60 m']);
+    for (const l of log) expect(l.direction).toBe('ltr');
+    drawDimensionCallouts(ctx as DimCtx, [], '11px sans-serif');
+    expect(log).toHaveLength(4);
+  });
+
+  it('skips a callout whose label would cover a room label; zooming in brings it back', () => {
+    // Selected 2.4×5.6 room with a small neighbour below it whose label sits just under the edge.
+    const edges = roomEdgeDimensions(rect(0, 1.4, 2.4, 5.6));
+    const at = (s: number) => {
+      const { tx, ty } = screen(s);
+      const fs = 9; // neighbour (0,0,2.4,1.4) label centred at (1.2, 0.7)
+      const obstacle = { x0: tx(1.2) - 20, y0: ty(0.7) - fs * 0.8, x1: tx(1.2) + 20, y1: ty(0.7) + fs * 1.3 };
+      return { cs: layoutDimensionCallouts(edges, tx, ty, DEFAULT_DIM_LAYOUT, [obstacle]), obstacle };
+    };
+    const far = at(25);
+    expect(far.cs.map(c => c.index)).not.toContain(0); // bottom edge culled
+    expect(far.cs.map(c => c.index)).toContain(2);     // the equal opposite edge is still dimensioned
+    for (const c of far.cs) {
+      const bb = labelBox(c), o = far.obstacle;
+      expect(bb.x0 < o.x1 && bb.x1 > o.x0 && bb.y0 < o.y1 && bb.y1 > o.y0).toBe(false);
+    }
+    expect(at(80).cs.map(c => c.index)).toContain(0);
+    expect(JSON.stringify(at(25).cs)).toBe(JSON.stringify(far.cs));
+  });
+
+  it('slides a label along its dimension line instead of dropping it when the centre is blocked', () => {
+    const { tx, ty } = screen(40);
+    const edges = roomEdgeDimensions(rect(0, 0, 6, 9));
+    const free = layoutDimensionCallouts(edges, tx, ty);
+    const right = free.find(c => c.index === 1)!; // east edge, 9 m
+    // Obstacle exactly over the centred east label.
+    const o = { x0: right.textX - 15, y0: right.textY - 15, x1: right.textX + 15, y1: right.textY + 15 };
+    const cs = layoutDimensionCallouts(edges, tx, ty, DEFAULT_DIM_LAYOUT, [o]);
+    const moved = cs.find(c => c.index === 1)!;
+    expect(moved).toBeDefined();
+    expect(moved.label).toBe('9.00 m');
+    const [x1, y1, x2, y2] = moved.line;
+    expect(moved.textX).toBeCloseTo(x1 + (x2 - x1) * 0.25, 9);
+    expect(moved.textY).toBeCloseTo(y1 + (y2 - y1) * 0.25, 9);
+    const bb = labelBox(moved);
+    expect(bb.x0 < o.x1 && bb.x1 > o.x0 && bb.y0 < o.y1 && bb.y1 > o.y0).toBe(false);
+    // unblocked labels keep their centred position
+    expect(cs.find(c => c.index === 0)).toEqual(free.find(c => c.index === 0));
+  });
+
+  it('obstacles default to none (previous behaviour unchanged)', () => {
+    const { tx, ty } = screen(40);
+    const e = roomEdgeDimensions(L);
+    expect(layoutDimensionCallouts(e, tx, ty)).toEqual(layoutDimensionCallouts(e, tx, ty, DEFAULT_DIM_LAYOUT, []));
   });
 });

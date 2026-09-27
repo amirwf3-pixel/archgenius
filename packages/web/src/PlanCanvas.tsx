@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { LayoutCandidate, Floor } from '@archgenius/core';
 import { t, tf, faNum, spaceLabel, PERSIAN_FONT_STACK } from './i18n';
-import { selectedRoomCallouts, dimensionCaption, roomEdgeDimensions, DEFAULT_DIM_LAYOUT } from './room-dimensions';
+import { selectedRoomCallouts, dimensionCaption, roomEdgeDimensions, drawDimensionCallouts, DEFAULT_DIM_LAYOUT, type ScreenBox } from './room-dimensions';
 import { IconPlus, IconMinus, IconFit } from './components';
 import type { View } from './canvas-view';
 import {
@@ -464,6 +464,7 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
 
     ctx.fillStyle = '#e2e8f0';
     ctx.textAlign = 'center';
+    const labelBoxes: ScreenBox[] = [];
     for (const s of floor.spaces) {
       const fs = Math.max(9, Math.min(13, Math.min(s.rect.w, s.rect.h) * effScale * 0.18));
       ctx.font = fontStr(fs);
@@ -476,34 +477,22 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
       ctx.fillStyle = isSel ? '#fde68a' : '#94a3b8';
       ctx.fillText(`${s.area.toFixed(1)} m² ${s.polygon.length}v`, tx(cx), ty(cy) + fs * 1.1);
       ctx.fillStyle = '#e2e8f0';
+      if (selectedSpaceId) {
+        // Screen boxes of this room's name + area labels, so dimension callouts avoid covering them.
+        const areaW = ctx.measureText(`${s.area.toFixed(1)} m² ${s.polygon.length}v`).width;
+        ctx.font = fontStr(fs);
+        const halfW = Math.max(ctx.measureText(spaceLabel(s.label)).width, areaW) / 2;
+        labelBoxes.push({ x0: tx(cx) - halfW, y0: ty(cy) - fs * 0.8, x1: tx(cx) + halfW, y1: ty(cy) + fs * 1.3 });
+      }
     }
 
     // Per-room dimension callouts — only for the selected space on this floor.
     // Lengths come from the canonical Space.polygon; pixel offset and font are
     // constant so the callouts stay readable at every zoom.
-    const dims = selectedRoomCallouts(floor, selectedSpaceId, tx, ty);
+    const dims = selectedRoomCallouts(floor, selectedSpaceId, tx, ty, DEFAULT_DIM_LAYOUT, labelBoxes);
     if (dims.length > 0) {
+      drawDimensionCallouts(ctx, dims, fontStr(DEFAULT_DIM_LAYOUT.fontPx));
       ctx.save();
-      ctx.strokeStyle = '#fbbf24';
-      ctx.lineWidth = 1;
-      for (const d of dims) {
-        ctx.beginPath();
-        for (const [x1, y1, x2, y2] of [...d.ext, d.line]) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
-        ctx.stroke();
-      }
-      ctx.font = fontStr(DEFAULT_DIM_LAYOUT.fontPx);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      for (const d of dims) {
-        ctx.save();
-        ctx.translate(d.textX, d.textY);
-        ctx.rotate(d.angle);
-        ctx.fillStyle = '#0b1220e6';
-        ctx.fillRect(-d.textW / 2 - 2, -d.textH / 2, d.textW + 4, d.textH);
-        ctx.fillStyle = '#fde68a';
-        ctx.fillText(d.label, 0, 0);
-        ctx.restore();
-      }
       const sel = floor.spaces.find(s => s.id === selectedSpaceId);
       if (sel) {
         ctx.font = fontStr(11);
