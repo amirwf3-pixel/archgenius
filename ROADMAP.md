@@ -54,18 +54,20 @@
 - [x] QA report (structured findings: qa + regulations)
 - [x] Consistency manifest (checksum, cross-output consistency)
 - [x] Project management dashboard (list, save/load/import/export) — **complete** (core storage module exposed publicly; localStorage-backed list/save/load/import/export)
-- [x] Plan inspection UI (spaces panel: type/area/vertices, click-to-select; findings panel with severity codes) — per-room dimension callouts not built
+- [x] Plan inspection UI (spaces panel: type/area/vertices, click-to-select; findings panel with severity codes) — per-room dimension callouts **built** post-v1.1.0 (selected-room edge lengths from `Space.polygon`, LTR labels; `8c984e7`, `95bed73`, `bb34df0`)
 - [x] Better canvas preview (panning, zoom, hatch) — **built** (cursor-anchored wheel/button zoom with limits, eased pan with capped inertia, fit-to-view, room-clipped architectural hatch toggle)
 - [x] North symbol, grid lines, axis labels, and title block in DXF — emitted on layers `A-NORTH` (north arrow with "N" label), `A-GRID`, `A-AXIS` (labels A/B/C/1/2), `A-TITLE` (title block), plus dimension entities on `A-DIMS`
 
 ## Phase 6 — Advanced cases & polish (partially complete)
 - [x] Irregular sites — L-shape and orthogonal polygon (3–8 vertices, deterministic scanline decomposition, no silent bbox fallback)
 - [x] Apartment typology — **first vertical slice only** (single full unit per floor; no shared cores / multi-unit layouts)
-- [x] Storage rooms (programmed space) — balcony/yard specs exist in programming but are not exposed in the UI
+- [x] Storage rooms (programmed space)
+- [x] Balcony and yard — **built and exposed in the UI** post-v1.1.0 (default OFF): bounded core geometry with HARD access/geometry validation (`BALCONY_OVERSIZED` / `BALCONY_NO_ACCESS`, `YARD_INVALID` / `YARD_NO_ACCESS`); a request that cannot be satisfied yields INFEASIBLE, never invalid geometry. See [RELEASE_NOTES.md](RELEASE_NOTES.md) → Unreleased.
+- [ ] Family room / guest room — core program flags exist (`hasFamilyRoom`, `hasGuestRoom`) but are **not exposed in the UI**: family-room geometry can currently be oversized, and common guest-room cases are infeasible
 - [x] Furniture placement (sanitary fixtures, kitchen counters, furniture validation)
 - [x] Elevator shaft geometry — **complete** (deterministic shaft cell reserved beside the stair core, exactly stacked on every floor with ELEV_* validation; dimensions are design assumptions — MBH15-LIFT-002 remains NOT_IMPLEMENTED)
 - [x] Multi-section details — **complete** (6c4ce1b)
-- [x] Comprehensive regression suite (core 959 tests, web 153 tests, incl. determinism, adversarial matrices, CAD structural validation) — committed golden DXF fixtures not included (outputs gitignored)
+- [x] Comprehensive regression suite (core 959 tests, web 153 tests, incl. determinism, adversarial matrices, CAD structural validation) — committed golden DXF fixtures **added** post-v1.1.0 (`packages/core/src/regression/fixtures/golden-dxf/`: `rect-1f`, `lshape-2f-stair`, `decimal-asym-2f-stair`, byte/sha256-checked by `golden-dxf.test.ts`)
 - [x] Accessibility checks — **complete** (42bb918)
 - [x] Bounded performance (bounded search enforced in code and tests; 10-floor generation well under a second in QA runs) — committed benchmark suite not included
 
@@ -88,6 +90,7 @@
 | 16 | P16-A parking band reservation + stall placement · P16-B all-side entrance orientation · P16-C proportions/quality depth · P16-D DXF presentation QA |
 | 17 | P17-A architectural audit · P17-B form-quality ranking · P17-C per-floor envelope compaction · P17-D corridor-quality ranking · P17-E east/west access · P17-F final architectural QA (0 CRITICAL / 0 HIGH / 5 MEDIUM) |
 | 18 | Final QA: exact door-swing sector geometry (swing/furniture SOFT false positives eliminated); residual/circulation findings confirmed intentional |
+| Post-v1.1.0 (Unreleased) | Tasks 145–156: per-room dimension callouts, CI workflow (not yet run on GitHub), golden DXF fixtures, bounded balcony + yard (core and UI), Persian yard/program finding text — see [RELEASE_NOTES.md](RELEASE_NOTES.md) |
 
 ## Release state (v1.1.0)
 
@@ -96,7 +99,10 @@
 - Independent release QA: `VERIFIED WITH MEDIUM FINDINGS` at V1.0 (M1/M2 still documented);
   final architectural QA at v1.1.0 (P17-F): 0 CRITICAL, 0 HIGH, 5 MEDIUM known limitations
   (see [RELEASE_NOTES.md](RELEASE_NOTES.md) and README §10).
-- Known partial capabilities: apartment (first slice), CI pipeline. Elevator shaft geometry,
+- Known partial capabilities: apartment (first slice; no multi-unit layouts), municipal regulation
+  packs (placeholders; sources not obtained), north rotation (model/UI field only — not consumed by
+  the layout or DXF engines). A CI workflow (`.github/workflows/ci.yml`) is committed but has
+  **not yet been executed on GitHub** (the commit has not been pushed). Elevator shaft geometry,
   regulation explorer UI and project dashboard are complete (MBH15-LIFT-002 elevator dimensions
   remain NOT_IMPLEMENTED). Parking is implemented since P16-A.
 

@@ -1,3 +1,74 @@
+## Unreleased — Tasks 145–156 (post-Phase 18)
+
+Local, unpushed commits on the working branch (remote head is still `86b5121`). Each item lists
+its commit; items without a commit produced no code change.
+
+### Plan inspection UI
+- **Task 145 — per-room dimension callouts** (`8c984e7`): the selected room shows edge-length
+  callouts computed only from the canonical `Space.polygon` (world metres); geometry is never
+  mutated or inferred from pixels (`packages/web/src/room-dimensions.ts`).
+- **Task 146 — callout fixes** (`95bed73`): dimension labels render in an LTR run and avoid the
+  room label.
+- **Task 147 — area labels** (`bb34df0`): canvas room area labels render in an LTR run inside the
+  Persian RTL UI.
+
+### Regression infrastructure
+- **Task 148 — CI workflow** (`d76e15b`): `.github/workflows/ci.yml` runs `npm ci`,
+  `npm run typecheck`, the core and web test suites and `npm run build` on push / pull request
+  (Node 22). **It has not yet been executed on GitHub** — the commit has not been pushed — so no
+  GitHub CI result exists.
+- **Task 149 — golden DXF fixtures** (`f76227e`): three committed fixtures (`rect-1f`,
+  `lshape-2f-stair`, `decimal-asym-2f-stair`) under
+  `packages/core/src/regression/fixtures/golden-dxf/`, compared byte-for-byte (size + sha256) by
+  `golden-dxf.test.ts`. The DXF writer and its frozen R12 ASCII profile (`$ACADVER` = `AC1009`)
+  are unchanged; output is not normalized. No AutoCAD verification is claimed.
+- **Task 150 — regression audit** and **Task 151 — UI-exposure gap report**: analysis only, no
+  code change.
+
+### Balcony (`building.hasBalcony`)
+- **Task 152 — bounded core balcony** (`84bff39`): an enabled balcony is bounded by its existing
+  program (target 4 m², min 2 m²; area cap 7.0 m² from the existing M4 formula) and gets a real
+  access door. New HARD findings `BALCONY_OVERSIZED` and `BALCONY_NO_ACCESS`.
+- **Task 153 — UI toggle** (`79ebf2a`): «بالکن» checkbox, default OFF, sent as `hasBalcony: true`
+  only when checked; saved projects round-trip the flag; Persian titles/messages for both findings.
+
+### Yard (`building.hasYard`)
+- **Task 154 — bounded core yard** (`c13764c`): an enabled yard is a real open-air ground-floor
+  space (no walls, no doors) placed behind or beside the building — never on the street side —
+  inside the buildable polygon, clear of every floor's spaces and of parking, sized from the
+  existing program (target 20 m², min 10 m², cap 35 m²) and reachable from the street over open
+  ground with a walkway at least the corridor minimum width. New HARD findings `YARD_INVALID` and
+  `YARD_NO_ACCESS`; a yard that cannot fit is reported as `ARCH_PROGRAM_UNPLACED` → INFEASIBLE.
+- **Task 155 — UI toggle** (`2f46531`): «حیاط» checkbox, default OFF, sent as `hasYard: true` only
+  when checked; saved projects round-trip the flag; Persian titles/messages for both findings.
+- **Task 156 — Persian program names** (`910b8ee`): `ARCH_PROGRAM_UNPLACED` shows the Persian space
+  name (e.g. «حیاط», «بالکن», «اتاق خواب») via the existing space-type table; unknown ids stay
+  verbatim.
+
+With both toggles OFF (the default), the engine input and the generated plans/DXF are
+byte-identical to the previous behaviour (pinned by the web tests and the golden fixtures).
+
+### Local verification at `910b8ee`
+Core 1604/1604 tests (85 files), web 209/209 (11 files), `npm run typecheck` and `npm run build`
+pass — executed locally, not on GitHub CI.
+
+### Known limitations (current)
+- **Balcony / yard can make a previously feasible input INFEASIBLE.** This is intentional: when
+  the requested space cannot be placed with valid, bounded, accessible geometry the result is an
+  honest INFEASIBLE, never a degraded plan (e.g. two-floor L-shape and some decimal/east-access
+  sites where the building fills the rear and flanks of the buildable area).
+- **Family room — core only, not exposed.** `hasFamilyRoom` exists in the core program, but its
+  current geometry can produce oversized rooms, so it is intentionally not in the UI.
+- **Guest room — core only, not exposed.** `hasGuestRoom` exists in the core program, but common
+  cases are currently infeasible, so it is intentionally not in the UI.
+- **North rotation is not functionally consumed.** `site.northRotationDeg` appears only in the
+  documentation/PDF text; the layout and DXF engines ignore it, and the UI sends 0.
+- **Multi-unit apartments remain incomplete** (first vertical slice: one unit per floor).
+- **Municipal regulation packs remain placeholders** — municipal sources have not been obtained;
+  no municipal rules or thresholds are shipped.
+
+---
+
 ## Unreleased — Phase 18 final QA (post-v1.1.0)
 
 Final QA pass on the four remaining SOFT findings from the P17-F audit. Two were
@@ -152,6 +223,8 @@ closed kitchen, seed 42 → `cand-area-efficiency-42`, 4/4 strategies valid, 0 H
    quality scores are not displayed; no project save/load dashboard; north rotation fixed at 0.
 7. **No CI pipeline.** Release gates (tests, typechecks, build) were executed locally at release
    time and are reproducible via `npm test`, `npm run typecheck`, `npm run build`.
+   *(Superseded post-release: a CI workflow is now committed but has not yet run on GitHub — see
+   Unreleased → Task 148.)*
 8. **No LICENSE yet.** The repository currently has no license file; no licensing is claimed.
 
 ## Engineering gates at release
