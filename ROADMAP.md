@@ -63,7 +63,7 @@
 - [x] Apartment typology — **first vertical slice only** (single full unit per floor; no shared cores / multi-unit layouts)
 - [x] Storage rooms (programmed space)
 - [x] Balcony and yard — **built and exposed in the UI** post-v1.1.0 (default OFF): bounded core geometry with HARD access/geometry validation (`BALCONY_OVERSIZED` / `BALCONY_NO_ACCESS`, `YARD_INVALID` / `YARD_NO_ACCESS`); a request that cannot be satisfied yields INFEASIBLE, never invalid geometry. See [RELEASE_NOTES.md](RELEASE_NOTES.md) → Unreleased.
-- [ ] Family room / guest room — core program flags exist (`hasFamilyRoom`, `hasGuestRoom`) but are **not exposed in the UI**: family-room geometry can currently be oversized, and common guest-room cases are infeasible
+- [ ] Family room / guest room — core program flags exist (`hasFamilyRoom`, `hasGuestRoom`) but are **not exposed in the UI**: family-room geometry is bounded since Tasks 160–161 (program cap 21 m², HARD `FAMILY_ROOM_OVERSIZED`) but remains unexposed, and common guest-room cases are infeasible
 - [x] Furniture placement (sanitary fixtures, kitchen counters, furniture validation)
 - [x] Elevator shaft geometry — **complete** (deterministic shaft cell reserved beside the stair core, exactly stacked on every floor with ELEV_* validation; dimensions are design assumptions — MBH15-LIFT-002 remains NOT_IMPLEMENTED)
 - [x] Multi-section details — **complete** (6c4ce1b)

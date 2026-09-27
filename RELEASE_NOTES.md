@@ -1,4 +1,4 @@
-## Unreleased — Tasks 145–156 (post-Phase 18)
+## Unreleased — Tasks 145–162 (post-Phase 18)
 
 Local, unpushed commits on the working branch (remote head is still `86b5121`). Each item lists
 its commit; items without a commit produced no code change.
@@ -48,8 +48,22 @@ its commit; items without a commit produced no code change.
 With both toggles OFF (the default), the engine input and the generated plans/DXF are
 byte-identical to the previous behaviour (pinned by the web tests and the golden fixtures).
 
-### Local verification at `910b8ee`
-Core 1604/1604 tests (85 files), web 209/209 (11 files), `npm run typecheck` and `npm run build`
+### Family room (`building.hasFamilyRoom`, core only)
+- **Task 159 — diagnosis**: analysis only, no code change. On the first upper floor the family
+  room could be the only public space in its band, and the band filler gave it the whole band
+  (measured up to ~251 m² for a 12 m² program).
+- **Tasks 160–161 — bounded family room** (`f1189b7`): the family room is now placed in a bounded
+  rectangle sized from its existing program (target 12 m², min 8 m², min width 2.6 m), with a
+  door and an exterior window. New HARD finding `FAMILY_ROOM_OVERSIZED` above the shared M4 area
+  cap (21.0 m² for this program). A family room that cannot fit is reported as
+  `ARCH_PROGRAM_UNPLACED` → INFEASIBLE. With `hasFamilyRoom` off, plans/DXF are byte-identical.
+  Some already-invalid (diagnostic) candidates now report different HARD findings, because the
+  oversized room had been bridging disconnected circulation; no previously HARD-free candidate
+  gained a HARD finding (pinned by `family-room.test.ts`). The flag is still **not exposed in
+  the UI**.
+
+### Local verification at `f1189b7`
+Core 1619/1619 tests (86 files), web 209/209 (11 files), `npm run typecheck` and `npm run build`
 pass — executed locally, not on GitHub CI.
 
 ### Known limitations (current)
@@ -57,8 +71,8 @@ pass — executed locally, not on GitHub CI.
   the requested space cannot be placed with valid, bounded, accessible geometry the result is an
   honest INFEASIBLE, never a degraded plan (e.g. two-floor L-shape and some decimal/east-access
   sites where the building fills the rear and flanks of the buildable area).
-- **Family room — core only, not exposed.** `hasFamilyRoom` exists in the core program, but its
-  current geometry can produce oversized rooms, so it is intentionally not in the UI.
+- **Family room — core only, not exposed.** `hasFamilyRoom` exists in the core program and its
+  geometry is now bounded (Tasks 160–161), but it is intentionally not in the UI.
 - **Guest room — core only, not exposed.** `hasGuestRoom` exists in the core program, but common
   cases are currently infeasible, so it is intentionally not in the UI.
 - **North rotation is not functionally consumed.** `site.northRotationDeg` appears only in the
@@ -210,6 +224,9 @@ closed kitchen, seed 42 → `cand-area-efficiency-42`, 4/4 strategies valid, 0 H
    finding.
 2. **Elevator — NOT IMPLEMENTED.** LIFT rules exist in the regulation pack; no elevator geometry
    is generated.
+   *(Superseded: elevator shaft geometry is now generated for 2+ floor buildings when
+   `hasElevator` is set, with HARD `ELEV_*` validation; shaft dimensions are design assumptions
+   and MBH15-LIFT-002 remains NOT_IMPLEMENTED.)*
 3. **Apartment — PARTIAL.** First vertical slice only: one full unit per floor; no shared cores
    or multi-unit layouts.
 4. **M1 — generator defect, quarantined.** Specific tight L-shape infeasible cases (e.g. 10×10,
@@ -221,6 +238,8 @@ closed kitchen, seed 42 → `cand-area-efficiency-42`, 4/4 strategies valid, 0 H
 6. **Web UI surface.** Only DXF has a dedicated download button; PDF / XLSX / report / manifest
    are core-API only. Editing UI exposes move + select (resize/lock/setLShape are core-API);
    quality scores are not displayed; no project save/load dashboard; north rotation fixed at 0.
+   *(Superseded: the web UI now has a project management panel (`ProjectManager`) with
+   localStorage-backed list/save/load/delete and JSON import/export.)*
 7. **No CI pipeline.** Release gates (tests, typechecks, build) were executed locally at release
    time and are reproducible via `npm test`, `npm run typecheck`, `npm run build`.
    *(Superseded post-release: a CI workflow is now committed but has not yet run on GitHub — see
