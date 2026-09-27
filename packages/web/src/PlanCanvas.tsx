@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { LayoutCandidate, Floor } from '@archgenius/core';
 import { t, tf, faNum, spaceLabel, PERSIAN_FONT_STACK } from './i18n';
+import { selectedRoomCallouts, dimensionCaption, roomEdgeDimensions, DEFAULT_DIM_LAYOUT } from './room-dimensions';
 import { IconPlus, IconMinus, IconFit } from './components';
 import type { View } from './canvas-view';
 import {
@@ -475,6 +476,43 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
       ctx.fillStyle = isSel ? '#fde68a' : '#94a3b8';
       ctx.fillText(`${s.area.toFixed(1)} m² ${s.polygon.length}v`, tx(cx), ty(cy) + fs * 1.1);
       ctx.fillStyle = '#e2e8f0';
+    }
+
+    // Per-room dimension callouts — only for the selected space on this floor.
+    // Lengths come from the canonical Space.polygon; pixel offset and font are
+    // constant so the callouts stay readable at every zoom.
+    const dims = selectedRoomCallouts(floor, selectedSpaceId, tx, ty);
+    if (dims.length > 0) {
+      ctx.save();
+      ctx.strokeStyle = '#fbbf24';
+      ctx.lineWidth = 1;
+      for (const d of dims) {
+        ctx.beginPath();
+        for (const [x1, y1, x2, y2] of [...d.ext, d.line]) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
+        ctx.stroke();
+      }
+      ctx.font = fontStr(DEFAULT_DIM_LAYOUT.fontPx);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const d of dims) {
+        ctx.save();
+        ctx.translate(d.textX, d.textY);
+        ctx.rotate(d.angle);
+        ctx.fillStyle = '#0b1220e6';
+        ctx.fillRect(-d.textW / 2 - 2, -d.textH / 2, d.textW + 4, d.textH);
+        ctx.fillStyle = '#fde68a';
+        ctx.fillText(d.label, 0, 0);
+        ctx.restore();
+      }
+      const sel = floor.spaces.find(s => s.id === selectedSpaceId);
+      if (sel) {
+        ctx.font = fontStr(11);
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = '#fde68a';
+        ctx.fillText(dimensionCaption(sel.label, roomEdgeDimensions(sel.polygon).length), tx(b.maxX), ty(b.maxY) - 8);
+      }
+      ctx.restore();
     }
 
     ctx.fillStyle = '#f1f5f9';

@@ -217,6 +217,7 @@ const fa = {
   canvasStair: 'راه‌پله',
   canvasFloor: 'طبقهٔ {current} از {last} — {count} فضا — برای انتخاب فضا کلیک کنید',
   canvasNorth: 'شمال',
+  canvasDimCaption: 'ابعاد «{room}» — {count} ضلع (متر)',
   canvasAriaLabel: 'نمای پلان طبقهٔ {floor} — کلیک: انتخاب فضا، درگ: جابه‌جایی نما، اسکرول: بزرگ‌نمایی',
   canvasPanHint: 'درگ: جابه‌جایی نما · اسکرول: بزرگ‌نمایی · کلیک: انتخاب فضا',
   zoomInLabel: 'بزرگ‌نمایی',
