@@ -766,6 +766,8 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide, options?: Pl
           const [ga, gb] = w.spaceIds;
           if (!ga || !gb || w.kind === 'exterior') continue;
           if (!shaftPairOk(spacesById.get(ga)?.type, spacesById.get(gb)?.type)) continue;
+          // Task 152: a balcony is a terminal — never a bridge (its access is added below).
+          if (spacesById.get(ga)?.type === 'balcony' || spacesById.get(gb)?.type === 'balcony') continue;
           const aIn = reached.has(ga);
           const bIn = reached.has(gb);
           if (aIn === bIn) continue;
@@ -775,6 +777,44 @@ export function placeOpenings(floor: Floor, accessSide: AccessSide, options?: Pl
         if (!best) break;
         placeDoorOnWall(best.wall, best.into, 0.9);
       }
+    }
+  }
+
+  // ---- Task 152: balcony access (terminal door) ----
+  // Every balcony gets exactly ONE door from an adjacent circulation space or
+  // habitable room, using the same pairWalls / bestFreeWall / placeDoorOnWall
+  // primitives as the stages above. Partner preference: circulation (corridor /
+  // foyer / stair-hall) > living / dining / family / guest room > bedrooms. Wet,
+  // service, kitchen, entrance, elevator and exterior spaces are never partners.
+  // Runs last so every earlier stage sees the legacy state; floors without a
+  // balcony are untouched. No partner -> no door -> BALCONY_NO_ACCESS (HARD).
+  {
+    const BALCONY_PARTNER: Record<string, number> = {
+      'corridor': 3, 'foyer': 3, 'stair-hall': 3,
+      'living': 2, 'dining': 2, 'family-room': 2, 'guest-room': 2,
+      'bedroom': 1, 'master-bedroom': 1,
+    };
+    const balconies = floor.spaces.filter(s => s.type === 'balcony').sort((a, b) => a.id.localeCompare(b.id));
+    for (const bal of balconies) {
+      const hasDoor = openings.some(o => o.type !== 'window' && (o.spaceA === bal.id || o.spaceB === bal.id));
+      if (hasDoor) continue;
+      let best: { key: string; score: number; spanW: number } | null = null;
+      for (const [key, walls] of pairWalls) {
+        const [ida, idb] = key.split('|');
+        if (ida !== bal.id && idb !== bal.id) continue;
+        const other = spacesById.get(ida === bal.id ? idb : ida);
+        const score = other ? (BALCONY_PARTNER[other.type] ?? 0) : 0;
+        if (score <= 0) continue;
+        const pick = bestFreeWall(walls, DOOR_INT_WIDTH);
+        if (!pick) continue;
+        if (!best || score > best.score || (score === best.score && (pick.span.width > best.spanW + 1e-9
+          || (Math.abs(pick.span.width - best.spanW) <= 1e-9 && key < best.key)))) {
+          best = { key, score, spanW: pick.span.width };
+        }
+      }
+      if (!best) continue;
+      const pick = bestFreeWall(pairWalls.get(best.key)!, DOOR_INT_WIDTH);
+      if (pick) placeDoorOnWall(pick.wall, bal.id, DOOR_INT_WIDTH);
     }
   }
 

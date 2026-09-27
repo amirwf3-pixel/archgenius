@@ -9,6 +9,7 @@ import { validateElevators } from './elevator.js';
 import { validateArchitecturalQA } from './architectural-qa.js';
 import { validateSite } from './site.js';
 import { validateProgramCompleteness } from './program-completeness.js';
+import { validateBalconies } from './balcony.js';
 import { validateParametricConstraints, createInstanceConstraintsFromTypes } from '../layout/parametric-constraints.js';
 import { DEFAULT_RESIDENTIAL_CONSTRAINTS } from '../layout/constraints.js';
 import { validateRoomSizeConstraints } from '../model/room-constraints.js';
@@ -70,6 +71,8 @@ export function validateLayout(candidate: LayoutCandidate): ValidationResult {
   // Phase 15 M3: program completeness — every room the building-level distribution
   // assigned to a floor must exist; placement failures surface as explicit HARD findings.
   findings.push(...validateProgramCompleteness(candidate));
+  // Task 152: an enabled balcony must be bounded and reachable (no-op without balconies).
+  findings.push(...validateBalconies(candidate));
 
   // Include generator/regulator pre-findings, but deduplicate CONSTRAINT_/ROOM_CONSTRAINT_ etc that are already freshly validated
   // to avoid double counting when validateLayout is called on a candidate that already had findings from previous validation (generator does cand.findings = vr.findings)

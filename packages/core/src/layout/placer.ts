@@ -2497,6 +2497,29 @@ function placeSpacesFacingSouth(
         let s; while ((s = take(t))) publicSpecs.push(s);
       }
       publicSpecs.push(...publicUnplaced);
+      // Task 152: a balcony is never a band filler. Without it this band stays
+      // intentional void (upper floors); with it, splitBinary handed the balcony the
+      // WHOLE band (~109 m² for a 4 m² program). Carve it at program size instead,
+      // flush against circulation / a habitable room so it can take a door; the rest
+      // of the band stays exactly as it is without a balcony. If no bounded spot
+      // exists the balcony is left unplaced and ARCH_PROGRAM_UNPLACED makes the
+      // result INFEASIBLE (existing gate). Balcony-free programs skip this entirely.
+      // Only when balconies are the band's sole program (other public rooms keep the
+      // legacy split; an oversized balcony there is caught by BALCONY_OVERSIZED).
+      if (publicSpecs.length > 0 && publicSpecs.every(s => s.type === 'balcony')) {
+        const balconies = [...publicSpecs];
+        publicSpecs.length = 0;
+        const corrRects = layout.corridors.filter(c => c !== layout.entrancePatch && c.w > 0.05 && c.h > 0.05);
+        const roomRects = placed.filter(p => BALCONY_HOST_TYPES.has(p.type)).map(p => p.rect);
+        const taken: Rect[] = [];
+        for (const b of balconies) {
+          const r = boundedBalconyRect(publicRect, corrRects, roomRects, taken, b);
+          if (!r) { explanation.push(`Task152: balcony ${b.placedId} has no bounded spot on a circulation/room edge of the band — left unplaced (program completeness reports it)`); continue; }
+          taken.push(r);
+          placed.push(mkSpace('balcony', r, b.placedLabel, b.placedId, 'public'));
+          explanation.push(`Task152: balcony ${b.placedId} bounded to ${r.w.toFixed(2)}×${r.h.toFixed(2)} m on a host edge (program target ${b.targetArea} m²)`);
+        }
+      }
       // Ensure candidate positions bounded ≤ MAX_CANDIDATE_POSITIONS
       const boundedSpecs = publicSpecs.slice(0, MAX_CANDIDATE_POSITIONS);
       if (publicSpecs.length > MAX_CANDIDATE_POSITIONS) {
@@ -2580,6 +2603,61 @@ function placeSpacesFacingSouth(
   resolveOverlaps(placed, MAX_LOCAL_REPAIR_ITERATIONS);
   explanation.push(`Placed ${placed.length} rooms + ${corridors.length} corridor segment(s). Bounds: attempts≤${MAX_CONSTRAINT_PLACEMENT_ATTEMPTS}, repair≤${MAX_LOCAL_REPAIR_ITERATIONS}, positions≤${MAX_CANDIDATE_POSITIONS}`);
   return { spaces: placed, corridors, explanation };
+}
+
+/** Task 152: rooms a balcony may open from (besides circulation). Wet / service /
+ *  core rooms are never balcony hosts. Mirrors the balcony door partners in openings.ts. */
+const BALCONY_HOST_TYPES = new Set<SpaceType>(['living', 'dining', 'family-room', 'guest-room', 'bedroom', 'master-bedroom']);
+
+/**
+ * Task 152: a program-sized balcony rect inside `band`, flush against one host edge
+ * (circulation rects first, then habitable rooms) so it can take a door. Size comes
+ * only from the balcony program (targetArea / minArea / minWidth): a square of side
+ * max(minWidth, √target), narrowed to the shared edge / band depth when needed, never
+ * below minWidth or minArea. Centred on the shared edge; deterministic (host order,
+ * then longest shared edge). Returns null when no bounded spot exists.
+ */
+function boundedBalconyRect(band: Rect, corridors: Rect[], rooms: Rect[], taken: Rect[], spec: SpaceSpec): Rect | null {
+  const E = 1e-6, TOUCH = 0.02;
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const minW = Math.max(spec.minWidth ?? 0, 0);
+  const minA = Math.max(spec.minArea ?? 0, 0);
+  const target = Math.max(spec.targetArea ?? 0, minA);
+  if (!(target > 0)) return null;
+  const side0 = Math.max(minW, Math.sqrt(target));
+  let best: { r: Rect; prio: number; L: number } | null = null;
+  const hostList: Array<{ h: Rect; prio: number }> = [
+    ...corridors.map(h => ({ h, prio: 0 })), ...rooms.map(h => ({ h, prio: 1 })),
+  ];
+  for (const { h, prio } of hostList) {
+    const edges: Array<{ horiz: boolean; atStart: boolean; ok: boolean }> = [
+      { horiz: true, atStart: true, ok: Math.abs(band.y - (h.y + h.h)) < TOUCH },           // host above band
+      { horiz: true, atStart: false, ok: Math.abs(band.y + band.h - h.y) < TOUCH },         // host below band
+      { horiz: false, atStart: true, ok: Math.abs(band.x - (h.x + h.w)) < TOUCH },          // host left of band
+      { horiz: false, atStart: false, ok: Math.abs(band.x + band.w - h.x) < TOUCH },        // host right of band
+    ];
+    for (const e of edges) {
+      if (!e.ok) continue;
+      const a0 = e.horiz ? Math.max(band.x, h.x) : Math.max(band.y, h.y);
+      const a1 = e.horiz ? Math.min(band.x + band.w, h.x + h.w) : Math.min(band.y + band.h, h.y + h.h);
+      const L = a1 - a0;
+      const D = e.horiz ? band.h : band.w;
+      let d = Math.min(side0, D);
+      if (d < minW - E || L < minW - E) continue;
+      let w = Math.max(minW, target / d);
+      if (w > L + E) { w = L; d = Math.min(D, Math.max(minW, target / w)); }
+      w = r2(w); d = r2(d);
+      if (w > L + E || d > D + E || w < minW - E || d < minW - E || w * d < minA - E) continue;
+      const s = r2(a0 + (L - w) / 2);
+      const r: Rect = e.horiz
+        ? { x: s, y: e.atStart ? band.y : r2(band.y + band.h - d), w, h: d }
+        : { x: e.atStart ? band.x : r2(band.x + band.w - d), y: s, w: d, h: w };
+      const clash = taken.some(t => r.x < t.x + t.w - E && t.x < r.x + r.w - E && r.y < t.y + t.h - E && t.y < r.y + r.h - E);
+      if (clash) continue;
+      if (!best || prio < best.prio || (prio === best.prio && L > best.L + E)) best = { r, prio, L };
+    }
+  }
+  return best ? best.r : null;
 }
 
 /** Split a rectangle among specs recursively along the long axis; head
