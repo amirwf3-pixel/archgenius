@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # package.json engines: node >= 20; local verification uses Node 22.
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (lockfile)
+        run: npm ci
+
+      - name: Typecheck (core + web)
+        run: npm run typecheck
+
+      - name: Core tests
+        run: npm run test -w @archgenius/core
+
+      - name: Web tests
+        run: npm run test -w @archgenius/web
+
+      - name: Production build
+        run: npm run build
