@@ -633,7 +633,7 @@ function applyMsgRule(rule: MsgRule, msg: string): string | null {
   for (let i = 1; i < m.length; i++) {
     let v = m[i] ?? '';
     if (rule.labels?.includes(i)) v = faLabelRuns(v);
-    if (rule.maps?.[i]) v = rule.maps[i][v] ?? v;
+    if (rule.maps?.[i] && Object.prototype.hasOwnProperty.call(rule.maps[i], v)) v = rule.maps[i][v]; // own keys only: unknown ids (even 'constructor') stay verbatim
     const sub = rule.lists?.[i];
     if (sub) v = v.split('; ').map(item => { for (const r of sub) { const o = applyMsgRule(r, item); if (o !== null) return o; } return item; }).join('؛ ');
     if (v === '') {
@@ -889,7 +889,7 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
 
   // --- validation/program-completeness.ts (Phase15 M3 no-silent-drop; surfaces on
   //     diagnostic candidates whenever a topology fails to host the requested program) ---
-  ARCH_PROGRAM_UNPLACED: [{ re: /^Floor (\d+): requested program room '([^']+)' not placed \(required x(\d+), placed x(\d+)\) — requested rooms are never silently dropped$/, fa: 'طبقهٔ {1}: فضای درخواستی «{2}» جایدهی نشد (تعداد خواسته {3}، جایدهی‌شده {4}) — فضاهای درخواستی هرگز به‌صورت خاموش حذف نمی‌شوند', labels: [2] }],
+  ARCH_PROGRAM_UNPLACED: [{ re: /^Floor (\d+): requested program room '([^']+)' not placed \(required x(\d+), placed x(\d+)\) — requested rooms are never silently dropped$/, fa: 'طبقهٔ {1}: فضای درخواستی «{2}» جایدهی نشد (تعداد خواسته {3}، جایدهی‌شده {4}) — فضاهای درخواستی هرگز به‌صورت خاموش حذف نمی‌شوند', maps: { 2: SPACE_TYPE_FA } }], // Task 156: {2} is a SpaceType id → existing Persian type table; unknown ids stay verbatim
   // --- validation/balcony.ts (Task 152: enabled balcony must be bounded and reachable) ---
   BALCONY_NO_ACCESS: [{ re: /^Floor (\d+): balcony '([^']+)' has no door from an adjacent circulation space or habitable room$/, fa: 'طبقهٔ {1}: بالکن «{2}» هیچ دری از فضای رفت‌وآمد یا اتاق مجاور ندارد' }],
   BALCONY_OVERSIZED: [{ re: /^Floor (\d+): balcony '([^']+)' area ([\d.]+) m² exceeds the program cap ([\d.]+) m² \(target ([\d.]+) m²\)$/, fa: 'طبقهٔ {1}: مساحت بالکن «{2}» برابر {3} مترمربع است و از سقف برنامه ({4} مترمربع؛ هدف {5} مترمربع) بیشتر است' }],
