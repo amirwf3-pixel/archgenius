@@ -124,6 +124,7 @@ export function formFromProject(project: Project, base: FormState): FormState {
     hasElevator: bool(b.hasElevator, base.hasElevator),
     hasStorage: bool(b.hasStorage, base.hasStorage),
     hasBalcony: bool(b.hasBalcony, base.hasBalcony === true),
+    hasYard: bool(b.hasYard, base.hasYard === true),
     seed: num(input.seed, base.seed),
   };
 }

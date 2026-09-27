@@ -52,6 +52,8 @@ export interface FormState {
   hasStorage: boolean;
   /** Task 153: existing core `hasBalcony` (default OFF; sent as `=== true`). */
   hasBalcony?: boolean;
+  /** Task 155: existing core `hasYard` (default OFF; sent as `=== true`). */
+  hasYard?: boolean;
   seed: number;
 }
 
@@ -87,6 +89,7 @@ export const DEFAULT_STATE: FormState = {
   hasElevator: false,
   hasStorage: true,
   hasBalcony: false,
+  hasYard: false,
   seed: 42,
 };
 
@@ -152,7 +155,7 @@ export function buildProjectInput(form: FormState): ProjectInput {
       hasElevator: form.hasElevator,
       hasStorage: form.hasStorage,
       hasBalcony: form.hasBalcony === true,
-      hasYard: false,
+      hasYard: form.hasYard === true,
     },
     deterministic: true,
     seed: Number(form.seed) || 42,
@@ -516,6 +519,8 @@ export function App() {
                 onChange={v => update('hasStorage', v)} />
               <CheckField id="f-balcony" label={t('hasBalcony')} checked={form.hasBalcony === true} disabled={busy}
                 onChange={v => update('hasBalcony', v)} />
+              <CheckField id="f-yard" label={t('hasYard')} checked={form.hasYard === true} disabled={busy}
+                onChange={v => update('hasYard', v)} />
             </div>
           </Section>
 

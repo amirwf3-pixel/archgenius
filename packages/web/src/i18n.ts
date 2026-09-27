@@ -83,6 +83,7 @@ const fa = {
   hasElevator: 'آسانسور',
   hasStorage: 'انباری',
   hasBalcony: 'بالکن',
+  hasYard: 'حیاط',
 
   // Generate
   generate: 'تولید پلان',
@@ -431,6 +432,8 @@ export const FINDING_CODE_FA: Record<string, string> = {
   ARCH_PROGRAM_UNPLACED: 'جایدهی‌نشدن فضای برنامه',
   BALCONY_NO_ACCESS: 'نبود دسترسی به بالکن',
   BALCONY_OVERSIZED: 'بزرگ‌تر بودن بالکن از حد برنامه',
+  YARD_INVALID: 'نامعتبر بودن حیاط',
+  YARD_NO_ACCESS: 'نبود دسترسی به حیاط',
   PARKING_PROGRAM_UNPLACED: 'جایدهی‌نشدن نقطهٔ پارکینگ',
   NO_STREET_ENTRANCE: 'نبود ورودی به خیابان',
   // Geometric
@@ -617,6 +620,9 @@ interface MsgRule {
   labels?: number[];
   /** 1-based capture groups → exact-match translation maps (e.g. pack descriptions). */
   maps?: Record<number, Record<string, string>>;
+  /** 1-based capture groups holding a '; '-joined list; each item is translated by the
+   *  first matching sub-rule (unknown items stay verbatim) and re-joined with '؛ '. */
+  lists?: Record<number, MsgRule[]>;
 }
 
 /** Apply one rule; returns null when the regex does not match. */
@@ -628,6 +634,8 @@ function applyMsgRule(rule: MsgRule, msg: string): string | null {
     let v = m[i] ?? '';
     if (rule.labels?.includes(i)) v = faLabelRuns(v);
     if (rule.maps?.[i]) v = rule.maps[i][v] ?? v;
+    const sub = rule.lists?.[i];
+    if (sub) v = v.split('; ').map(item => { for (const r of sub) { const o = applyMsgRule(r, item); if (o !== null) return o; } return item; }).join('؛ ');
     if (v === '') {
       // Drop an empty trailing "— {n}" segment (e.g. constraint notes that are empty).
       out = out.replace(new RegExp(`\\s*—\\s*\\{${i}\\}\\s*$`), '');
@@ -885,6 +893,17 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
   // --- validation/balcony.ts (Task 152: enabled balcony must be bounded and reachable) ---
   BALCONY_NO_ACCESS: [{ re: /^Floor (\d+): balcony '([^']+)' has no door from an adjacent circulation space or habitable room$/, fa: 'طبقهٔ {1}: بالکن «{2}» هیچ دری از فضای رفت‌وآمد یا اتاق مجاور ندارد' }],
   BALCONY_OVERSIZED: [{ re: /^Floor (\d+): balcony '([^']+)' area ([\d.]+) m² exceeds the program cap ([\d.]+) m² \(target ([\d.]+) m²\)$/, fa: 'طبقهٔ {1}: مساحت بالکن «{2}» برابر {3} مترمربع است و از سقف برنامه ({4} مترمربع؛ هدف {5} مترمربع) بیشتر است' }],
+  // --- validation/yard.ts (Task 154: enabled yard must be bounded, open-air and reachable) ---
+  YARD_INVALID: [{ re: /^Floor (\d+): yard '([^']+)' is invalid: (.+)$/, fa: 'طبقهٔ {1}: حیاط «{2}» نامعتبر است: {3}', lists: { 3: [
+    { re: /^not on the ground floor \(level (-?\d+)\)$/, fa: 'در طبقهٔ همکف نیست (طبقهٔ {1})' },
+    { re: /^outside the buildable area$/, fa: 'خارج از محدودهٔ مجاز ساخت' },
+    { re: /^under or overlapping building spaces$/, fa: 'زیر فضاهای ساختمان یا دارای هم‌پوشانی با آن‌ها' },
+    { re: /^overlapping parking$/, fa: 'دارای هم‌پوشانی با پارکینگ' },
+    { re: /^on the street side of the building$/, fa: 'در سمت خیابانِ ساختمان' },
+    { re: /^area ([\d.]+) m² below the program minimum ([\d.]+) m²$/, fa: 'مساحت {1} مترمربع، کمتر از حداقل برنامه ({2} مترمربع)' },
+    { re: /^area ([\d.]+) m² above the program cap ([\d.]+) m²$/, fa: 'مساحت {1} مترمربع، بیشتر از سقف برنامه ({2} مترمربع)' },
+  ] } }],
+  YARD_NO_ACCESS: [{ re: /^Floor (\d+): yard '([^']+)' is not reachable from the street over open ground \(walkway ≥ corridor minimum width\)$/, fa: 'طبقهٔ {1}: حیاط «{2}» از خیابان و از روی زمین باز قابل دسترسی نیست (عرض گذرگاه باید دست‌کم برابر حداقل عرض راهرو باشد)' }],
   PARKING_PROGRAM_UNPLACED: [{ re: /^Parking program requests (\d+) stall\(s\) but (\d+) valid stall\(s\) were placed — an unfilled parking request must never publish \(and never as an aisle-only drawing\)\.$/, fa: 'برنامهٔ پارکینگ {1} نقطه خواسته بود اما {2} نقطهٔ معتبر جایدهی شد — درخواست پارکینگ جایدهی‌نشده هرگز منتشر نمی‌شود (و هرگز به‌صورت نقشهٔ تنها-راه‌رو).', labels: [] }],
   NO_STREET_ENTRANCE: [
     { re: /^Ground floor has no usable exterior entrance door on the north \(street\) facade — street -> front door -> interior circulation is mandatory\.$/, fa: 'طبقهٔ همکف هیچ درب ورودی معتبری به نمای شمالی (خیابان) ندارد — مسیر خیابان ← درب ورودی ← تردد داخلی الزامی است.', labels: [] },
