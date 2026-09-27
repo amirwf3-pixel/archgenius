@@ -123,6 +123,7 @@ export function formFromProject(project: Project, base: FormState): FormState {
     hasStair: bool(b.hasStair, base.hasStair),
     hasElevator: bool(b.hasElevator, base.hasElevator),
     hasStorage: bool(b.hasStorage, base.hasStorage),
+    hasBalcony: bool(b.hasBalcony, base.hasBalcony === true),
     seed: num(input.seed, base.seed),
   };
 }

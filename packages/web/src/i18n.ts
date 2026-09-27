@@ -82,6 +82,7 @@ const fa = {
   stairRequiredHint: 'در ساختمان چندطبقه، راه‌پله الزامی است.',
   hasElevator: 'آسانسور',
   hasStorage: 'انباری',
+  hasBalcony: 'بالکن',
 
   // Generate
   generate: 'تولید پلان',
@@ -428,6 +429,8 @@ export function spaceTypeFromLabel(s: { type: string }): string {
 
 export const FINDING_CODE_FA: Record<string, string> = {
   ARCH_PROGRAM_UNPLACED: 'جایدهی‌نشدن فضای برنامه',
+  BALCONY_NO_ACCESS: 'نبود دسترسی به بالکن',
+  BALCONY_OVERSIZED: 'بزرگ‌تر بودن بالکن از حد برنامه',
   PARKING_PROGRAM_UNPLACED: 'جایدهی‌نشدن نقطهٔ پارکینگ',
   NO_STREET_ENTRANCE: 'نبود ورودی به خیابان',
   // Geometric
@@ -879,6 +882,9 @@ const FINDING_MESSAGE_FA: Record<string, MsgRule[]> = {
   // --- validation/program-completeness.ts (Phase15 M3 no-silent-drop; surfaces on
   //     diagnostic candidates whenever a topology fails to host the requested program) ---
   ARCH_PROGRAM_UNPLACED: [{ re: /^Floor (\d+): requested program room '([^']+)' not placed \(required x(\d+), placed x(\d+)\) — requested rooms are never silently dropped$/, fa: 'طبقهٔ {1}: فضای درخواستی «{2}» جایدهی نشد (تعداد خواسته {3}، جایدهی‌شده {4}) — فضاهای درخواستی هرگز به‌صورت خاموش حذف نمی‌شوند', labels: [2] }],
+  // --- validation/balcony.ts (Task 152: enabled balcony must be bounded and reachable) ---
+  BALCONY_NO_ACCESS: [{ re: /^Floor (\d+): balcony '([^']+)' has no door from an adjacent circulation space or habitable room$/, fa: 'طبقهٔ {1}: بالکن «{2}» هیچ دری از فضای رفت‌وآمد یا اتاق مجاور ندارد' }],
+  BALCONY_OVERSIZED: [{ re: /^Floor (\d+): balcony '([^']+)' area ([\d.]+) m² exceeds the program cap ([\d.]+) m² \(target ([\d.]+) m²\)$/, fa: 'طبقهٔ {1}: مساحت بالکن «{2}» برابر {3} مترمربع است و از سقف برنامه ({4} مترمربع؛ هدف {5} مترمربع) بیشتر است' }],
   PARKING_PROGRAM_UNPLACED: [{ re: /^Parking program requests (\d+) stall\(s\) but (\d+) valid stall\(s\) were placed — an unfilled parking request must never publish \(and never as an aisle-only drawing\)\.$/, fa: 'برنامهٔ پارکینگ {1} نقطه خواسته بود اما {2} نقطهٔ معتبر جایدهی شد — درخواست پارکینگ جایدهی‌نشده هرگز منتشر نمی‌شود (و هرگز به‌صورت نقشهٔ تنها-راه‌رو).', labels: [] }],
   NO_STREET_ENTRANCE: [
     { re: /^Ground floor has no usable exterior entrance door on the north \(street\) facade — street -> front door -> interior circulation is mandatory\.$/, fa: 'طبقهٔ همکف هیچ درب ورودی معتبری به نمای شمالی (خیابان) ندارد — مسیر خیابان ← درب ورودی ← تردد داخلی الزامی است.', labels: [] },

@@ -50,10 +50,12 @@ export interface FormState {
   hasStair: boolean;
   hasElevator: boolean;
   hasStorage: boolean;
+  /** Task 153: existing core `hasBalcony` (default OFF; sent as `=== true`). */
+  hasBalcony?: boolean;
   seed: number;
 }
 
-const DEFAULT_STATE: FormState = {
+export const DEFAULT_STATE: FormState = {
   name: 'ویلای نمونه',
   siteShape: 'rectangle',
   // P16-A: 18x28 is the smallest stock default where the default 2-car
@@ -84,8 +86,78 @@ const DEFAULT_STATE: FormState = {
   hasStair: true,
   hasElevator: false,
   hasStorage: true,
+  hasBalcony: false,
   seed: 42,
 };
+
+/**
+ * The engine ProjectInput for a form state — the exact input `onGenerate`
+ * passes to createProject (extracted unchanged so the form→core binding is
+ * testable). Throws the Persian invalid-polygon error for malformed JSON.
+ */
+export function buildProjectInput(form: FormState): ProjectInput {
+  let polygonVertices: any = undefined;
+  if (form.siteShape === 'polygon') {
+    try {
+      const parsed = JSON.parse(form.polygonJson);
+      if (Array.isArray(parsed)) polygonVertices = parsed;
+    } catch {
+      throw new Error(t('errorInvalidPolygon'));
+    }
+  }
+
+  const site: any = {
+    shape: form.siteShape,
+    width: Number(form.siteWidth),
+    length: Number(form.siteLength),
+    accessSide: form.accessSide,
+    streetWidth: Number(form.streetWidth),
+    northRotationDeg: 0,
+    setbacks: {
+      north: Number(form.setbackNorth),
+      south: Number(form.setbackSouth),
+      east: Number(form.setbackEast),
+      west: Number(form.setbackWest),
+    },
+    jurisdiction: form.jurisdiction || undefined,
+    city: form.city || undefined,
+    parkingLayout: form.parkingLayout,
+  };
+  if (form.siteShape === 'l-shape') {
+    site.lShape = {
+      width: Number(form.siteWidth),
+      length: Number(form.siteLength),
+      notchWidth: Number(form.lNotchWidth),
+      notchLength: Number(form.lNotchLength),
+      notchCorner: form.lNotchCorner,
+    };
+  }
+  if (form.siteShape === 'polygon' && polygonVertices) {
+    site.polygon = { vertices: polygonVertices };
+  }
+
+  return {
+    name: form.name,
+    site,
+    building: {
+      type: form.buildingType,
+      floors: Number(form.floors),
+      bedrooms: Number(form.bedrooms),
+      masterBedrooms: Number(form.masterBedrooms),
+      bathrooms: Number(form.bathrooms),
+      wc: Number(form.wc),
+      kitchenType: form.kitchenType,
+      parkingSpaces: Number(form.parkingSpaces),
+      hasStair: form.hasStair || Number(form.floors) > 1,
+      hasElevator: form.hasElevator,
+      hasStorage: form.hasStorage,
+      hasBalcony: form.hasBalcony === true,
+      hasYard: false,
+    },
+    deterministic: true,
+    seed: Number(form.seed) || 42,
+  };
+}
 
 type Stage = 'idle' | 'generate' | 'validate' | 'prepare';
 
@@ -200,67 +272,7 @@ export function App() {
     setStage('generate');
     await nextPaint(); // paint the busy state before the synchronous engine work
     try {
-      let polygonVertices: any = undefined;
-      if (form.siteShape === 'polygon') {
-        try {
-          const parsed = JSON.parse(form.polygonJson);
-          if (Array.isArray(parsed)) polygonVertices = parsed;
-        } catch {
-          throw new Error(t('errorInvalidPolygon'));
-        }
-      }
-
-      const site: any = {
-        shape: form.siteShape,
-        width: Number(form.siteWidth),
-        length: Number(form.siteLength),
-        accessSide: form.accessSide,
-        streetWidth: Number(form.streetWidth),
-        northRotationDeg: 0,
-        setbacks: {
-          north: Number(form.setbackNorth),
-          south: Number(form.setbackSouth),
-          east: Number(form.setbackEast),
-          west: Number(form.setbackWest),
-        },
-        jurisdiction: form.jurisdiction || undefined,
-        city: form.city || undefined,
-        parkingLayout: form.parkingLayout,
-      };
-      if (form.siteShape === 'l-shape') {
-        site.lShape = {
-          width: Number(form.siteWidth),
-          length: Number(form.siteLength),
-          notchWidth: Number(form.lNotchWidth),
-          notchLength: Number(form.lNotchLength),
-          notchCorner: form.lNotchCorner,
-        };
-      }
-      if (form.siteShape === 'polygon' && polygonVertices) {
-        site.polygon = { vertices: polygonVertices };
-      }
-
-      const input: ProjectInput = {
-        name: form.name,
-        site,
-        building: {
-          type: form.buildingType,
-          floors: Number(form.floors),
-          bedrooms: Number(form.bedrooms),
-          masterBedrooms: Number(form.masterBedrooms),
-          bathrooms: Number(form.bathrooms),
-          wc: Number(form.wc),
-          kitchenType: form.kitchenType,
-          parkingSpaces: Number(form.parkingSpaces),
-          hasStair: form.hasStair || Number(form.floors) > 1,
-          hasElevator: form.hasElevator,
-          hasStorage: form.hasStorage,
-          hasBalcony: false,
-          hasYard: false,
-        },
-        deterministic: true,
-        seed: Number(form.seed) || 42,
-      };
+      const input: ProjectInput = buildProjectInput(form);
       const prj = createProject(input);
       // allStrategies: expose the engine's full deterministic best-first
       // ranking for review — ranking order is decided by the core, untouched.
@@ -502,6 +514,8 @@ export function App() {
                 onChange={v => update('hasElevator', v)} />
               <CheckField id="f-storage" label={t('hasStorage')} checked={form.hasStorage} disabled={busy}
                 onChange={v => update('hasStorage', v)} />
+              <CheckField id="f-balcony" label={t('hasBalcony')} checked={form.hasBalcony === true} disabled={busy}
+                onChange={v => update('hasBalcony', v)} />
             </div>
           </Section>
 
