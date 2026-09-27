@@ -285,7 +285,10 @@ export function placeParkingSiteAware(input: ParkingSiteAwareInput): ParkingPlac
 
       const offStart = bld ? Math.max(0, dMin - aisleDepth) : 0;
       const offEnd = bld ? Math.min(depthAxis, dMax) - bandTotal : depthAxis - bandTotal;
-      for (let off = offStart; off + bandTotal <= offEnd + 1e-6; off += SLIDE_STEP) {
+      // offEnd already reserves the band depth (off + bandTotal <= dMax); the loop bound
+      // must not subtract bandTotal a second time (that skipped every valid offset of a
+      // band deeper than half the depth axis — e.g. all perpendicular bands on 16.5 m).
+      for (let off = offStart; off <= offEnd + 1e-6; off += SLIDE_STEP) {
         const aisle = mk(horizontal, side, aMin, edgeLen, off, aisleDepth);
         if (!free(aisle)) { attempts.push(`${side}/${layout}@${off.toFixed(1)}: aisle blocked/outside`); continue; }
         if (!accessOk(aisle, side, off, aMin)) { attempts.push(`${side}/${layout}@${off.toFixed(1)}: no vehicle access`); continue; }
