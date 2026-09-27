@@ -1,0 +1,3 @@
+# Golden DXF fixtures are compared byte-for-byte (ASCII R12, CRLF line endings):
+# never apply end-of-line conversion or text diffs to them.
+*.dxf -text -diff

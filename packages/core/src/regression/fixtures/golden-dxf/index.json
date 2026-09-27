@@ -1,0 +1,49 @@
+{
+  "description": "Golden DXF regression fixtures — see src/regression/golden-dxf.test.ts",
+  "fixtures": [
+    {
+      "id": "rect-1f",
+      "file": "rect-1f.dxf",
+      "bytes": 76482,
+      "sha256": "f2cd856085418ad7b200f4541da80f12b4911ad8920104f4733924b25285f9ce",
+      "strategy": "area-efficiency",
+      "floors": 1,
+      "stairs": 0,
+      "covers": [
+        "rectangular",
+        "single floor"
+      ]
+    },
+    {
+      "id": "lshape-2f-stair",
+      "file": "lshape-2f-stair.dxf",
+      "bytes": 112818,
+      "sha256": "8ba2da72f76837e60485e19493a3f56deed506ea43b031d44941c26f47ee495a",
+      "strategy": "functional-circulation",
+      "floors": 2,
+      "stairs": 2,
+      "covers": [
+        "L-shaped site",
+        "multi-floor",
+        "stair"
+      ]
+    },
+    {
+      "id": "decimal-asym-2f-stair",
+      "file": "decimal-asym-2f-stair.dxf",
+      "bytes": 103065,
+      "sha256": "28d4c90b91d771ccb3cbcf35af7b3140d92fb7600e11e1bf68d27f945297d1ef",
+      "strategy": "functional-circulation",
+      "floors": 2,
+      "stairs": 2,
+      "covers": [
+        "rectangular",
+        "decimal dimensions",
+        "asymmetric setbacks",
+        "east access",
+        "multi-floor",
+        "stair"
+      ]
+    }
+  ]
+}
