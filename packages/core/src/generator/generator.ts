@@ -317,6 +317,8 @@ export function generateLayouts(
   let parkingCutoutMode = false;
   // Single-loaded spine fallback mode (only ever true inside its guarded post-pass below).
   let spineMode = false;
+  // L-shape perpendicular parking retry mode (only ever true inside its guarded post-pass).
+  let lParkingRetryMode = false;
   const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false, wingLink = false, entryFoyer = false, pairMinArea = false, shaftNotch = false, upperCoreCirc = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
@@ -325,7 +327,7 @@ export function generateLayouts(
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea, shaftNotch, upperCoreCirc, lShapeRoomQualitySelection, parkingCutoutMode, spineMode));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea, shaftNotch, upperCoreCirc, lShapeRoomQualitySelection, parkingCutoutMode, spineMode, lParkingRetryMode));
     }
     // Task 154: yard — placed once ALL floors exist (it must be open-air), as an
     // exterior ground-floor space (no walls, no doors — like parking). Absent the
@@ -592,6 +594,40 @@ export function generateLayouts(
       const v = buildCandidate(c.metadata.strategy, false);
       spineMode = false;
       candidates[i] = adoptSpineVariant(c, v);
+    }
+  }
+
+  // Guarded L-shape pass: ONLY when still no candidate of this run is valid on a multi-floor
+  // L-shaped lot that requested parking. (1) A candidate whose automatic parking left stalls
+  // unplaced is rebuilt once with the existing perpendicular layout (adoptLShapeParkingRetry);
+  // (2) on a candidate with all requested stalls placed after a parking band, the double-
+  // loaded spine is built in the one remaining usable wing and adopted ONLY through the
+  // unchanged adoptSpineVariant guard. A candidate is replaced only by a fully valid result;
+  // otherwise it stays exactly as generated.
+  if (input.site.shape === 'l-shape' && numFloors > 1 && requestedStalls > 0
+    && candidates.length > 0 && candidates.every(c => !c.valid)) {
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      let base = c;
+      let retry = false;
+      if (c.findings.some(f => f.code === 'PARKING_PROGRAM_UNPLACED') && (input.site.parkingLayout ?? 'auto') === 'auto') {
+        lParkingRetryMode = true;
+        const r = buildCandidate(c.metadata.strategy, false);
+        lParkingRetryMode = false;
+        if (adoptLShapeParkingRetry(c, r, requestedStalls) !== r) continue;
+        if (r.valid) { candidates[i] = r; continue; }
+        base = r;
+        retry = true;
+      }
+      if (base.findings.some(f => f.code === 'PARKING_PROGRAM_UNPLACED')) continue;
+      if ((base.floors[0]?.parkingStalls.length ?? 0) !== requestedStalls) continue;
+      if (!base.explanations.some(e => e.startsWith(PARKING_BAND_RESERVED))) continue;
+      spineMode = true;
+      lParkingRetryMode = retry;
+      const v = buildCandidate(c.metadata.strategy, false);
+      spineMode = false;
+      lParkingRetryMode = false;
+      if (adoptSpineVariant(base, v) === v) candidates[i] = v;
     }
   }
 
@@ -928,8 +964,10 @@ export function placeSpineFloor(
   slice: Rect, access: AccessSide, specs: PlacedSpec[], level: number,
   allFloorSpecs: Array<Array<{ type: string; minWidth?: number; minArea?: number; targetArea?: number }>>,
   mkSpace: (type: Space['type'], r: Rect, label: string, id: string, zone: string) => Space,
+  doubleLoaded = false,
 ): { spaces: Space[]; corridors: Space[]; explanation: string[] } | null {
   if (allFloorSpecs.length < 2) return null;
+  if (doubleLoaded) return placeDoubleSpineFloor(slice, access, specs, level, allFloorSpecs, mkSpace);
   const allowed = level === 0 ? CUTOUT_GROUND : CUTOUT_UPPER;
   for (let l = 0; l < allFloorSpecs.length; l++) {
     const set = l === 0 ? CUTOUT_GROUND : CUTOUT_UPPER;
@@ -1032,6 +1070,123 @@ export function placeSpineFloor(
     };
   }
   return null;
+}
+
+/** Front / rear room rows of the double-loaded spine (in placement order along the row). */
+const DOUBLE_SPINE_ROWS: Record<'ground' | 'upper', { front: string[]; rear: string[] }> = {
+  ground: { front: ['entrance', 'foyer', 'living'], rear: ['dining', 'kitchen', 'guest-wc', 'storage'] },
+  upper: { front: ['bathroom'], rear: ['master-bedroom', 'master-bathroom', 'bedroom'] },
+};
+
+const OPPOSITE_SIDE: Record<AccessSide, AccessSide> = { north: 'south', south: 'north', east: 'west', west: 'east' };
+
+/**
+ * Double-loaded variant of the spine fallback (L-shape wing left by a parking band): a
+ * front room row along the access facade, the full-length corridor behind it, and a rear
+ * room row along the far facade — so every room has an exterior wall and its own corridor
+ * edge. Ground: [entrance | foyer | living … | stair hall] in front (the living room takes
+ * the spare front length and adjoins the foyer), [dining | kitchen | guest WC | storage]
+ * behind. Upper: [bathroom(s) … | stair hall] in front (unused front length stays empty),
+ * [master | master bath | bedrooms] behind. The front-row depth is the shallowest one at
+ * which the stair solver accepts a hall (entered from the corridor side) and the rear row
+ * still meets its minimum widths; the hall is the narrowest the solver accepts at that
+ * depth, at the far end of the front row, identical on every floor. Widths come from the
+ * programme minima; spare rear length goes to the habitable rooms. Null when any room of
+ * the building falls outside this topology or does not fit.
+ */
+function placeDoubleSpineFloor(
+  slice: Rect, access: AccessSide, specs: PlacedSpec[], level: number,
+  allFloorSpecs: Array<Array<{ type: string; minWidth?: number; minArea?: number; targetArea?: number }>>,
+  mkSpace: (type: Space['type'], r: Rect, label: string, id: string, zone: string) => Space,
+): { spaces: Space[]; corridors: Space[]; explanation: string[] } | null {
+  type SpecLike = { type: string; minWidth?: number; minArea?: number };
+  const rowsOf = (l: number) => (l === 0 ? DOUBLE_SPINE_ROWS.ground : DOUBLE_SPINE_ROWS.upper);
+  for (let l = 0; l < allFloorSpecs.length; l++) {
+    const r = rowsOf(l);
+    const ok = new Set([...r.front, ...r.rear, 'stair-hall', 'corridor']);
+    if (allFloorSpecs[l].some(sp => !ok.has(sp.type))) return null;
+    if (allFloorSpecs[l].filter(sp => sp.type === 'stair-hall').length !== 1) return null;
+    if (allFloorSpecs[l].filter(sp => sp.type === 'corridor').length !== 1) return null;
+  }
+  if (!allFloorSpecs[0].some(sp => sp.type === 'entrance') || !allFloorSpecs[0].some(sp => sp.type === 'foyer')
+    || allFloorSpecs[0].filter(sp => sp.type === 'living').length !== 1) return null;
+  const corrSpec = specs.find(sp => sp.type === 'corridor');
+  if (!corrSpec || !specs.some(sp => sp.type === 'stair-hall')) return null;
+  const { Lu, Dv, toWorld } = sliceFrame(slice, access);
+  const up = (x: number) => Math.ceil(x / WELD_STEP - 1e-9) * WELD_STEP;
+  const minW = (sp: SpecLike) => sp.minWidth ?? 0;
+  const need = (sp: SpecLike, depth: number) => up(Math.max(minW(sp), (sp.minArea ?? 0) / depth));
+  const cfg = { ...DEFAULT_STAIR_CONFIG, floorHeight: DEFAULT_FLOOR_HEIGHT };
+  const all = allFloorSpecs.flat();
+  const hallMinSide = all.filter(sp => sp.type === 'stair-hall').reduce((a, sp) => Math.max(a, minW(sp)), DEFAULT_STAIR_CONFIG.minWidth);
+  const cw = Math.max(PLACER_CORRIDOR_W, minW(corrSpec), CORRIDOR_MIN_WIDTH);
+  const rowSpecs = (l: number, row: 'front' | 'rear') => rowsOf(l)[row].flatMap(t => allFloorSpecs[l].filter(sp => sp.type === t));
+  const frontMin = Math.max(hallMinSide, ...allFloorSpecs.map((_, l) => rowSpecs(l, 'front').reduce((a, sp) => Math.max(a, minW(sp)), 0)));
+  const rearMin = Math.max(0, ...allFloorSpecs.map((_, l) => rowSpecs(l, 'rear').reduce((a, sp) => Math.max(a, minW(sp)), 0)));
+  const back = OPPOSITE_SIDE[access];
+  for (let Df = up(frontMin); Dv - Df - cw + 1e-9 >= rearMin; Df = up(Df + WELD_STEP)) {
+    const Dr = Dv - Df - cw;
+    let hw = -1;
+    for (let w = up(hallMinSide); w <= Lu + 1e-9; w = up(w + WELD_STEP)) {
+      if (solveStair(toWorld(Lu - w, w, 0, Df), cfg, back, 'core-main', 0).ok) { hw = w; break; }
+    }
+    if (hw < 0) continue;
+    // widths per floor: front cells (before the hall) and rear cells
+    const plans: Array<{ front: Array<[SpecLike, number]>; rear: Array<[SpecLike, number]> }> = [];
+    let ok = true;
+    for (let l = 0; l < allFloorSpecs.length && ok; l++) {
+      const front = rowSpecs(l, 'front').map(sp => [sp, need(sp, Df)] as [SpecLike, number]);
+      const rear = rowSpecs(l, 'rear').map(sp => [sp, need(sp, Dr)] as [SpecLike, number]);
+      const fSum = front.reduce((a, [, w]) => a + w, 0), rSum = rear.reduce((a, [, w]) => a + w, 0);
+      if (fSum + hw > Lu + 1e-9 || rSum > Lu + 1e-9) { ok = false; break; }
+      if (l === 0) {
+        // the living room (last front cell) takes the spare front length
+        const liv = front[front.length - 1];
+        if (!liv || liv[0].type !== 'living') { ok = false; break; }
+        liv[1] += Lu - hw - fSum;
+      }
+      const hab = rear.filter(([sp]) => SPINE_HABITABLE.has(sp.type));
+      const spare = Lu - rSum, share = hab.length ? hab : rear;
+      for (const cell of share) cell[1] += spare / share.length;
+      plans.push({ front, rear });
+    }
+    if (!ok) continue;
+    const pool = new Map<string, PlacedSpec[]>();
+    for (const sp of specs) { const k = pool.get(sp.type) ?? []; k.push(sp); pool.set(sp.type, k); }
+    const take = (t: string) => pool.get(t)?.shift();
+    const out: Space[] = [];
+    const put = (t: string, r: Rect): boolean => {
+      const sp = take(t);
+      if (!sp) return false;
+      out.push(mkSpace(sp.type as Space['type'], r, sp.placedLabel, sp.placedId, cutoutZone(sp.type)));
+      return true;
+    };
+    if (!put('stair-hall', toWorld(Lu - hw, hw, 0, Df))) return null;
+    let u = 0;
+    for (const [sp, w] of plans[level].front) { if (!put(sp.type, toWorld(u, w, 0, Df))) return null; u += w; }
+    u = 0;
+    for (const [sp, w] of plans[level].rear) { if (!put(sp.type, toWorld(u, w, Df + cw, Dr))) return null; u += w; }
+    if ([...pool.values()].some(l => l.some(sp => sp.type !== 'corridor'))) return null;
+    const corridors = [mkSpace('corridor', toWorld(0, Lu, Df, cw), corrSpec.placedLabel, corrSpec.placedId, 'circulation')];
+    return {
+      spaces: out, corridors,
+      explanation: [`${SPINE_FALLBACK_APPLIED} on level ${level}: double-loaded, wing ${Lu.toFixed(2)}x${Dv.toFixed(2)}m, front row ${Df.toFixed(2)}m, corridor ${cw.toFixed(2)}m, rear row ${Dr.toFixed(2)}m, stair hall ${hw.toFixed(2)}x${Df.toFixed(2)}m.`],
+    };
+  }
+  return null;
+}
+
+/**
+ * Adoption guard of the L-shape parking retry: the retry (existing perpendicular layout,
+ * authoritative L parking envelope) replaces an automatic-parking candidate ONLY when the
+ * base left stalls unplaced and the retry places every requested stall.
+ */
+export function adoptLShapeParkingRetry(base: LayoutCandidate, retry: LayoutCandidate, requested: number): LayoutCandidate {
+  if (requested <= 0) return base;
+  if (!base.findings.some(f => f.code === 'PARKING_PROGRAM_UNPLACED')) return base;
+  if (retry.findings.some(f => f.code === 'PARKING_PROGRAM_UNPLACED')) return base;
+  if ((retry.floors[0]?.parkingStalls.length ?? 0) !== requested) return base;
+  return retry;
 }
 
 const SPINE_HABITABLE = new Set(['living', 'dining', 'kitchen', 'master-bedroom', 'bedroom']);
@@ -2576,6 +2731,7 @@ function buildFloorSiteAware(
   lShapeRoomQualitySelection = false,
   parkingCutout = false,
   spineFallback = false,
+  lShapeParkingPerpendicular = false,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -2685,10 +2841,15 @@ function buildFloorSiteAware(
       sliceRect = { x: rx0, y: ry0, w: rx1 - rx0, h: ry1 - ry0 };
     }
   }
+  // L-shape parking retry (guarded, see adoptLShapeParkingRetry): the existing perpendicular
+  // layout replaces the automatic choice for this build only; otherwise the input preference.
+  const parkingPref = (lShapeParkingPerpendicular && input.site.shape === 'l-shape'
+    ? 'perpendicular' : (input.site.parkingLayout ?? 'auto')) as 'perpendicular' | 'parallel' | 'auto';
+  let parkingBandReserved = false;
   if (!cutoutPlan && (input.building.parkingSpaces ?? 0) > 0) {
     const reserve = reserveParkingBand(
       siteRect, buildableGeom.buildableRects, input.site.accessSide,
-      (input.site.parkingLayout ?? 'auto') as any,
+      parkingPref,
       (input.building.parkingSpaces ?? 0),
     );
     if (reserve) {
@@ -2711,6 +2872,7 @@ function buildFloorSiteAware(
         const rx1 = Math.max(...reserve.rects.map(r => r.x + r.w));
         const ry1 = Math.max(...reserve.rects.map(r => r.y + r.h));
         sliceRect = { x: rx0, y: ry0, w: rx1 - rx0, h: ry1 - ry0 };
+        parkingBandReserved = true;
         explanations.push(`Parking band reserved along the ${input.site.accessSide} edge (${reserve.band.h.toFixed(1)}x${reserve.band.w.toFixed(1)}m, ${reserve.layout}) — building slices the remaining envelope.`);
       }
     } else {
@@ -2725,6 +2887,21 @@ function buildFloorSiteAware(
     const allocs = allocateBuildingProgram(input.building, floorCount);
     const allFloorSpecs = allocs.map((al, l) => programForFloor(input.building, l, isOnlyFloor, al));
     spinePlan = placeSpineFloor(sliceRect, access, placedSpecs, level, allFloorSpecs, mkSpace);
+  }
+  // L-shape double-loaded spine fallback (guarded, see adoptSpineVariant): only after a parking
+  // band was reserved, in the ONE remaining rect deep enough for the widest programme room on
+  // both sides; thinner slivers are left empty.
+  if (spineFallback && !cutoutPlan && !spinePlan && input.site.shape === 'l-shape' && parkingBandReserved) {
+    const floorCount = Math.max(1, input.building.floors);
+    const allocs = allocateBuildingProgram(input.building, floorCount);
+    const allFloorSpecs = allocs.map((al, l) => programForFloor(input.building, l, isOnlyFloor, al));
+    const widest = allFloorSpecs.flat().filter(sp => sp.type !== 'corridor' && sp.type !== 'stair-hall')
+      .reduce((a, sp) => Math.max(a, sp.minWidth ?? 0), 0);
+    const usable = buildableRects.filter(r => Math.min(r.w, r.h) + 1e-9 >= widest);
+    if (usable.length === 1) {
+      spinePlan = placeSpineFloor(usable[0], access, placedSpecs, level, allFloorSpecs, mkSpace, true);
+      if (spinePlan) { buildableRects = [usable[0]]; sliceRect = { ...usable[0] }; }
+    }
   }
 
   let placedRooms: Space[] = [];
@@ -3183,7 +3360,7 @@ function buildFloorSiteAware(
       access: input.site.accessSide,
       count: parkingRequested,
       floorLevel: level,
-      layoutPref: (input.site.parkingLayout ?? 'auto') as any,
+      layoutPref: parkingPref,
       // P16-A: stalls are permanent slabs — keep them inside the buildable
       // envelope; setbacks may only carry the drive aisle. Phase 25: on
       // L-shaped lots the envelope is clamped to the lot's front band so a
