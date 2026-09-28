@@ -33,3 +33,4 @@ export * from './editing/index.js';
 export * as ProjectStore from './storage/project-store.js';
 export * from './storage/project-store.js';
 export * from './pipeline.js';
+export * from './site/v1-scope.js';

@@ -8,6 +8,7 @@ import type { LayoutCandidate, CandidateStrategy } from './model/layout.js';
 import type { ValidationResult } from './validation/types.js';
 import { validateLayout, summarize } from './validation/validator.js';
 import { generateLayouts, validateInput } from './generator/generator.js';
+import { assertV1SiteScope } from './site/v1-scope.js';
 import { writeDXF, validateDXFStructure } from './dxf/writer.js';
 import type { DXFOptions } from './dxf/writer.js';
 import { computeMetrics } from './optimizer/metrics.js';
@@ -23,6 +24,13 @@ import { compareCandidates, rankVector } from './layout/ranking.js';
 
 export interface GenerateOptions {
   strategies?: CandidateStrategy[];
+  /**
+   * V1 scope: `generate()` plans rectangle sites only and rejects any other site geometry
+   * with UNSUPPORTED_SITE_GEOMETRY (see site/v1-scope.ts). INTERNAL opt-in (default OFF):
+   * `true` lets the dormant L-shape / polygon planner run for regression tests and golden
+   * fixtures. Not a production option.
+   */
+  allowDormantSiteGeometry?: boolean;
   projectName?: string;
   /** If true, return ALL strategies; default returns only the best-ranked. */
   allStrategies?: boolean;
@@ -257,8 +265,16 @@ export interface GenerateResult {
   infeasible: InfeasibleResult | null;
 }
 
-export function createProject(input: ProjectInput): Project {
+/** Options for createProject(). */
+export interface CreateProjectOptions {
+  /** INTERNAL opt-in (default OFF) — see GenerateOptions.allowDormantSiteGeometry. */
+  allowDormantSiteGeometry?: boolean;
+}
+
+export function createProject(input: ProjectInput, opts: CreateProjectOptions = {}): Project {
   validateInput(input);
+  // V1 scope: rectangle sites only — non-rectangular input is rejected, never converted.
+  if (opts.allowDormantSiteGeometry !== true) assertV1SiteScope(input);
   const now = Date.now();
   return {
     id: `prj-${now.toString(36)}`,
@@ -307,6 +323,8 @@ function rankCandidatesBestFirst(cands: LayoutCandidate[], strategies: Candidate
 }
 
 export function generate(project: Project, opts: GenerateOptions = {}): GenerateResult {
+  // V1 scope: rectangle sites only (a Project may be built without createProject).
+  if (opts.allowDormantSiteGeometry !== true) assertV1SiteScope(project.input);
   const strategies = opts.strategies ?? [
     'area-efficiency',
     'functional-circulation',

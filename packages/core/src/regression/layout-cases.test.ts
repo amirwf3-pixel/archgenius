@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { generateLayouts } from '../generator/generator.js';
 import {
   benchmarkInputs, sweepInputs, BENCHMARK_OPTIONS, BENCHMARK_STRATEGIES, BENCHMARK_ROW_COUNT,
-  SWEEP_CASE_COUNT, HISTORICAL_SWEEP_CASE_COUNT, SWEEP_EXCLUDED_HISTORICAL_CASES,
+  SWEEP_CASE_COUNT, HISTORICAL_SWEEP_CASE_COUNT, SWEEP_EXCLUDED_HISTORICAL_CASES, v1ScopeInputs,
 } from './layout-cases.js';
 
 describe('layout regression harness — case set', () => {
@@ -43,4 +43,22 @@ describe('layout regression harness — case set', () => {
     expect(s.map(x => x.id)).toContain('R20x15--U0-2f3bd');
     expect(JSON.stringify(sweepInputs())).toBe(JSON.stringify(s));
   });
+
+  it('V1 scope (rectangle-only): 24 benchmark inputs (96 rows, 92 valid / 22 HARD) and 448 sweep cases', () => {
+    const b = v1ScopeInputs(benchmarkInputs());
+    expect(b).toHaveLength(24);
+    expect(b.every(x => x.input.site.shape === 'rectangle' && !x.id.startsWith('lshape/'))).toBe(true);
+    let rows = 0, valid = 0, hard = 0;
+    for (const { input } of b) {
+      for (const c of generateLayouts(input, [...BENCHMARK_STRATEGIES], { ...BENCHMARK_OPTIONS })) {
+        rows++;
+        if (c.valid) valid++;
+        hard += c.findings.filter(f => f.severity === 'hard').length;
+      }
+    }
+    expect({ rows, valid, hard }).toEqual({ rows: 96, valid: 92, hard: 22 });
+    const s = v1ScopeInputs(sweepInputs());
+    expect(s).toHaveLength(448);
+    expect(s.every(x => x.input.site.shape === 'rectangle')).toBe(true);
+  }, 120_000);
 });

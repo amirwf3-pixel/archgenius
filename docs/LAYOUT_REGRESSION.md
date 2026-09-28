@@ -66,9 +66,16 @@ determinism failure.
 ```sh
 npm ci && npm run build
 node packages/core/scripts/layout-regression.mjs --baseline <ref> --candidate <ref> \
-  [--suite bench|sweep|all] [--out report.json]
+  [--suite bench|sweep|all] [--scope v1|all] [--out report.json]
 # or: npm run regress:layout -w @archgenius/core -- --baseline <ref> --candidate <ref>
 ```
+
+- `--scope v1` (default): V1 production scope, which is **rectangle sites only**. The 8
+  L-shape benchmark inputs and 112 non-rectangular sweep cases are excluded, leaving 96
+  benchmark rows (24 inputs) and 448 sweep cases. V1 production planning rejects
+  non-rectangular sites with `UNSUPPORTED_SITE_GEOMETRY` (`src/site/v1-scope.ts`).
+- `--scope all`: every input, including the dormant L-shape / polygon planner. Pipeline
+  calls then pass the internal `allowDormantSiteGeometry: true` opt-in.
 
 - Refs are git commits. Each one is built with `git archive` and `tsc` into
   `$TMPDIR/archgenius-layout-regression/<sha>`, and reused if already built.

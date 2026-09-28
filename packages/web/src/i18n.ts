@@ -693,6 +693,9 @@ export function translateEngineError(err: string): string {
     [/^Unresolvable overlap between locked rooms (\S+) and (\S+)$/, 'هم‌پوشانی حل‌نشدنی بین فضاهای قفل‌شدهٔ {1} و {2}'],
     [/^Overlap but no movable room (\S+) vs (\S+)$/, 'هم‌پوشانی بدون فضای قابل جابه‌جایی: {1} و {2}'],
     [/^Repair failed, overlap remains with locked room (\S+) vs (\S+)$/, 'تعمیر ناموفق بود؛ هم‌پوشانی با فضای قفل‌شده باقی مانده است: {1} و {2}'],
+    // V1 scope: rectangle-only production planning
+    [/^UNSUPPORTED_SITE_GEOMETRY: site\.shape "([^"]+)" is not supported.*$/, 'شکل زمین «{1}» در نسخهٔ ۱ پشتیبانی نمی‌شود — نسخهٔ ۱ فقط زمین مستطیلی را طراحی می‌کند و زمین غیرمستطیلی به مستطیل تبدیل نمی‌شود.'],
+    [/^UNSUPPORTED_SITE_GEOMETRY: site\.shape "rectangle" carries non-rectangular geometry \(([^)]+)\).*$/, 'زمین مستطیلی دارای هندسهٔ غیرمستطیلی ({1}) است — نسخهٔ ۱ فقط زمین مستطیلی را طراحی می‌کند.'],
     // DXF export gate (hard site-envelope geometry violations)
     [/^exportDXF: candidate \S+ has (\d+) hard site-envelope geometry violations? — .*$/, 'خروجی DXF ممکن نیست: {1} مورد نقض سختِ محدودهٔ هندسی در این پلان وجود دارد — هندسه خارج از محدودهٔ سایت/ساخت است. برنامهٔ ساختمان یا ابعاد سایت را اصلاح کنید.'],
   ].map(([re, fa]) => ({ re: re as RegExp, fa: fa as string }) as MsgRule);

@@ -393,10 +393,11 @@ export function App() {
     handleEditResult(res);
   };
 
+  // V1 scope: rectangle is the only production site geometry. The L-shape / polygon
+  // choices are hidden (their form sections stay dormant); the core rejects any
+  // non-rectangular input with UNSUPPORTED_SITE_GEOMETRY.
   const shapeOptions = [
     { value: 'rectangle', label: t('shapeRectangle') },
-    { value: 'l-shape', label: t('shapeLShape') },
-    { value: 'polygon', label: t('shapePolygon') },
   ];
 
   return (

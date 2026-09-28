@@ -24,6 +24,7 @@ import type { ProjectInput } from '../model/project.js';
 import type { CandidateStrategy } from '../model/layout.js';
 import type { GenerateLayoutsOptions } from '../generator/generator.js';
 import { buildStressCases, STRESS_MATRIX_SIZE } from '../stress/matrix.js';
+import { isV1SupportedSite } from '../site/v1-scope.js';
 
 // ------------------------------------------------------------------ benchmark (Task 135)
 const RECT = { shape: 'rectangle', width: 18, length: 25, streetWidth: 8, accessSide: 'south', setbackNorth: 3, setbackSouth: 1.5, setbackEast: 2, setbackWest: 2 } as const;
@@ -79,4 +80,13 @@ export function sweepInputs(): RegressionInput[] {
     throw new Error(`sweep matrix size ${cases.length} != ${SWEEP_CASE_COUNT}`);
   }
   return cases.map(c => ({ id: c.id, input: JSON.parse(JSON.stringify(c.input)) }));
+}
+
+/**
+ * V1 production scope (Rectangle-only planning): the subset of `inputs` whose site is a
+ * plain rectangle, in the original order. Non-rectangular cases exercise the dormant
+ * L-shape / polygon planner and are excluded from V1 comparisons.
+ */
+export function v1ScopeInputs(inputs: RegressionInput[]): RegressionInput[] {
+  return inputs.filter(c => isV1SupportedSite(c.input.site));
 }

@@ -34,7 +34,10 @@
  *
  * Usage (from the repo root, after `npm run build`):
  *   node packages/core/scripts/layout-regression.mjs --baseline <ref> --candidate <ref>
- *        [--suite bench|sweep|all] [--out <report.json>]
+ *        [--suite bench|sweep|all] [--scope v1|all] [--out <report.json>]
+ *   --scope v1 (default): V1 production scope — rectangle sites only (non-rectangular
+ *   inputs are excluded); --scope all: every input, the dormant L-shape / polygon cases
+ *   included (pipeline calls pass the internal allowDormantSiteGeometry opt-in).
  *   Refs are git commits (built into $TMPDIR/archgenius-layout-regression/<sha>, reused if
  *   present); pass a path to an existing `packages/core/dist` directory instead with
  *   --baseline-dist / --candidate-dist.
@@ -59,6 +62,12 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 const suite = args.suite ?? 'all';
 if (!['bench', 'sweep', 'all'].includes(suite)) throw new Error('--suite must be bench|sweep|all');
+// V1 scope (Rectangle-only production planning): by default only rectangle sites are
+// compared; `--scope all` also runs the dormant L-shape / polygon cases (the pipeline
+// best candidate is then requested with the internal allowDormantSiteGeometry opt-in).
+const scope = args.scope ?? 'v1';
+if (!['v1', 'all'].includes(scope)) throw new Error('--scope must be v1|all');
+const dormantOpt = scope === 'all' ? { allowDormantSiteGeometry: true } : {};
 
 const git = (...a) => execFileSync('git', a, { cwd: ROOT, encoding: 'utf8' }).trim();
 
@@ -161,7 +170,7 @@ function evaluate(api, cases, sets) {
       for (const k of api.generateLayouts(clone(c.input), [...sets.bench.strategies], { ...sets.bench.options })) {
         rows.push({ id: `${c.id}/${k.metadata.strategy}`, ...candidateRecord(k) });
       }
-      const res = api.generate(api.createProject(clone(c.input)), { ...sets.bench.options, allStrategies: true });
+      const res = api.generate(api.createProject(clone(c.input), dormantOpt), { ...sets.bench.options, allStrategies: true, ...dormantOpt });
       best.push({ id: c.id, ...bestRecord(api, res) });
     }
     out.bench = { rows, best };
@@ -172,7 +181,7 @@ function evaluate(api, cases, sets) {
       for (const k of api.generateLayouts(clone(c.input), [...sets.sweep.strategies], { upperFloorFrontPrivate: true })) {
         rows.push({ id: `${c.id}/${k.metadata.strategy}`, ...candidateRecord(k) });
       }
-      const res = api.generate(api.createProject(clone(c.input)), { allStrategies: true });
+      const res = api.generate(api.createProject(clone(c.input), dormantOpt), { allStrategies: true, ...dormantOpt });
       best.push({ id: c.id, ...bestRecord(api, res) });
     }
     out.sweep = { rows, best };
@@ -268,6 +277,14 @@ const cases = await import(pathToFileURL(casesModule).href);
 const sets = {};
 if (suite !== 'sweep') sets.bench = { inputs: clone(cases.benchmarkInputs()), strategies: [...cases.BENCHMARK_STRATEGIES], options: { ...cases.BENCHMARK_OPTIONS } };
 if (suite !== 'bench') sets.sweep = { inputs: clone(cases.sweepInputs()), strategies: [...cases.BENCHMARK_STRATEGIES] };
+const scopeExcluded = {};
+if (scope === 'v1') {
+  for (const [k, set] of Object.entries(sets)) {
+    const kept = cases.v1ScopeInputs(set.inputs);
+    scopeExcluded[k] = set.inputs.length - kept.length;
+    set.inputs = kept;
+  }
+}
 const inputHash = sha(JSON.stringify(sets));
 
 const baseline = resolveBuild('baseline');
@@ -282,6 +299,9 @@ const report = {
     historicalSweepCases: cases.HISTORICAL_SWEEP_CASE_COUNT,
     excludedHistoricalSweepCases: cases.SWEEP_EXCLUDED_HISTORICAL_CASES,
     note: 'Historical sweep reported 564 cases; only the 560 stress-matrix cases are reproducible from the repository; the 4 missing cases are intentionally excluded.',
+    scope,
+    scopeExcludedInputs: scopeExcluded,
+    scopeNote: scope === 'v1' ? 'V1 scope: rectangle sites only; non-rectangular (dormant) inputs are excluded from the comparison.' : 'All geometries, including the dormant L-shape / polygon planner.',
   },
   suites: {},
 };
@@ -312,7 +332,7 @@ for (const s of Object.keys(sets)) {
   if (cmp.regressions.length || detB.length || detC.length) failed = true;
 
   const tb = suiteReport.totals.baseline, tc = suiteReport.totals.candidate;
-  console.log(`\n=== ${s.toUpperCase()} (${tb.rows} rows, ${tb.cases} cases; inputHash ${inputHash})`);
+  console.log(`\n=== ${s.toUpperCase()} (${tb.rows} rows, ${tb.cases} cases; scope ${scope}${scope === 'v1' ? `, ${scopeExcluded[s]} non-rectangle input(s) excluded` : ''}; inputHash ${inputHash})`);
   console.log(`rows valid        ${tb.valid} → ${tc.valid}`);
   console.log(`rows HARD         ${tb.hard} → ${tc.hard}`);
   for (const k of Object.keys(tb.perStrategy)) {
