@@ -622,11 +622,12 @@ export function createLShapePolygon(
       ];
       break;
     case 'se':
+      // notch removed: x ∈ [W − nW, W], y ∈ [0, nL]
       pts = [
-        { x: originX, y: originY + nL },
-        { x: originX + W - nW, y: originY + nL },
+        { x: originX, y: originY },
         { x: originX + W - nW, y: originY },
-        { x: originX + W, y: originY },
+        { x: originX + W - nW, y: originY + nL },
+        { x: originX + W, y: originY + nL },
         { x: originX + W, y: originY + L },
         { x: originX, y: originY + L },
       ];

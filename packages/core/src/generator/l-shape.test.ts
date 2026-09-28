@@ -76,7 +76,7 @@ describe('Phase 25: L-shape placement engine', () => {
     }
   });
 
-  it('corner matrix: NE/NW/SW feasible with zero hard findings; SE honestly infeasible', () => {
+  it('corner matrix: NE/NW/SW feasible with zero hard findings; SE geometry is the true south-east notch', () => {
     for (const corner of ['ne', 'nw', 'sw'] as const) {
       const res = generate(createProject(lInput(corner)));
       const bc = res.bestCandidate;
@@ -84,11 +84,26 @@ describe('Phase 25: L-shape placement engine', () => {
       const vr = validateLayout(bc!);
       expect(vr.hard, `${corner} must have no hard findings`).toEqual([]);
     }
-    // SE mirrors the notch onto the street side, leaving a 3 m street stub:
-    // the foyer-living adjacency plus wing circulation cannot both reach the
-    // stub, so the honest result is infeasible (no forced invalid geometry).
-    const se = generate(createProject(lInput('se')));
-    expect(se.bestCandidate).toBeFalsy();
+    // SE removes exactly x ∈ [11, 18], y ∈ [0, 9]: the site and buildable envelope are the
+    // exact mirror (about x = 9) of the SW case, with the same areas — not a street stub.
+    const se = computeBuildableGeometry(lInput('se').site);
+    const sw = computeBuildableGeometry(lInput('sw').site);
+    expect(se.siteArea).toBeCloseTo(18 * 22 - 7 * 9, 9);
+    expect(se.buildableArea).toBeCloseTo(sw.buildableArea, 9);
+    const n = notchRect('se');
+    const insideSite = (x: number, y: number) => rectInsidePolygon({ x: x - 0.01, y: y - 0.01, w: 0.02, h: 0.02 }, se.siteBoundary, 0);
+    expect(insideSite((n.x0 + n.x1) / 2, (n.y0 + n.y1) / 2)).toBe(false);
+    expect(insideSite(3.5, 4.5)).toBe(true);
+    const mirror = (rs: Array<{ x: number; y: number; w: number; h: number }>) =>
+      rs.map(r => ({ x: +(18 - r.x - r.w).toFixed(9), y: +r.y.toFixed(9), w: +r.w.toFixed(9), h: +r.h.toFixed(9) }))
+        .sort((a, b) => a.y - b.y || a.x - b.x);
+    const norm = (rs: Array<{ x: number; y: number; w: number; h: number }>) =>
+      rs.map(r => ({ x: +r.x.toFixed(9), y: +r.y.toFixed(9), w: +r.w.toFixed(9), h: +r.h.toFixed(9) })).sort((a, b) => a.y - b.y || a.x - b.x);
+    expect(norm(se.buildableRects)).toEqual(mirror(sw.buildableRects));
+    // placement feasibility on the corrected SE envelope is the planner's concern: whatever it
+    // returns, a usable candidate is never allowed to carry hard findings
+    const res = generate(createProject(lInput('se')));
+    if (res.bestCandidate) expect(validateLayout(res.bestCandidate).hard).toEqual([]);
   });
 
   it('wing allocation: every placed room is inside the L buildable polygon and out of the notch', () => {
