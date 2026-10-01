@@ -205,10 +205,11 @@ export interface GenerateOptions {
   /** Task 128 opt-in (default OFF): forwarded to generateLayouts — two-stage L-shape room-quality selection. */
   lShapeRoomQualitySelection?: boolean;
   /**
-   * P4 opt-in (default OFF): coordinated rectangle planner prototype for single-floor
-   * rectangle sites without a stair / elevator core, adopted per strategy only through
-   * its guard (see GenerateLayoutsOptions.coordinatedRectPlanner). Omitted or false =
-   * legacy output, byte-identical.
+   * P4–P10 opt-in (default OFF): coordinated rectangle planner for rectangle sites —
+   * single-floor sites without a core (P4) and 2+ floor sites with a coordinated stair /
+   * elevator core (P5), with the P6–P10 residual / vertical-frame retries. Adopted per
+   * strategy only through its guards (see GenerateLayoutsOptions.coordinatedRectPlanner).
+   * Omitted or false = legacy output, byte-identical.
    */
   coordinatedRectPlanner?: boolean;
 }
