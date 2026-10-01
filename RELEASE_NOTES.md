@@ -3,6 +3,36 @@
 Local, unpushed commits on the working branch (remote head is still `86b5121`). Each item lists
 its commit; items without a commit produced no code change.
 
+### Coordinated rectangle planner (`coordinatedRectPlanner`, opt-in, default OFF) — P1–P10 complete
+
+An API-level option of `generate()` / `generateLayouts()` (not exposed in the UI). Omitted or
+false = legacy output, byte-identical (layout regression harness: 0 changed rows; best DXFs
+byte-identical 32/32 benchmark, 177/177 sweep). When on, a coordinated building frame is tried per
+strategy and adopted only through the existing adoption guard; any rejection returns the exact
+legacy candidate.
+
+- **P1** pure building-frame derivation (`layout/building-frame.ts`).
+- **P2** rectangle public-band families extracted from the placer (behaviour-preserving).
+- **P3** optional pinned zones / public family inputs to `placeSpaces()` (absent = unchanged).
+- **P4** single-floor, no-core coordinated planner behind a strict adoption guard.
+- **P5** coordinated multi-floor stair/elevator core on a shared frame.
+- **P6** strict frame-residual check (placed rects entering the residual → rejected).
+- **P7** vertical (depth-dominant) frame mode.
+- **P8** residual retry without a side residual.
+- **P9** target-depth retry.
+- **P10** bounded vertical target-length retry.
+
+Measured with the option on (128-case benchmark + 560-case matrix, 1888 strategy rows): 237
+coordinated adoptions (61 of them via P10); all other rows keep the legacy candidate.
+
+**P11 — diagnosed, rejected (`NO SAFE SMALL FIX`, no production change).** The largest remaining
+non-adopted group with a valid legacy (28 rows) adds a soft `CIRCULATION_EXCESSIVE` on the ground
+floor of multi-floor layouts. Circulation area actually decreases versus legacy and the corridor
+has no unserved length; the ratio exceeds 35 % only because rooms shrink toward their targets
+(legacy passes with oversized rooms, e.g. a 122 m² living room). Removing the finding would require
+inflating rooms, changing programme/stair sizing, redesigning the corridor topology, or changing
+the adoption guard / threshold — none of which is a safe bounded fix.
+
 ### Plan inspection UI
 - **Task 145 — per-room dimension callouts** (`8c984e7`): the selected room shows edge-length
   callouts computed only from the canonical `Space.polygon` (world metres); geometry is never

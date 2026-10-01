@@ -90,6 +90,7 @@
 | 16 | P16-A parking band reservation + stall placement · P16-B all-side entrance orientation · P16-C proportions/quality depth · P16-D DXF presentation QA |
 | 17 | P17-A architectural audit · P17-B form-quality ranking · P17-C per-floor envelope compaction · P17-D corridor-quality ranking · P17-E east/west access · P17-F final architectural QA (0 CRITICAL / 0 HIGH / 5 MEDIUM) |
 | 18 | Final QA: exact door-swing sector geometry (swing/furniture SOFT false positives eliminated); residual/circulation findings confirmed intentional |
+| Post-v1.1.0 (Unreleased) | Coordinated rectangle planner P1–P10 **complete** (opt-in `coordinatedRectPlanner`, default OFF, legacy output byte-identical when off); P11 diagnosed — `NO SAFE SMALL FIX`, rejected as unsafe, no production change — see [RELEASE_NOTES.md](RELEASE_NOTES.md) |
 | Post-v1.1.0 (Unreleased) | Tasks 145–156: per-room dimension callouts, CI workflow (not yet run on GitHub), golden DXF fixtures, bounded balcony + yard (core and UI), Persian yard/program finding text — see [RELEASE_NOTES.md](RELEASE_NOTES.md) |
 
 ## Release state (v1.1.0)
