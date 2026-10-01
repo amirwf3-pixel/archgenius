@@ -204,6 +204,13 @@ export interface GenerateOptions {
   lShapeUpperCoreCirculation?: boolean;
   /** Task 128 opt-in (default OFF): forwarded to generateLayouts — two-stage L-shape room-quality selection. */
   lShapeRoomQualitySelection?: boolean;
+  /**
+   * P4 opt-in (default OFF): coordinated rectangle planner prototype for single-floor
+   * rectangle sites without a stair / elevator core, adopted per strategy only through
+   * its guard (see GenerateLayoutsOptions.coordinatedRectPlanner). Omitted or false =
+   * legacy output, byte-identical.
+   */
+  coordinatedRectPlanner?: boolean;
 }
 
 /**
@@ -355,6 +362,7 @@ export function generate(project: Project, opts: GenerateOptions = {}): Generate
     ...(opts.notchShaftCorridorOverlap === true ? { notchShaftCorridorOverlap: true } : {}),
     ...(opts.lShapeUpperCoreCirculation === true ? { lShapeUpperCoreCirculation: true } : {}),
     ...(opts.lShapeRoomQualitySelection === true ? { lShapeRoomQualitySelection: true } : {}),
+    ...(opts.coordinatedRectPlanner === true ? { coordinatedRectPlanner: true } : {}),
   };
   const all = Object.keys(genOpts).length > 0
     ? generateLayouts(project.input, strategies, genOpts)

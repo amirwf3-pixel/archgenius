@@ -31,7 +31,7 @@ import { IR_NATIONAL_MBR_PACK } from '../regulations/packs/ir-national-mbr.js';
 export const CORRIDOR_W = 1.5;
 const MIN_SIDE = 1.0;
 const BATH_STRIP_H = 2.6; // corridor-edge wet strip, m
-const KITCHEN_W = 2.4;
+export const KITCHEN_W = 2.4;
 
 /**
  * P16-C — Band-cell quality depth. A band cell that absorbs the WHOLE cross
@@ -49,10 +49,10 @@ const KITCHEN_W = 2.4;
  * the M4 convention, restated for the column/branch paths. No dimension is
  * special-cased: every constant mirrors an existing contract value.
  */
-const CELL_QUALITY_MAX_ASPECT = 3.5;
-const CELL_QUALITY_DAYLIGHT_DEPTH = 7.0;
-const CELL_QUALITY_MIN_VOID = 0.6; // never manufacture a sliver void
-function cappedBandDepth(
+export const CELL_QUALITY_MAX_ASPECT = 3.5;
+export const CELL_QUALITY_DAYLIGHT_DEPTH = 7.0;
+export const CELL_QUALITY_MIN_VOID = 0.6; // never manufacture a sliver void
+export function cappedBandDepth(
   spec: { minWidth?: number; minLength?: number; minArea?: number; targetArea?: number },
   alongW: number,
   bandExtent: number,
@@ -89,14 +89,14 @@ export interface PlacedSpec extends SpaceSpec {
   placedLabel: string;
 }
 
-type SpineKind = 'horizontal' | 'vertical' | 'l-spur';
-interface StrategyConfig {
+export type SpineKind = 'horizontal' | 'vertical' | 'l-spur';
+export interface StrategyConfig {
   spine: SpineKind;
   corridorOffsetFraction: number;
   spurWidthFraction: number;
   verticalCorridorFraction?: number;
 }
-function strategyConfig(s: CandidateStrategy): StrategyConfig {
+export function strategyConfig(s: CandidateStrategy): StrategyConfig {
   switch (s) {
     case 'area-efficiency':        return { spine: 'horizontal', corridorOffsetFraction: 0.45, spurWidthFraction: 0 };
     case 'functional-circulation': return { spine: 'l-spur',     corridorOffsetFraction: 0.48, spurWidthFraction: 0.16 };
@@ -105,7 +105,8 @@ function strategyConfig(s: CandidateStrategy): StrategyConfig {
   }
 }
 
-interface ZoneLayout {
+/** Zone partition of a rectangular footprint (carveZones output; P3: optionally pinned by the caller). */
+export interface ZoneLayout {
   zones: Record<Zone, Rect[]>;
   corridors: Rect[];
   entrancePatch?: Rect;
@@ -117,6 +118,162 @@ interface ZoneLayout {
   elevatorPocket?: Rect;
   /** Phase 5.5B: set only when the horizontal / L-spur stair pocket was rotated. */
   stairPocketRotated?: Rect;
+  /** P7: explicit service designation of a PINNED layout (the coordinated planner) —
+   *  the kitchen strip and the stair pocket, each also listed in zones.service. When
+   *  either is set the placer takes them verbatim instead of guessing the kitchen /
+   *  stair rect from its position in the footprint (the coordinated frame may be
+   *  narrower than the slice). carveZones never sets them. */
+  kitchenPocket?: Rect;
+  stairPocket?: Rect;
+}
+
+/**
+ * Zone-model dimension rules shared by carveZones and the pure building-frame
+ * derivation (layout/building-frame.ts). Pure; the arithmetic is exactly the
+ * inline zoning arithmetic it replaces — no value is new.
+ */
+/** Band cells (programme minimums) of the specs whose zone is in `zonesIn`. */
+export function zoneBandCells(specs: PlacedSpec[], zonesIn: Zone[]): BandCellDemand[] {
+  return specs
+    .filter(s => zonesIn.includes(zoneOf(s as any)))
+    .map(s => ({
+      type: s.type,
+      minWidth: Math.max(s.minWidth ?? 1.1, 0.9),
+      minHeight: Math.max(s.minLength ?? s.minWidth ?? 2.0, 1.2),
+      minArea: Math.max(s.minArea ?? 0, 0.25),
+      target: Math.max(s.targetArea ?? 0, s.minArea ?? 0, 0.25),
+    }));
+}
+/** Planning preference (mirrors MBH4 §7-1-1-8's main-habitable minimum): on units large
+ *  enough for it to apply, the generator AIMs for 12 m² main rooms before their program
+ *  minimums — a sizing preference for partitioning only. */
+const ZONE_MAIN_TYPES = new Set(['living', 'dining', 'bedroom', 'master-bedroom', 'family-room', 'guest-room']);
+const ZONE_MAIN_PREF_MIN = 12;
+export function zoneUnitIsLarge(footprint: Rect): boolean { return footprint.w * footprint.h >= 60; }
+export function strictifyBandCells(cells: BandCellDemand[], unitIsLarge: boolean): BandCellDemand[] {
+  return !unitIsLarge ? cells : cells.map(c =>
+    ZONE_MAIN_TYPES.has(c.type) ? { ...c, minArea: Math.max(c.minArea, ZONE_MAIN_PREF_MIN) } : c);
+}
+/** Horizontal / L-spur entrance spur width (0 when the strategy has no spur or the band is too narrow). */
+export function entrySpurWidth(bandW: number, spurWidthFraction: number): number {
+  return (spurWidthFraction > 0 && bandW > 4.5)
+    ? Math.max(1.4, Math.min(1.9, bandW * spurWidthFraction)) : 0;
+}
+/** Kitchen strip width for a public work band of width `workW`. */
+export function kitchenStripWidth(workW: number): number {
+  return Math.max(1.5, Math.min(KITCHEN_W, Math.max(2.0, workW * 0.25)));
+}
+/** Horizontal / L-spur (unrotated) stair pocket width along the corridor. */
+export function stairPocketWidth(bandW: number): number {
+  return Math.min(2.9, Math.max(2.6, bandW * 0.20));
+}
+/** Horizontal / L-spur (unrotated) stair pocket depth across a private band of depth `bandH`. */
+export function stairPocketDepth(bandH: number): number {
+  return Math.min(4.6, Math.max(4.2, bandH * 0.55));
+}
+
+/**
+ * Vertical-spine band test at spine fraction `f` (carveZones' vfTest, extracted verbatim
+ * so the P7 coordinated planner applies the identical predicate to every floor).
+ */
+export function verticalSpineFits(
+  footprint: Rect, f: number, needStair: boolean, hasKitchen: boolean, hasStorage: boolean,
+  pubCells: BandCellDemand[], privCells: BandCellDemand[],
+): boolean {
+  const vxT = footprint.x + footprint.w * f - CORRIDOR_W / 2;
+  const pubW = vxT - footprint.x;
+  const privW = footprint.x + footprint.w - (vxT + CORRIDOR_W);
+  if (pubW < 1.2 || privW < 1.2) return false;
+  const kH = (hasKitchen && footprint.h > 6 && pubW > 2.5) ? Math.min(4.2, Math.max(3.0, footprint.h * 0.26)) : 0;
+  const pubOk = pubCells.length === 0
+    || (footprint.h - kH > 0 && bandCanHost(pubW, footprint.h - kH, pubCells));
+  const stairH = (needStair && footprint.h > 5.5) ? Math.min(2.9, Math.max(2.6, footprint.h * 0.20)) : 0;
+  const storH = (hasStorage && !needStair && footprint.h > 6 && privW > 2.0) ? Math.min(1.8, Math.max(1.4, footprint.h * 0.10)) : 0;
+  const privOk = privCells.length === 0
+    || (footprint.h - stairH - storH > 0 && bandCanHost(privW, footprint.h - stairH - storH, privCells));
+  return pubOk && privOk;
+}
+
+/**
+ * Vertical-spine zone partition at spine fraction `vf` (carveZones' vertical branch,
+ * extracted verbatim): full-depth corridor, public band west with the kitchen pocket at
+ * its north end, private band east with the stair pocket at its south end against the
+ * corridor and the elevator cell above it, storage pocket on stairless floors.
+ */
+export function carveVerticalZones(
+  footprint: Rect, vf: number, needStair: boolean, hasKitchen: boolean, hasStorage: boolean,
+  privCells: BandCellDemand[], liftCell: { width: number; depth: number } | null,
+  designate = false,
+): ZoneLayout {
+  const zones: Record<Zone, Rect[]> = {
+    public: [], 'semi-private': [], private: [], service: [], circulation: [],
+  };
+  const corridors: Rect[] = [];
+  const vx = footprint.x + footprint.w * vf - CORRIDOR_W / 2;
+  corridors.push({ x: vx, y: footprint.y, w: CORRIDOR_W, h: footprint.h });
+  let publicRect: Rect = { x: footprint.x, y: footprint.y, w: vx - footprint.x, h: footprint.h };
+  // Kitchen pocket at NORTH end of public band for vertical spine — keeps living/dining
+  // south and directly adjacent to the central corridor (so CIRC_INACCESSIBLE does not
+  // appear), while still giving the ground floor a dedicated service zone for the kitchen.
+  // Full-height east strip would block living from the corridor (AGX-01 regression).
+  let kitchenPocket: Rect | undefined;
+  let stairPocket: Rect | undefined;
+  if (hasKitchen && publicRect.h > 6 && publicRect.w > 2.5) {
+    const kH = Math.min(4.2, Math.max(3.0, publicRect.h * 0.26));
+    if (publicRect.h > kH + 2.5) {
+      kitchenPocket = { x: publicRect.x, y: publicRect.y + publicRect.h - kH, w: publicRect.w, h: kH };
+      zones.service.push(kitchenPocket);
+      publicRect = { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: publicRect.h - kH };
+    }
+  }
+  zones.public.push(publicRect);
+  let eastRect: Rect = { x: vx + CORRIDOR_W, y: footprint.y, w: footprint.x + footprint.w - (vx + CORRIDOR_W), h: footprint.h };
+  let vElevatorPocket: Rect | undefined;
+  // Stair pocket for vertical spine: at south end of private band (near entrance)
+  if (needStair && eastRect.h > 5.5) {
+    const pocketH = Math.min(2.9, Math.max(2.6, eastRect.h * 0.20));
+    const pocketW = Math.min(4.6, Math.max(4.2, eastRect.w * 0.55));
+    stairPocket = { x: eastRect.x, y: eastRect.y, w: pocketW, h: pocketH };
+    zones.service.push(stairPocket);
+    eastRect = { x: eastRect.x, y: eastRect.y + pocketH, w: eastRect.w, h: eastRect.h - pocketH };
+    // Elevator shaft cell: directly beside the stair pocket (compact vertical
+    // core), against the vertical corridor so its landing wall faces it. The
+    // door wall runs along the corridor, so the cell is rotated: width (along
+    // the door wall) in y, depth in x. Reserved HERE, during zoning; the stair
+    // pocket and the corridor are unchanged, the private band starts above it.
+    // Reserved only when the shrunken private band can STILL host its cells
+    // (the same band predicate the spine chooser uses) — a shaft must never
+    // squeeze the band into a failed layout that the repair passes then
+    // resolve by displacing the stair hall.
+    if (liftCell && eastRect.w + 1e-9 >= liftCell.depth && eastRect.h - liftCell.width > 2.5
+      && (privCells.length === 0 || bandCanHost(eastRect.w, eastRect.h - liftCell.width, privCells))) {
+      vElevatorPocket = { x: eastRect.x, y: eastRect.y, w: liftCell.depth, h: liftCell.width };
+      eastRect = { x: eastRect.x, y: eastRect.y + liftCell.width, w: eastRect.w, h: eastRect.h - liftCell.width };
+    }
+  }
+  // Storage pocket east for vertical — compact square, avoid west sliver
+  // When no stair, carve a small south-east pocket from private so storage does not overlap private rows
+  if (hasStorage && !needStair && eastRect.h > 6 && eastRect.w > 2.0) {
+    const storW = Math.min(2.0, Math.max(1.4, eastRect.w * 0.40));
+    const storH = Math.min(1.8, Math.max(1.4, eastRect.h * 0.10));
+    // Carve from south edge of eastRect
+    zones.service.push({ x: eastRect.x, y: eastRect.y, w: storW, h: storH });
+    // Shrink eastRect to avoid overlap — but keep width, just push north? Actually storage at south edge, so private starts above it at x+storW?
+    // To keep private contiguous, put storage overlay small corner and shrink private slightly north, but keep x.
+    // Simpler: keep eastRect full, but note storage overlaps — we will handle placement via service rect directly, and private will be offset north by storH for the width of storW only if needed.
+    // For now, shrink eastRect south edge up by storH only for the storW width is complex; instead keep eastRect as is and place storage overlapping will be moved by resolveOverlaps — avoid by not pushing storage as separate placement but as carve.
+    // Actually carve: move eastRect north by storH and keep storage at south, but storage width full eastRect.w would waste. Better keep storage width limited and eastRect remains eastRect.y+storH for that column? Complex.
+    // Simple: just keep storage service rect and offset eastRect north by storH (full width) — private slightly smaller but storage square.
+    eastRect = { x: eastRect.x, y: eastRect.y + storH, w: eastRect.w, h: eastRect.h - storH };
+  }
+  zones.private.push(eastRect);
+  const out: ZoneLayout = vElevatorPocket ? { zones, corridors, elevatorPocket: vElevatorPocket } : { zones, corridors };
+  // P7 (coordinated planner only): designate the carved kitchen / stair pockets.
+  if (designate) {
+    if (kitchenPocket) out.kitchenPocket = kitchenPocket;
+    if (stairPocket) out.stairPocket = stairPocket;
+  }
+  return out;
 }
 
 function carveZones(
@@ -134,28 +291,15 @@ function carveZones(
   // quantized ladder around the strategy default (closest feasible fraction wins —
   // deterministic). If no fraction fits, the default stands and the existing honest
   // gates (room contract minima + program completeness) report the shortfall.
-  const bandCells = (zonesIn: Zone[]): BandCellDemand[] => specs
-    .filter(s => zonesIn.includes(zoneOf(s as any)))
-    .map(s => ({
-      type: s.type,
-      minWidth: Math.max(s.minWidth ?? 1.1, 0.9),
-      minHeight: Math.max(s.minLength ?? s.minWidth ?? 2.0, 1.2),
-      minArea: Math.max(s.minArea ?? 0, 0.25),
-      target: Math.max(s.targetArea ?? 0, s.minArea ?? 0, 0.25),
-    }));
   // Planning preference (mirrors MBH4 §7-1-1-8's main-habitable minimum): on units large
   // enough for it to apply, the generator AIMs for 12 m² main rooms before their program
   // minimums — a sizing preference for partitioning only; the rule itself still decides
   // validity in the regulation pack (this never suppresses or reclassifies anything).
-  const MAIN_TYPES = new Set(['living', 'dining', 'bedroom', 'master-bedroom', 'family-room', 'guest-room']);
-  const MAIN_PREF_MIN = 12;
-  const unitIsLarge = footprint.w * footprint.h >= 60;
-  const pubCellsR = bandCells(['public', 'semi-private']);
-  const privCellsR = bandCells(['private']);
-  const strictify = (cells: BandCellDemand[]) => !unitIsLarge ? cells : cells.map(c =>
-    MAIN_TYPES.has(c.type) ? { ...c, minArea: Math.max(c.minArea, MAIN_PREF_MIN) } : c);
-  const pubCells = strictify(pubCellsR);
-  const privCells = strictify(privCellsR);
+  const unitIsLarge = zoneUnitIsLarge(footprint);
+  const pubCellsR = zoneBandCells(specs, ['public', 'semi-private']);
+  const privCellsR = zoneBandCells(specs, ['private']);
+  const pubCells = strictifyBandCells(pubCellsR, unitIsLarge);
+  const privCells = strictifyBandCells(privCellsR, unitIsLarge);
   const zones: Record<Zone, Rect[]> = {
     public: [], 'semi-private': [], private: [], service: [], circulation: [],
   };
@@ -168,78 +312,12 @@ function carveZones(
   const liftCell = specs.some(s => s.type === 'elevator-hall') ? elevatorCellSize() : null;
 
   if (cfg.spine === 'vertical') {
-    const vfTest = (f: number, pubCells: BandCellDemand[], privCells: BandCellDemand[]): boolean => {
-      const vxT = footprint.x + footprint.w * f - CORRIDOR_W / 2;
-      const pubW = vxT - footprint.x;
-      const privW = footprint.x + footprint.w - (vxT + CORRIDOR_W);
-      if (pubW < 1.2 || privW < 1.2) return false;
-      const kH = (hasKitchen && footprint.h > 6 && pubW > 2.5) ? Math.min(4.2, Math.max(3.0, footprint.h * 0.26)) : 0;
-      const pubOk = pubCells.length === 0
-        || (footprint.h - kH > 0 && bandCanHost(pubW, footprint.h - kH, pubCells));
-      const stairH = (needStair && footprint.h > 5.5) ? Math.min(2.9, Math.max(2.6, footprint.h * 0.20)) : 0;
-      const storH = (hasStorage && !needStair && footprint.h > 6 && privW > 2.0) ? Math.min(1.8, Math.max(1.4, footprint.h * 0.10)) : 0;
-      const privOk = privCells.length === 0
-        || (footprint.h - stairH - storH > 0 && bandCanHost(privW, footprint.h - stairH - storH, privCells));
-      return pubOk && privOk;
-    };
+    const vfTest = (f: number, pubCells: BandCellDemand[], privCells: BandCellDemand[]): boolean =>
+      verticalSpineFits(footprint, f, needStair, hasKitchen, hasStorage, pubCells, privCells);
     let vf = chooseSpineFraction(cfg.verticalCorridorFraction ?? 0.5, (f) => vfTest(f, pubCells, privCells), { lo: 0.30, hi: 0.70, step: 0.01 });
     if (!vfTest(vf, pubCells, privCells))
       vf = chooseSpineFraction(cfg.verticalCorridorFraction ?? 0.5, (f) => vfTest(f, pubCellsR, privCellsR), { lo: 0.30, hi: 0.70, step: 0.01 });
-    const vx = footprint.x + footprint.w * vf - CORRIDOR_W / 2;
-    corridors.push({ x: vx, y: footprint.y, w: CORRIDOR_W, h: footprint.h });
-    let publicRect: Rect = { x: footprint.x, y: footprint.y, w: vx - footprint.x, h: footprint.h };
-    // Kitchen pocket at NORTH end of public band for vertical spine — keeps living/dining
-    // south and directly adjacent to the central corridor (so CIRC_INACCESSIBLE does not
-    // appear), while still giving the ground floor a dedicated service zone for the kitchen.
-    // Full-height east strip would block living from the corridor (AGX-01 regression).
-    if (hasKitchen && publicRect.h > 6 && publicRect.w > 2.5) {
-      const kH = Math.min(4.2, Math.max(3.0, publicRect.h * 0.26));
-      if (publicRect.h > kH + 2.5) {
-        zones.service.push({ x: publicRect.x, y: publicRect.y + publicRect.h - kH, w: publicRect.w, h: kH });
-        publicRect = { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: publicRect.h - kH };
-      }
-    }
-    zones.public.push(publicRect);
-    let eastRect: Rect = { x: vx + CORRIDOR_W, y: footprint.y, w: footprint.x + footprint.w - (vx + CORRIDOR_W), h: footprint.h };
-    let vElevatorPocket: Rect | undefined;
-    // Stair pocket for vertical spine: at south end of private band (near entrance)
-    if (needStair && eastRect.h > 5.5) {
-      const pocketH = Math.min(2.9, Math.max(2.6, eastRect.h * 0.20));
-      const pocketW = Math.min(4.6, Math.max(4.2, eastRect.w * 0.55));
-      zones.service.push({ x: eastRect.x, y: eastRect.y, w: pocketW, h: pocketH });
-      eastRect = { x: eastRect.x, y: eastRect.y + pocketH, w: eastRect.w, h: eastRect.h - pocketH };
-      // Elevator shaft cell: directly beside the stair pocket (compact vertical
-      // core), against the vertical corridor so its landing wall faces it. The
-      // door wall runs along the corridor, so the cell is rotated: width (along
-      // the door wall) in y, depth in x. Reserved HERE, during zoning; the stair
-      // pocket and the corridor are unchanged, the private band starts above it.
-      // Reserved only when the shrunken private band can STILL host its cells
-      // (the same band predicate the spine chooser uses) — a shaft must never
-      // squeeze the band into a failed layout that the repair passes then
-      // resolve by displacing the stair hall.
-      if (liftCell && eastRect.w + 1e-9 >= liftCell.depth && eastRect.h - liftCell.width > 2.5
-        && (privCells.length === 0 || bandCanHost(eastRect.w, eastRect.h - liftCell.width, privCells))) {
-        vElevatorPocket = { x: eastRect.x, y: eastRect.y, w: liftCell.depth, h: liftCell.width };
-        eastRect = { x: eastRect.x, y: eastRect.y + liftCell.width, w: eastRect.w, h: eastRect.h - liftCell.width };
-      }
-    }
-    // Storage pocket east for vertical — compact square, avoid west sliver
-    // When no stair, carve a small south-east pocket from private so storage does not overlap private rows
-    if (hasStorage && !needStair && eastRect.h > 6 && eastRect.w > 2.0) {
-      const storW = Math.min(2.0, Math.max(1.4, eastRect.w * 0.40));
-      const storH = Math.min(1.8, Math.max(1.4, eastRect.h * 0.10));
-      // Carve from south edge of eastRect
-      zones.service.push({ x: eastRect.x, y: eastRect.y, w: storW, h: storH });
-      // Shrink eastRect to avoid overlap — but keep width, just push north? Actually storage at south edge, so private starts above it at x+storW?
-      // To keep private contiguous, put storage overlay small corner and shrink private slightly north, but keep x.
-      // Simpler: keep eastRect full, but note storage overlaps — we will handle placement via service rect directly, and private will be offset north by storH for the width of storW only if needed.
-      // For now, shrink eastRect south edge up by storH only for the storW width is complex; instead keep eastRect as is and place storage overlapping will be moved by resolveOverlaps — avoid by not pushing storage as separate placement but as carve.
-      // Actually carve: move eastRect north by storH and keep storage at south, but storage width full eastRect.w would waste. Better keep storage width limited and eastRect remains eastRect.y+storH for that column? Complex.
-      // Simple: just keep storage service rect and offset eastRect north by storH (full width) — private slightly smaller but storage square.
-      eastRect = { x: eastRect.x, y: eastRect.y + storH, w: eastRect.w, h: eastRect.h - storH };
-    }
-    zones.private.push(eastRect);
-    return vElevatorPocket ? { zones, corridors, elevatorPocket: vElevatorPocket } : { zones, corridors };
+    return carveVerticalZones(footprint, vf, needStair, hasKitchen, hasStorage, privCells, liftCell);
   }
 
   // Horizontal (+ L-spur)
@@ -248,13 +326,12 @@ function carveZones(
     const pubH = cyT - footprint.y;
     const privH = footprint.y + footprint.h - (cyT + CORRIDOR_W);
     if (pubH < 1.2 || privH < 1.2) return false;
-    const spurW = (cfg.spurWidthFraction > 0 && footprint.w > 4.5)
-      ? Math.max(1.4, Math.min(1.9, footprint.w * cfg.spurWidthFraction)) : 0;
+    const spurW = entrySpurWidth(footprint.w, cfg.spurWidthFraction);
     const pubWorkW = footprint.w - spurW;
-    const kw = hasKitchen ? Math.max(1.5, Math.min(KITCHEN_W, Math.max(2.0, pubWorkW * 0.25))) : 0;
+    const kw = hasKitchen ? kitchenStripWidth(pubWorkW) : 0;
     const pubMainW = pubWorkW > kw + 2.0 ? pubWorkW - kw : pubWorkW;
     const pubOk = pubCells.length === 0 || bandCanHost(pubMainW, pubH, pubCells);
-    const pocketW = (needStair && footprint.w > 5.5) ? Math.min(2.9, Math.max(2.6, footprint.w * 0.20)) : 0;
+    const pocketW = (needStair && footprint.w > 5.5) ? stairPocketWidth(footprint.w) : 0;
     const privMainW = footprint.w - pocketW;
     const privOk = privCells.length === 0 || (privMainW > 1.2 && bandCanHost(privMainW, privH, privCells));
     return pubOk && privOk;
@@ -269,7 +346,7 @@ function carveZones(
 
   let publicWork = publicBand;
   if (cfg.spurWidthFraction > 0 && publicBand.w > 4.5) {
-    const spurW = Math.max(1.4, Math.min(1.9, publicBand.w * cfg.spurWidthFraction));
+    const spurW = entrySpurWidth(publicBand.w, cfg.spurWidthFraction);
     entrancePatch = { x: publicBand.x, y: publicBand.y, w: spurW, h: publicBand.h };
     publicWork = { x: publicBand.x + spurW, y: publicBand.y, w: publicBand.w - spurW, h: publicBand.h };
     corridors.push(entrancePatch);
@@ -279,7 +356,7 @@ function carveZones(
   // — upper residential floors typically don't). Preserve minWidth 2.0 for kitchen where feasible, allow 1.5 only for very narrow sites.
   let publicMain: Rect = publicWork;
   if (hasKitchen) {
-    const kw = Math.max(1.5, Math.min(KITCHEN_W, Math.max(2.0, publicWork.w * 0.25)));
+    const kw = kitchenStripWidth(publicWork.w);
     if (publicWork.w > kw + 2.0) {
       zones.service.push({ x: publicWork.x + publicWork.w - kw, y: publicWork.y, w: kw, h: publicWork.h });
       publicMain = { x: publicWork.x, y: publicWork.y, w: publicWork.w - kw, h: publicWork.h };
@@ -299,8 +376,8 @@ function carveZones(
     // Phase 5.5B (opt-in): a band too shallow for the 4.2 m pocket depth would clip the
     // pocket to a hall no U-stair fits; rotate it along the corridor instead.
     const rotate = rotateShallowStairPocket && stairPocketRotationApplies(privateBand.w, privateBand.h);
-    const pocketW = rotate ? STAIR_POCKET_ROTATED_LENGTH : Math.min(2.9, Math.max(2.6, privateBand.w * 0.20));
-    const pocketH = rotate ? privateBand.h : Math.min(4.6, Math.max(4.2, privateBand.h * 0.55));
+    const pocketW = rotate ? STAIR_POCKET_ROTATED_LENGTH : stairPocketWidth(privateBand.w);
+    const pocketH = rotate ? privateBand.h : stairPocketDepth(privateBand.h);
     if (rotate) stairPocketRotated = { x: privateBand.x, y: privateBand.y, w: pocketW, h: pocketH };
     zones.service.push({ x: privateBand.x, y: privateBand.y, w: pocketW, h: pocketH });
     privateMain = { x: privateBand.x + pocketW, y: privateBand.y, w: privateBand.w - pocketW, h: privateBand.h };
@@ -489,6 +566,116 @@ export interface PlacerOptions {
    * Default OFF.
    */
   stackedPairMinArea?: boolean;
+  /**
+   * P3 (coordinated rectangle planner input, not yet used by the generator): an
+   * authoritative zone partition — corridor(s), band / pocket rects — in the plan
+   * coordinates of `footprint`. When supplied it is used INSTEAD of carveZones (the
+   * P16-B access frame maps it like every other rect); nothing else changes. The same
+   * contract as carveZones output applies (carveZones itself may emit service /
+   * corridor rects past the footprint edge or degenerate rects on tight sites, so those
+   * are accepted); a layout without zone / corridor arrays or with a non-finite
+   * coordinate throws a RangeError. Absent / null → carveZones exactly as before.
+   */
+  pinnedZones?: ZoneLayout | null;
+  /**
+   * P3: pin the rectangle public-band family instead of the placer's selection. The
+   * public band has two layers: the ENTRY layer (entry-gallery, entry-column, and the
+   * complete daylight layouts daylight-gallery-5.4A / dining-facade-row-5.5A /
+   * dining-entry-column-5.5D, which also place living + dining) and the LIVING/DINING
+   * layer (stacked, side-by-side, shallow-band). A pinned family replaces the selection
+   * of its own layer only; each family keeps its own geometric guards and geometry, and
+   * a pinned family that does not apply places nothing (never a substitute family).
+   * A pinned living/dining family excludes the complete daylight layouts from the entry
+   * layer; a pinned complete daylight layout skips the living/dining layer. Only bands
+   * with both living and dining are affected. Absent / null → legacy selection.
+   */
+  publicFamily?: PublicFamilyId | null;
+}
+
+/** P3: public families of the entry layer (painted in front of / beside the living field). */
+const ENTRY_LAYER_FAMILIES: ReadonlySet<string> = new Set([
+  'entry-gallery', 'entry-column', 'daylight-gallery-5.4A', 'dining-facade-row-5.5A', 'dining-entry-column-5.5D',
+]);
+/** P3: entry-layer families that are complete public layouts (they also place living + dining). */
+const COMPLETE_DAYLIGHT_FAMILIES: ReadonlySet<string> = new Set([
+  'daylight-gallery-5.4A', 'dining-facade-row-5.5A', 'dining-entry-column-5.5D',
+]);
+/** P3: living/dining layer families. */
+const MAIN_LAYER_FAMILIES: ReadonlySet<string> = new Set(['stacked', 'side-by-side', 'shallow-band']);
+
+/** P3: every rect of a zone layout, entrancePatch identity inside `corridors` preserved. */
+export function mapZoneLayout(layout: ZoneLayout, f: (r: Rect) => Rect): ZoneLayout {
+  const m = (r: Rect): Rect => { const o = f(r); return { x: o.x, y: o.y, w: o.w, h: o.h }; };
+  const corridors = layout.corridors.map(m);
+  let entrancePatch: Rect | undefined;
+  if (layout.entrancePatch) {
+    let i = layout.corridors.indexOf(layout.entrancePatch);
+    if (i < 0) {
+      const e = layout.entrancePatch;
+      i = layout.corridors.findIndex(c => c.x === e.x && c.y === e.y && c.w === e.w && c.h === e.h);
+    }
+    entrancePatch = i >= 0 ? corridors[i] : m(layout.entrancePatch);
+  }
+  const zones = {} as Record<Zone, Rect[]>;
+  for (const z of ['public', 'semi-private', 'private', 'service', 'circulation'] as Zone[]) zones[z] = (layout.zones[z] ?? []).map(m);
+  const out: ZoneLayout = { zones, corridors, entrancePatch, elevatorPocket: layout.elevatorPocket ? m(layout.elevatorPocket) : undefined };
+  if (layout.stairPocketRotated) out.stairPocketRotated = m(layout.stairPocketRotated);
+  // P7: a designated service pocket keeps its identity inside zones.service.
+  const svc = layout.zones.service ?? [];
+  const designated = (r: Rect): Rect => { const i = svc.indexOf(r); return i >= 0 ? zones.service[i] : m(r); };
+  if (layout.kitchenPocket) out.kitchenPocket = designated(layout.kitchenPocket);
+  if (layout.stairPocket) out.stairPocket = designated(layout.stairPocket);
+  return out;
+}
+
+/**
+ * P3: reject a structurally malformed pinned zone layout — missing zone / corridor
+ * arrays, non-rect entries or non-finite coordinates. Geometry that carveZones itself can
+ * produce (rects past the footprint edge, degenerate rects) is accepted, so pinning the
+ * carved layout always reproduces the unpinned placement.
+ */
+export function assertPinnedZones(layout: ZoneLayout): void {
+  const bad = (why: string) => { throw new RangeError(`placeSpaces: invalid pinnedZones — ${why}`); };
+  if (!layout || typeof layout !== 'object' || !layout.zones || !Array.isArray(layout.corridors)) bad('zones and corridors are required');
+  const rects: Rect[] = [...layout.corridors];
+  for (const z of ['public', 'semi-private', 'private', 'service', 'circulation'] as Zone[]) {
+    const arr = layout.zones[z];
+    if (arr !== undefined && !Array.isArray(arr)) bad(`zones.${z} must be an array`);
+    rects.push(...(arr ?? []));
+  }
+  for (const r of [layout.entrancePatch, layout.elevatorPocket, layout.stairPocketRotated, layout.kitchenPocket, layout.stairPocket]) if (r) rects.push(r);
+  for (const r of rects) {
+    if (!r || typeof r !== 'object' || ![r.x, r.y, r.w, r.h].every(Number.isFinite)) bad('every rect needs finite x, y, w, h');
+  }
+}
+
+/** The zone partition the placer carves for a (frame-south) footprint — exactly its carveZones call. */
+function carveZonesFor(footprint: Rect, strategy: CandidateStrategy, specs: PlacedSpec[], opts: PlacerOptions): ZoneLayout {
+  const cfg = strategyConfig(strategy);
+  const needStair = specs.some(s => s.type === 'stair-hall');
+  const hasKitchen = specs.some(s => s.type === 'kitchen');
+  const hasStorage = specs.some(s => s.type === 'storage');
+  return opts.rotateShallowStairPocket === true
+    ? carveZones(footprint, cfg, needStair, hasKitchen, hasStorage, specs, true)
+    : carveZones(footprint, cfg, needStair, hasKitchen, hasStorage, specs);
+}
+
+/**
+ * P3: the zone partition placeSpaces would carve itself for this footprint / access /
+ * strategy / programme / options, in plan coordinates (the standard assembly; the
+ * P17-E east/west row variant carves the same zones). Pinning it reproduces the
+ * unpinned placement.
+ */
+export function rectangleZoneLayout(
+  footprint: Rect,
+  specs: PlacedSpec[],
+  strategy: CandidateStrategy,
+  accessSide: 'north'|'south'|'east'|'west',
+  opts: PlacerOptions = {},
+): ZoneLayout {
+  const frame = buildAccessFrame(footprint, accessSide);
+  if (!frame) return mapZoneLayout(carveZonesFor(footprint, strategy, specs, opts), r => r);
+  return mapZoneLayout(carveZonesFor(frame.to(footprint), strategy, specs, opts), frame.from);
 }
 
 /** Placer explanation prefix proving the Phase 5.6E stacked-pair minArea cap fired. */
@@ -804,6 +991,628 @@ export function publicStackForDaylightApplies(
   return Math.abs(kitchen.y - bandB) < E && Math.min(kitchen.x + kitchen.w, bandR) - Math.max(kitchen.x, band.x) > E;
 }
 
+// ============================================================================
+// P2 — Rectangle public-band layout families.
+//
+// The Phase 13 / Phase 15 M3–M4 / P17-E / Phase 5.4A–5.5D public-band branches of
+// placeSpacesFacingSouth, extracted VERBATIM into small deterministic families. Each
+// family has ONE geometry routine, `plan(ctx)`: pure, it records the cells the legacy
+// branch painted — in the legacy mkSpace order — plus the legacy explanation lines.
+//   - place(plan, …) replays the recorded cells through the caller's mkSpace in the
+//     same order (mkSpace is pure; the resulting spaces are byte-identical);
+//   - demand(ctx) is the extent of the SAME plan measured from the band origin.
+// Branch selection (options, band predicates, fall-through order) stays in the
+// placer, exactly as before; families never read PlacerOptions.
+// ============================================================================
+
+export type PublicFamilyId =
+  | 'entry-gallery'
+  | 'entry-column'
+  | 'side-by-side'
+  | 'stacked'
+  | 'shallow-band'
+  | 'daylight-gallery-5.4A'
+  | 'dining-facade-row-5.5A'
+  | 'dining-entry-column-5.5D';
+
+/** One cell a family paints: the exact mkSpace arguments of the legacy branch. */
+export interface PublicCellPlacement {
+  type: SpaceType;
+  rect: Rect;
+  label: string;
+  id: string;
+  zone: Zone;
+}
+
+export interface PublicFamilyPlan {
+  family: PublicFamilyId;
+  /** the band the plan was computed in (demand is measured from its origin). */
+  band: Rect;
+  /** cells in legacy mkSpace order. */
+  cells: PublicCellPlacement[];
+  /** legacy explanation lines, in order. */
+  explanation: string[];
+  /** gallery families: the y where the living field starts (legacy galleryBottom). */
+  bottom?: number;
+}
+
+/** Extent of a plan's cells from its band origin (depth across the band, width along it). */
+export interface PublicFamilyDemand {
+  depth: number;
+  width: number;
+}
+
+export interface PublicFamily<C> {
+  id: PublicFamilyId;
+  /** pure geometry; null when the legacy branch would not paint (its own guards). */
+  plan(ctx: C): PublicFamilyPlan | null;
+  /** extent of plan(ctx) — the same geometry routine; null when plan(ctx) is null. */
+  demand(ctx: C): PublicFamilyDemand | null;
+  /** paint a plan: mkSpace per recorded cell in order, then the explanation lines. */
+  place(
+    plan: PublicFamilyPlan,
+    mkSpace: (type: SpaceType, r: Rect, label: string, id: string, zone: Zone) => Space,
+    placed: Space[],
+    explanation: string[],
+  ): void;
+}
+
+/** Extent of a plan measured from its band origin. */
+export function publicPlanDemand(plan: PublicFamilyPlan): PublicFamilyDemand {
+  let depth = 0, width = 0;
+  for (const c of plan.cells) {
+    depth = Math.max(depth, c.rect.y + c.rect.h - plan.band.y);
+    width = Math.max(width, c.rect.x + c.rect.w - plan.band.x);
+  }
+  return { depth, width };
+}
+
+function placePublicPlan(
+  plan: PublicFamilyPlan,
+  mkSpace: (type: SpaceType, r: Rect, label: string, id: string, zone: Zone) => Space,
+  placed: Space[],
+  explanation: string[],
+): void {
+  for (const c of plan.cells) placed.push(mkSpace(c.type, c.rect, c.label, c.id, c.zone));
+  explanation.push(...plan.explanation);
+}
+
+function definePublicFamily<C>(id: PublicFamilyId, plan: (ctx: C) => PublicFamilyPlan | null): PublicFamily<C> {
+  return {
+    id,
+    plan,
+    demand: (ctx: C) => { const p = plan(ctx); return p ? publicPlanDemand(p) : null; },
+    place: placePublicPlan,
+  };
+}
+
+/** A recorder with the mkSpace signature (for plans that reuse splitBinary). */
+function recordCells(cells: PublicCellPlacement[]) {
+  return (type: SpaceType, rect: Rect, label: string, id: string, zone: Zone): Space => {
+    cells.push({ type, rect, label, id, zone });
+    return { type, rect } as unknown as Space;
+  };
+}
+
+// ---------------------------------------------------------------- gallery families
+
+/** Gallery cell minimum width / height (Phase 15 M3). */
+export const galleryCellMinW = (s: PlacedSpec) => Math.max(s.minWidth ?? 1.1, 1.1);
+export const galleryCellMinH = (s: PlacedSpec) => Math.max(s.minLength ?? 1.4, 1.4);
+
+/** Inputs shared by the entry-gallery families (all values the legacy branch computed). */
+export interface PublicGalleryContext {
+  footprint: Rect;
+  publicRect: Rect;
+  living: PlacedSpec;
+  dining: PlacedSpec;
+  /** entry cells, entrance first (legacy order). */
+  galleryCells: PlacedSpec[];
+  galleryH: number;
+  totalMinW: number;
+  livingMinHBelow: number;
+  diningMinHBelow: number;
+  sideBySideBelow: boolean;
+  neededBelow: number;
+  /** the placed kitchen rect (world), if any. */
+  kitchenRect: Rect | null;
+  /** the zone layout's corridor rects. */
+  corridors: Rect[];
+}
+
+/**
+ * Phase 15 M3 gallery context for a public band (the legacy pre-computation): null when
+ * the entry cells do not form an acceptable gallery. `galleryCells` is sorted entrance-first.
+ */
+export function publicGalleryContext(
+  footprint: Rect,
+  publicRect: Rect,
+  living: PlacedSpec,
+  dining: PlacedSpec,
+  entryCells: PlacedSpec[],
+  guestWc: PlacedSpec | undefined,
+  kitchenRect: Rect | null,
+  corridors: Rect[],
+): PublicGalleryContext | null {
+  const galleryCells: PlacedSpec[] = [...entryCells];
+  if (guestWc !== undefined && galleryCells.length >= 1) galleryCells.push(guestWc); // a gallery is a SEQUENCE of entry rooms, not one isolated cell
+  // A lone cell is only acceptable when it is NOT the wet entry room (an isolated guest-wc
+  // filling a whole strip is junk) — a balcony/family/guest room along the front is sound.
+  const galleryAcceptable = galleryCells.length >= 2 ||
+    (galleryCells.length === 1 && galleryCells[0].type !== 'guest-wc');
+  if (!galleryAcceptable) return null;
+  // Entrance first along the row (exterior edge), then the rest in program order — stable.
+  galleryCells.sort((a, b) => (a.type === 'entrance' ? 0 : 1) - (b.type === 'entrance' ? 0 : 1));
+  const minW = galleryCellMinW;
+  const totalMinW = galleryCells.reduce((a, s) => a + minW(s), 0);
+  const livingMinHBelow = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);
+  const diningMinHBelow = Math.max(dining.minLength ?? dining.minWidth ?? 2.2, 2.0);
+  const sideBySideBelow = publicRect.w >= Math.max(living.minWidth ?? 3.0, 3.0) + Math.max(dining.minWidth ?? 2.2, 2.2);
+  const neededBelow = sideBySideBelow ? Math.max(livingMinHBelow, diningMinHBelow) : livingMinHBelow + diningMinHBelow;
+  let galleryH = Math.min(2.3, Math.max(1.7, publicRect.h * 0.22));
+  if (publicRect.h - galleryH < neededBelow) galleryH = publicRect.h - neededBelow;
+  return {
+    footprint, publicRect, living, dining, galleryCells, galleryH, totalMinW,
+    livingMinHBelow, diningMinHBelow, sideBySideBelow, neededBelow, kitchenRect, corridors,
+  };
+}
+
+/** The legacy row-gallery guard: the gallery row fits across the band above the living field. */
+export function publicGalleryRowFits(g: PublicGalleryContext): boolean {
+  const { publicRect, galleryH, neededBelow, totalMinW } = g;
+  return galleryH >= 1.5 && publicRect.h - galleryH >= neededBelow - 1e-6 && publicRect.w >= totalMinW - 1e-6;
+}
+
+/** Phase 5.4A frame: the legacy side-by-side prediction; null when dining already has an exterior edge. */
+interface DaylightGalleryFrame {
+  W: number; H: number; L: number;
+  livT: number; dinT: number; livMinW: number; dinMinW: number;
+}
+function daylightGalleryFrame(g: PublicGalleryContext): DaylightGalleryFrame | null {
+  const { living, dining, publicRect, footprint, sideBySideBelow, totalMinW } = g;
+  const livT = Math.max(living.minArea, living.targetArea);
+  const dinT = Math.max(dining.minArea, dining.targetArea);
+  const livMinW = Math.max(living.minWidth ?? 3.0, 3.0);
+  const dinMinW = Math.max(dining.minWidth ?? 2.2, 2.2);
+  const W = publicRect.w, H = publicRect.h;
+  const fpR = footprint.x + footprint.w, fpB = footprint.y + footprint.h;
+  const onFacade = Math.abs(publicRect.y - footprint.y) < 1e-6;
+  // Legacy prediction: dining is the east cell of the side-by-side row below the
+  // full-width gallery; its only possible exterior edges are east / band bottom.
+  const legacyLivingW = Math.max(livMinW, Math.min(W - dinMinW, W * livT / (livT + dinT)));
+  const legacyDiningExterior = Math.abs(publicRect.x + W - fpR) < 1e-6 ||
+    Math.abs(publicRect.y + H - fpB) < 1e-6;
+  if (!(sideBySideBelow && onFacade && !legacyDiningExterior)) return null;
+  const L = Math.round(Math.max(legacyLivingW, totalMinW) * 100) / 100;
+  return { W, H, L, livT, dinT, livMinW, dinMinW };
+}
+
+/** Kitchen rect in band-local coordinates (the 5.5A / 5.5D input). */
+function kitchenLocal(g: PublicGalleryContext) {
+  const kp = g.kitchenRect;
+  return kp ? { x: kp.x - g.publicRect.x, y: kp.y - g.publicRect.y, w: kp.w, h: kp.h } : null;
+}
+const facadeCells = (g: PublicGalleryContext) =>
+  g.galleryCells.map(s => ({ minW: galleryCellMinW(s), minH: galleryCellMinH(s), minArea: s.minArea, targetArea: s.targetArea }));
+
+/** Phase 5.4A geometry: gallery cell widths over the living column, gallery height, living height, fit verdict. */
+interface DaylightGalleryGeometry { cw: number[]; sH: number; livH: number; fits: boolean }
+function daylightGalleryGeometry(g: PublicGalleryContext, f: DaylightGalleryFrame): DaylightGalleryGeometry | null {
+  const { galleryCells, galleryH, totalMinW, living, dining, livingMinHBelow, diningMinHBelow } = g;
+  const { W, H, L, livMinW, dinMinW } = f;
+  const minW = galleryCellMinW, minH = galleryCellMinH;
+  if (!(L >= livMinW - 1e-6 && L >= totalMinW - 1e-6 && W - L >= dinMinW - 1e-6)) return null;
+  const tg = galleryCells.map(s => Math.max(s.minArea, s.targetArea));
+  const sT = Math.max(tg.reduce((a, b) => a + b, 0), 1e-6);
+  const sur = Math.max(0, L - totalMinW);
+  const cw = galleryCells.map((s, i) => Math.round((minW(s) + sur * (tg[i] / sT)) * 100) / 100);
+  cw[cw.length - 1] = Math.round((L - cw.slice(0, -1).reduce((a, b) => a + b, 0)) * 100) / 100;
+  const cellsOk = galleryCells.every((s, i) => cw[i] >= minW(s) - 1e-6);
+  const sMinH = Math.max(...galleryCells.map((s, i) =>
+    Math.max(s.minArea > 0 ? s.minArea / Math.max(cw[i], 0.5) : 0, minH(s))));
+  const sH = Math.round(Math.max(galleryH, sMinH) * 100) / 100;
+  const livH = Math.round((H - sH) * 100) / 100;
+  const fits = cellsOk && sH >= sMinH - 1e-6 &&
+    galleryCells.every((s, i) => cw[i] * sH >= s.minArea - 1e-6) &&
+    livH >= livingMinHBelow - 1e-6 && L * livH >= living.minArea - 1e-6 &&
+    H >= diningMinHBelow - 1e-6 && (W - L) * H >= dining.minArea - 1e-6;
+  return { cw, sH, livH, fits };
+}
+
+/** Phase 5.5A: dining on the street-façade row, living behind (diningFacadeRowLayout). */
+export const DINING_FACADE_ROW_FAMILY = definePublicFamily<PublicGalleryContext>('dining-facade-row-5.5A', g => {
+  const f = daylightGalleryFrame(g);
+  if (!f) return null;
+  const { publicRect, galleryCells, galleryH, living, dining, livingMinHBelow } = g;
+  const { W, H, L, livMinW, dinMinW } = f;
+  const fr = diningFacadeRowLayout({
+    W, H, L, galleryH,
+    cells: facadeCells(g),
+    livMinW, livMinH: livingMinHBelow, livMinArea: living.minArea,
+    dinMinW, dinMinArea: dining.minArea,
+    kitchen: kitchenLocal(g),
+  });
+  if (!fr) return null;
+  const cells: PublicCellPlacement[] = [];
+  let gx = publicRect.x;
+  galleryCells.forEach((s, i) => {
+    cells.push({ type: s.type, rect: { x: gx, y: publicRect.y, w: fr.cellW[i], h: fr.rowD }, label: s.placedLabel, id: s.placedId, zone: 'public' });
+    gx = Math.round((gx + fr.cellW[i]) * 100) / 100;
+  });
+  cells.push({ type: 'dining', rect: { x: publicRect.x + fr.galleryW, y: publicRect.y, w: W - fr.galleryW, h: fr.rowD }, label: dining.placedLabel, id: dining.placedId, zone: 'public' });
+  cells.push({ type: 'living', rect: { x: publicRect.x, y: publicRect.y + fr.rowD, w: W, h: fr.livingH }, label: living.placedLabel, id: living.placedId, zone: 'public' });
+  return {
+    family: 'dining-facade-row-5.5A', band: publicRect, cells,
+    explanation: [`Phase 5.5A dining façade row: ${galleryCells.map(c => c.type).join('+')} (w=${fr.galleryW.toFixed(2)} m) + dining ${fr.diningW.toFixed(2)}×${fr.rowD.toFixed(2)} m on the street façade; living ${W.toFixed(2)}×${fr.livingH.toFixed(2)} m behind`],
+    bottom: publicRect.y + fr.rowD,
+  };
+});
+
+/**
+ * Phase 5.5D: dining entry column — only where the 5.4A geometry fits, and the 5.5A
+ * façade row cannot be built (diningFacadeRowLayout returns null).
+ */
+export const DINING_ENTRY_COLUMN_FAMILY = definePublicFamily<PublicGalleryContext>('dining-entry-column-5.5D', g => {
+  const f = daylightGalleryFrame(g);
+  if (!f) return null;
+  const geo = daylightGalleryGeometry(g, f);
+  if (!geo || !geo.fits) return null;
+  const { publicRect, footprint, galleryCells, galleryH, living, dining, livingMinHBelow } = g;
+  const { W, H, L, livT, dinT, livMinW, dinMinW } = f;
+  const kLocal = kitchenLocal(g);
+  const cellsIn = facadeCells(g);
+  const fr55 = diningFacadeRowLayout({
+    W, H, L, galleryH, cells: cellsIn,
+    livMinW, livMinH: livingMinHBelow, livMinArea: living.minArea,
+    dinMinW, dinMinArea: dining.minArea, kitchen: kLocal,
+  });
+  if (fr55 !== null) return null;
+  const corr = g.corridors.find(c => Math.abs(c.x - (publicRect.x + W)) < 0.005) ?? null;
+  const ec = diningEntryColumnLayout({
+    W, H, L, cells: cellsIn,
+    livMinW, livMinH: livingMinHBelow, livMinArea: living.minArea, livTargetArea: livT,
+    dinMinW, dinMinArea: dining.minArea, dinTargetArea: dinT,
+    livingSideExterior: Math.abs(publicRect.x - footprint.x) < 0.005,
+    kitchen: kLocal,
+    corridor: corr ? { x: corr.x - publicRect.x, y: corr.y - publicRect.y, w: corr.w, h: corr.h } : null,
+  });
+  if (!ec) return null;
+  const cells: PublicCellPlacement[] = [];
+  const gx0 = Math.round((publicRect.x + ec.mainW) * 100) / 100;
+  let gy = publicRect.y;
+  galleryCells.forEach((s, i) => {
+    cells.push({ type: s.type, rect: { x: gx0, y: gy, w: ec.galleryW, h: ec.cellH[i] }, label: s.placedLabel, id: s.placedId, zone: 'public' });
+    gy = Math.round((gy + ec.cellH[i]) * 100) / 100;
+  });
+  cells.push({ type: 'living', rect: { x: publicRect.x, y: publicRect.y, w: ec.mainW, h: ec.livingH }, label: living.placedLabel, id: living.placedId, zone: 'public' });
+  cells.push({ type: 'dining', rect: { x: publicRect.x, y: Math.round((publicRect.y + ec.livingH) * 100) / 100, w: ec.mainW, h: ec.diningH }, label: dining.placedLabel, id: dining.placedId, zone: 'public' });
+  return {
+    family: 'dining-entry-column-5.5D', band: publicRect, cells,
+    explanation: [`${DINING_ENTRY_COLUMN_PLACED}: ${galleryCells.map(c => c.type).join('+')} stacked in a ${ec.galleryW.toFixed(2)} m column against the corridor; living ${ec.mainW.toFixed(2)}×${ec.livingH.toFixed(2)} m at the street, dining ${ec.mainW.toFixed(2)}×${ec.diningH.toFixed(2)} m behind it on the kitchen`],
+    bottom: publicRect.y + ec.livingH,
+  };
+});
+
+/** Phase 5.4A: daylight-aware gallery over the living column; dining runs full depth to the façade. */
+export const DAYLIGHT_GALLERY_FAMILY = definePublicFamily<PublicGalleryContext>('daylight-gallery-5.4A', g => {
+  const f = daylightGalleryFrame(g);
+  if (!f) return null;
+  const geo = daylightGalleryGeometry(g, f);
+  if (!geo || !geo.fits) return null;
+  const { publicRect, galleryCells, living, dining } = g;
+  const { W, H, L } = f;
+  const { cw, sH, livH } = geo;
+  const cells: PublicCellPlacement[] = [];
+  let gx = publicRect.x;
+  galleryCells.forEach((s, i) => {
+    cells.push({ type: s.type, rect: { x: gx, y: publicRect.y, w: cw[i], h: sH }, label: s.placedLabel, id: s.placedId, zone: 'public' });
+    gx = Math.round((gx + cw[i]) * 100) / 100;
+  });
+  cells.push({ type: 'living', rect: { x: publicRect.x, y: publicRect.y + sH, w: L, h: livH }, label: living.placedLabel, id: living.placedId, zone: 'public' });
+  cells.push({ type: 'dining', rect: { x: publicRect.x + L, y: publicRect.y, w: W - L, h: H }, label: dining.placedLabel, id: dining.placedId, zone: 'public' });
+  return {
+    family: 'daylight-gallery-5.4A', band: publicRect, cells,
+    explanation: [`Phase 5.4A daylight-aware entry gallery: ${galleryCells.map(c => c.type).join('+')} over the living column (w=${L.toFixed(2)} m, h=${sH.toFixed(2)} m); dining runs full depth to the street façade`],
+    bottom: publicRect.y + sH,
+  };
+});
+
+/** Phase 15 M3: entry gallery row across the band front (proportional widths, minArea-grown height). */
+export const ENTRY_GALLERY_FAMILY = definePublicFamily<PublicGalleryContext>('entry-gallery', g => {
+  const { publicRect, galleryCells, galleryH, totalMinW, neededBelow } = g;
+  const minW = galleryCellMinW, minH = galleryCellMinH;
+  let strip: Rect = { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: galleryH };
+  // Proportional row layout: each cell ≥ its minWidth, surplus shared by target area.
+  const targets = galleryCells.map(s => Math.max(s.minArea, s.targetArea));
+  const sumT = Math.max(targets.reduce((a, b) => a + b, 0), 1e-6);
+  const surplus = Math.max(0, publicRect.w - totalMinW);
+  const ws = galleryCells.map((s, i) => {
+    const proportional = minW(s) + surplus * (targets[i] / sumT);
+    // A single-cell gallery is sized to its program target, never stretched to fill.
+    return galleryCells.length === 1
+      ? Math.min(proportional, Math.max(minW(s), targets[i] / Math.max(galleryH, 0.5)))
+      : proportional;
+  });
+  // Each cell must reach its program minArea at its solved width — grow the strip
+  // height for that (the layout contract rejects cells below minArea), else fall back.
+  const stripMinH = Math.max(...galleryCells.map((s, i) =>
+    Math.max(s.minArea > 0 ? s.minArea / Math.max(ws[i], 0.5) : 0, minH(s))));
+  let stripH = Math.max(strip.h, stripMinH);
+  if (publicRect.h - stripH < neededBelow - 1e-6) {
+    stripH = -1; // cannot host the row without crushing living/dining — let the column try
+  }
+  if (!(stripH > 0)) return null;
+  strip = { ...strip, h: stripH };
+  const cells: PublicCellPlacement[] = [];
+  let cx = strip.x;
+  galleryCells.forEach((s, i) => {
+    const w = Math.min(ws[i], strip.x + strip.w - cx);
+    cells.push({ type: s.type, rect: { x: cx, y: strip.y, w, h: strip.h }, label: s.placedLabel, id: s.placedId, zone: 'public' });
+    cx += w;
+  });
+  return {
+    family: 'entry-gallery', band: publicRect, cells,
+    explanation: [`Phase15 M3 entry gallery: ${galleryCells.map(c => c.type).join('+')} @ front strip h=${stripH.toFixed(2)} m`],
+    bottom: strip.y + strip.h,
+  };
+});
+
+/**
+ * Phase 15 M3: entry column for tall-narrow bands — the T-stack (entrance across the
+ * front, foyer along living, other entry cells on the corridor half) or the plain
+ * vertical sequence.
+ */
+export const ENTRY_COLUMN_FAMILY = definePublicFamily<PublicGalleryContext>('entry-column', g => {
+  const { publicRect, galleryCells, neededBelow } = g;
+  const minW = galleryCellMinW, minH = galleryCellMinH;
+  // Tall-narrow band (urban frontage, vertical spine): stack the entry sequence
+  // VERTICALLY along the front — entrance at the street, then foyer, then WC —
+  // each cell full band width, heights from target area with minimum preserved.
+  const maxCellMinW = Math.max(...galleryCells.map(minW));
+  const colHs = galleryCells.map(s => Math.max(minH(s), Math.max(s.minArea, s.targetArea) / publicRect.w));
+  const colH = colHs.reduce((a, b) => a + b, 0);
+  const entCol = galleryCells.findIndex(s => s.type === 'entrance');
+  const foyCol = galleryCells.findIndex(s => s.type === 'foyer');
+  const leftIdx = galleryCells.map((_, i) => i).filter(i => i !== entCol && i !== foyCol);
+  const halfW = publicRect.w / 2;
+  const corrSplitW = () => halfW;
+  const tLayout = entCol >= 0 && foyCol >= 0 && leftIdx.length >= 1 &&
+    halfW >= Math.max(
+      minW(galleryCells[foyCol]),
+      ...leftIdx.map(i => minW(galleryCells[i])),
+      1.0) - 1e-6;
+  const tLeftHs = tLayout ? leftIdx.map(i => {
+    const s = galleryCells[i];
+    return Math.max(minH(s), Math.max(s.minArea, s.targetArea) / halfW);
+  }) : [];
+  const entH = tLayout ? colHs[entCol] : 0;
+  // The foyer column must reach its OWN program minimum at the split width —
+  // the stack grows to cover it; the last side cell absorbs the slack.
+  const foyMinH = tLayout
+    ? Math.max(minH(galleryCells[foyCol]),
+        Math.max(galleryCells[foyCol].minArea, 0) / Math.max(corrSplitW(), 0.5))
+    : 0;
+  const tColH = tLayout
+    ? entH + Math.max(tLeftHs.reduce((a, b) => a + b, 0), foyMinH)
+    : colH;
+  if (!(publicRect.w >= maxCellMinW - 1e-6 && publicRect.h - (tLayout ? tColH : colH) >= neededBelow - 1e-6)) return null;
+  const cells: PublicCellPlacement[] = [];
+  if (tLayout) {
+    // T-entry stack for narrow bands: entrance spans the front at full width; the
+    // foyer runs floor-to-living-edge on the street-far half and the remaining
+    // entry cells stack on the corridor-side half — so the foyer satisfies the
+    // entrance→foyer AND foyer→living graph adjacencies (perpendicular to each
+    // other — a plain row cannot), while WC/guest rooms keep direct corridor
+    // contact (never a through-route through another room). All splits round to
+    // cm so halves tile the band exactly (no 0.01 floating seams).
+    const bandX = publicRect.x;
+    const bandR = publicRect.x + publicRect.w;
+    const corr0 = g.corridors[0];
+    const corrOnRight = corr0 ? corr0.x + corr0.w / 2 >= bandX + publicRect.w / 2 : true;
+    const splitX = Math.round((bandX + (bandR - bandX) / 2) * 100) / 100;
+    const foyerX = corrOnRight ? bandX : splitX;
+    const foyerW = corrOnRight ? splitX - bandX : bandR - splitX;
+    const sideX = corrOnRight ? splitX : bandX;
+    const sideW = corrOnRight ? bandR - splitX : splitX - bandX;
+    const entY = Math.round(publicRect.y * 100) / 100;
+    const entHr = Math.round(entH * 100) / 100;
+    cells.push({ type: 'entrance', rect: { x: bandX, y: publicRect.y, w: publicRect.w, h: entHr }, label: galleryCells[entCol].placedLabel, id: galleryCells[entCol].placedId, zone: 'public' });
+    const tColHr = Math.round(tColH * 100) / 100;
+    let ly = entY + entHr;
+    leftIdx.forEach((idx, j) => {
+      const s = galleryCells[idx];
+      const hh = j === leftIdx.length - 1
+        ? Math.round((entY + tColHr - ly) * 100) / 100
+        : Math.round(tLeftHs[j] * 100) / 100;
+      cells.push({ type: s.type, rect: { x: sideX, y: ly, w: sideW, h: hh }, label: s.placedLabel, id: s.placedId, zone: 'public' });
+      ly = Math.round((ly + hh) * 100) / 100;
+    });
+    const foy = galleryCells[foyCol];
+    cells.push({ type: 'foyer', rect: { x: foyerX, y: entY, w: foyerW, h: tColHr - entHr }, label: foy.placedLabel, id: foy.placedId, zone: 'public' });
+    return {
+      family: 'entry-column', band: publicRect, cells,
+      explanation: [`Phase15 M3 entry column (T-stack): entrance front, foyer hall along living @ ${tColH.toFixed(2)} m`],
+      bottom: entY + tColHr,
+    };
+  }
+  let cy2 = publicRect.y;
+  galleryCells.forEach((s, i) => {
+    cells.push({ type: s.type, rect: { x: publicRect.x, y: cy2, w: publicRect.w, h: colHs[i] }, label: s.placedLabel, id: s.placedId, zone: 'public' });
+    cy2 += colHs[i];
+  });
+  return {
+    family: 'entry-column', band: publicRect, cells,
+    explanation: [`Phase15 M3 entry column (vertical sequence): ${galleryCells.map(c => c.type).join('+')} @ front stack h=${colH.toFixed(2)} m`],
+    bottom: publicRect.y + colH,
+  };
+});
+
+// ------------------------------------------------------------- living/dining families
+
+/** Living/dining band metrics (the legacy pre-computation of the living + dining branch). */
+export interface PublicMainContext {
+  publicRect: Rect;
+  living: PlacedSpec;
+  dining: PlacedSpec;
+  /** guest WC still unplaced (not hosted by a gallery). */
+  guestWc: PlacedSpec | undefined;
+  /** entry cells still unplaced (not hosted by a gallery). */
+  publicUnplaced: PlacedSpec[];
+  /** living width by target share (before min clamping). */
+  livingW: number;
+  livingMinW: number;
+  diningMinW: number;
+  livingMinH: number;
+  diningMinH: number;
+  publicH: number;
+  requiredMinW: number;
+  /** Phase 5.4C verdict (decided by the placer). */
+  stackForDaylight: boolean;
+  /** Phase 15 M4 main-room preference height at a band cross extent. */
+  mainPref: (spec: PlacedSpec, bandCross: number) => number;
+}
+
+export function publicMainContext(
+  publicRect: Rect,
+  living: PlacedSpec,
+  dining: PlacedSpec,
+  guestWc: PlacedSpec | undefined,
+  publicUnplaced: PlacedSpec[],
+  mainPref: (spec: PlacedSpec, bandCross: number) => number,
+): PublicMainContext {
+  const totalSouthA = Math.max(living.minArea, living.targetArea) + Math.max(dining.minArea, dining.targetArea);
+  const livingW = publicRect.w * Math.max(living.minArea, living.targetArea) / totalSouthA;
+  const livingMinW = Math.max(living.minWidth ?? 3.0, 3.0);
+  const diningMinW = Math.max(dining.minWidth ?? 2.2, 2.2);
+  const livingMinH = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);
+  const diningMinH = Math.max(dining.minLength ?? dining.minWidth ?? 2.2, 2.0);
+  const publicMinH = Math.max(livingMinH, diningMinH);
+  const publicH = Math.max(publicRect.h, publicMinH);
+  const requiredMinW = livingMinW + diningMinW;
+  return {
+    publicRect, living, dining, guestWc, publicUnplaced, livingW, livingMinW, diningMinW,
+    livingMinH, diningMinH, publicH, requiredMinW, stackForDaylight: false, mainPref,
+  };
+}
+
+/**
+ * Phase 13.1 / 15 M4 (+ Phase 5.4C alignment): living stacked over dining when the band
+ * is too narrow for side-by-side (or 5.4C asks for it); when the band is too short to
+ * stack either, the legacy min-width overflow row.
+ */
+export const STACKED_FAMILY = definePublicFamily<PublicMainContext>('stacked', m => {
+  const { publicRect, living, dining, livingMinW, diningMinW, livingMinH, diningMinH, publicH, stackForDaylight, mainPref } = m;
+  let livingW = m.livingW;
+  const cells: PublicCellPlacement[] = [];
+  // Not enough width side-by-side — check if we can stack vertically (tall publicRect)
+  if (publicRect.h >= livingMinH + diningMinH - 1e-6) {
+    // Phase 5.4C: pre-align the stacked rooms' x-extent to snap()'s 1 cm grid, keeping the
+    // right edge at or inside the band (the adjoining corridor edge is not snapped), so the
+    // final snap pass cannot push living/dining into the corridor. Legacy stack unchanged.
+    const stackX = stackForDaylight ? Math.round((publicRect.x + 1e-9) * 100) / 100 : publicRect.x;
+    const stackW = stackForDaylight
+      ? Math.floor((publicRect.x + publicRect.w - stackX) * 100 + 1e-9) / 100 : publicRect.w;
+    // Phase 15 M4: aim both main rooms at (preference-aware) area needs FIRST, then
+    // share any genuine surplus by target — instead of the fixed 0.55 split which
+    // left dining below 12 m² on tall narrow bands (12×18 family) and giant rooms
+    // elsewhere. Falls back to the legacy split whenever the needs cannot tile.
+    const livNeedH = mainPref(living, publicRect.w);
+    const dinNeedH = mainPref(dining, publicRect.w);
+    const stackNeeds = livNeedH + dinNeedH;
+    let livingH: number;
+    if (publicRect.h >= stackNeeds - 1e-6) {
+      const livT = Math.max(living.minArea, living.targetArea);
+      const dinT = Math.max(dining.minArea, dining.targetArea);
+      livingH = Math.round((livNeedH + (publicRect.h - stackNeeds) * (livT / (livT + dinT))) * 100) / 100;
+    } else {
+      livingH = Math.max(livingMinH, publicRect.h * 0.55);
+    }
+    // Round to 2 decimals and make next rect exactly fill publicRect to avoid 0.01 overlap with north kitchen pocket
+    livingH = Math.round(livingH * 100) / 100;
+    const diningY = Math.round((publicRect.y + livingH) * 100) / 100;
+    let diningH = Math.round((publicRect.y + publicRect.h - diningY) * 100) / 100;
+    if (diningH < diningMinH - 1e-6) { // ensure min
+      livingH = Math.round((publicRect.h - diningMinH) * 100) / 100;
+      const dy2 = Math.round((publicRect.y + livingH) * 100) / 100;
+      diningH = Math.round((publicRect.y + publicRect.h - dy2) * 100) / 100;
+      cells.push({ type: 'living', rect: { x: stackX, y: publicRect.y, w: Math.max(stackW, livingMinW), h: livingH }, label: living.placedLabel, id: living.placedId, zone: 'public' });
+      cells.push({ type: 'dining', rect: { x: stackX, y: dy2, w: Math.max(stackW, diningMinW), h: diningH }, label: dining.placedLabel, id: dining.placedId, zone: 'public' });
+    } else {
+      cells.push({ type: 'living', rect: { x: stackX, y: publicRect.y, w: Math.max(stackW, livingMinW), h: livingH }, label: living.placedLabel, id: living.placedId, zone: 'public' });
+      cells.push({ type: 'dining', rect: { x: stackX, y: diningY, w: Math.max(stackW, diningMinW), h: diningH }, label: dining.placedLabel, id: dining.placedId, zone: 'public' });
+    }
+  } else {
+    // Genuinely infeasible — preserve min width, allow overflow but never negative
+    livingW = livingMinW;
+    const eastX = publicRect.x + livingW;
+    const eastW = Math.max(diningMinW, publicRect.w - livingW);
+    cells.push({ type: 'living', rect: { x: publicRect.x, y: publicRect.y, w: livingW, h: publicH }, label: living.placedLabel, id: living.placedId, zone: 'public' });
+    cells.push({ type: 'dining', rect: { x: eastX, y: publicRect.y, w: eastW, h: publicH }, label: dining.placedLabel, id: dining.placedId, zone: 'public' });
+  }
+  return { family: 'stacked', band: publicRect, cells, explanation: [] };
+});
+
+/**
+ * P17-E: shallow public band — the whole public programme (entry rooms, guest WC,
+ * living, dining) tiled side-by-side in one full-depth row by the min-aware binary
+ * splitter. The placer clears the entry pool after placing it.
+ */
+export const SHALLOW_BAND_FAMILY = definePublicFamily<PublicMainContext>('shallow-band', m => {
+  const { publicRect, living, dining, guestWc, publicUnplaced } = m;
+  const rowCells: PlacedSpec[] = [...publicUnplaced];
+  if (guestWc !== undefined) rowCells.push(guestWc);
+  rowCells.push(living, dining);
+  const cells: PublicCellPlacement[] = [];
+  splitBinary(publicRect, rowCells, recordCells(cells), 'public', 'x');
+  return {
+    family: 'shallow-band', band: publicRect, cells,
+    explanation: [`P17-E shallow-band public row: ${rowCells.map(c => c.type).join(' + ')} tiled side-by-side (band depth ${publicRect.h.toFixed(2)} m).`],
+  };
+});
+
+/** Legacy side-by-side row: living | dining (+ guest WC pocket at the east band end). */
+export const SIDE_BY_SIDE_FAMILY = definePublicFamily<PublicMainContext>('side-by-side', m => {
+  const { publicRect, living, dining, guestWc, livingMinW, diningMinW, publicH } = m;
+  const livingW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, m.livingW));
+  const cells: PublicCellPlacement[] = [];
+  // Phase 15 M4: cap the shared row height at the cells' program-driven maximum
+  // (1.75×target, never below their own needs) — a huge band stops force-feeding
+  // the living field 100+ m². Any slack becomes intentional void UNDER the row
+  // (facade/contact edges stay tiled; band bottom keeps its adjacency by tiling
+  // up from it when the cap is not binding).
+  const rowH = publicH;
+  const rowY = publicRect.y;
+  cells.push({ type: 'living', rect: { x: publicRect.x, y: rowY, w: livingW, h: rowH }, label: living.placedLabel, id: living.placedId, zone: 'public' });
+  const eastX = publicRect.x + livingW;
+  const eastW = publicRect.w - livingW;
+  const DINING_MIN_W = diningMinW;
+  const GWC_MIN_W = 1.2;
+  const finalEastW = Math.max(0, eastW);
+  if (guestWc && finalEastW >= DINING_MIN_W + GWC_MIN_W && publicRect.h > 4.0) {
+    const gwcW = Math.min(1.6, Math.max(GWC_MIN_W, finalEastW * 0.30));
+    const gwcH = Math.min(2.2, Math.max(1.8, publicRect.h * 0.25));
+    const diningW = Math.max(DINING_MIN_W, finalEastW - gwcW);
+    cells.push({ type: 'guest-wc', rect: { x: eastX + diningW, y: publicRect.y + publicRect.h - gwcH, w: gwcW, h: gwcH }, label: guestWc.placedLabel, id: guestWc.placedId, zone: 'public' });
+    cells.push({ type: 'dining', rect: { x: eastX, y: publicRect.y, w: diningW, h: rowH }, label: dining.placedLabel, id: dining.placedId, zone: 'public' });
+  } else {
+    const finalDiningW = Math.max(DINING_MIN_W, finalEastW);
+    cells.push({ type: 'dining', rect: { x: eastX, y: publicRect.y, w: finalDiningW, h: rowH }, label: dining.placedLabel, id: dining.placedId, zone: 'public' });
+  }
+  return { family: 'side-by-side', band: publicRect, cells, explanation: [] };
+});
+
+/** Every rectangle public-band family, in the placer's selection order. */
+export const PUBLIC_FAMILIES = {
+  diningFacadeRow: DINING_FACADE_ROW_FAMILY,
+  diningEntryColumn: DINING_ENTRY_COLUMN_FAMILY,
+  daylightGallery: DAYLIGHT_GALLERY_FAMILY,
+  entryGallery: ENTRY_GALLERY_FAMILY,
+  entryColumn: ENTRY_COLUMN_FAMILY,
+  stacked: STACKED_FAMILY,
+  shallowBand: SHALLOW_BAND_FAMILY,
+  sideBySide: SIDE_BY_SIDE_FAMILY,
+} as const;
+
 export function placeSpaces(
   footprint: Rect,
   specs: PlacedSpec[],
@@ -813,6 +1622,12 @@ export function placeSpaces(
   opts: PlacerOptions = {},
 ): { spaces: Space[]; corridors: Space[]; explanation: string[] } {
   const frame = buildAccessFrame(footprint, accessSide);
+  // P3: a pinned zone layout is validated in plan coordinates and handed to the
+  // frame-south placer mapped (and copied) like every other rect. Absent → unchanged.
+  if (opts.pinnedZones != null) {
+    assertPinnedZones(opts.pinnedZones);
+    opts = { ...opts, pinnedZones: mapZoneLayout(opts.pinnedZones, frame ? frame.to : (r => r)) };
+  }
   if (!frame) return placeSpacesFacingSouth(footprint, specs, strategy, accessSide, mkSpace, false, opts);
   const framed = frame.to(footprint);
   const back = (s: Space): Space => ({ ...s, rect: frame.from(s.rect) });
@@ -891,15 +1706,14 @@ function placeSpacesFacingSouth(
   };
   const mainPref = mainPrefH;
   const hasStorage = specs.some(s => s.type === 'storage');
-  const layout = opts.rotateShallowStairPocket === true
-    ? carveZones(footprint, cfg, needStair, hasKitchen, hasStorage, specs, true)
-    : carveZones(footprint, cfg, needStair, hasKitchen, hasStorage, specs);
+  const layout = opts.pinnedZones != null ? opts.pinnedZones : carveZonesFor(footprint, strategy, specs, opts);
   const explanation: string[] = [
     `Strategy ${strategy}: ${cfg.spine} spine, corridor @ ${Math.round(cfg.corridorOffsetFraction*100)}% depth.`,
     `Phase13 generic graph: ${graph.hardEdges.length} hard edges, ${graph.clusters.length} hard clusters, ${graph.nodes.size} types — canonical source DEFAULT_RESIDENTIAL_CONSTRAINTS`,
     `Phase13 clusters: ${graph.clusters.map(c=>`[${c.join(',')}]`).join(' | ')}`,
     `Phase13 placement order: ${placementOrderForTypes([...new Set(specs.map(s=>s.type))], graph).join(' > ')}`,
   ];
+  if (opts.pinnedZones != null) explanation.push(`P3 pinned zones: ${layout.corridors.length} corridor rect(s), zone partition supplied by the caller (carveZones not run).`);
   if (layout.stairPocketRotated) {
     const r = layout.stairPocketRotated;
     explanation.push(`Phase 5.5B stair pocket rotated: ${r.w.toFixed(2)} m along the corridor × ${r.h.toFixed(2)} m band depth (band too shallow for the 4.2 m pocket depth)`);
@@ -1890,8 +2704,11 @@ function placeSpacesFacingSouth(
 
   // --- Service band (kitchen / storage / stair-hall / utility) ---
   const serviceRects = layout.zones.service;
+  // P7: a pinned layout with designated service pockets is taken verbatim.
+  const designatedService = layout.kitchenPocket !== undefined || layout.stairPocket !== undefined;
   const kitchenRect = (() => {
     if (!hasKitchen) return null;
+    if (designatedService) return layout.kitchenPocket ?? null;
     // Horizontal: kitchen is east of centre (x > 0.6W)
     let r = serviceRects.find(s => s.x > footprint.x + footprint.w * 0.6);
     if (r) return r;
@@ -1905,7 +2722,9 @@ function placeSpacesFacingSouth(
     return r ?? null;
   })();
   let stairPocket: Rect | null = null;
-  if (needStair) {
+  if (needStair && designatedService) {
+    stairPocket = layout.stairPocket ?? null;
+  } else if (needStair) {
     if (cfg.spine === 'vertical') {
       // Stair pocket is the east service rect with stair dimensions (wider than kitchen)
       stairPocket = serviceRects.find(r => r.x > footprint.x + footprint.w * 0.5 && r.w > 3.0) ??
@@ -2081,265 +2900,73 @@ function placeSpacesFacingSouth(
     // the pre-M3 silent drops (foyer existed only via the l-spur patch; guest-wc only via one
     // east-corner condition) — every assigned public room gets an architectural home whenever
     // the band can host it, and is otherwise surfaced honestly by program-completeness checks.
+    // P3: pinned public family (PlacerOptions.publicFamily) — replaces the selection of its
+    // own layer only; absent → every branch below is the legacy selection.
+    const pinnedFamily = opts.publicFamily != null ? opts.publicFamily : undefined;
+    if (pinnedFamily !== undefined && !ENTRY_LAYER_FAMILIES.has(pinnedFamily) && !MAIN_LAYER_FAMILIES.has(pinnedFamily)) {
+      throw new RangeError(`placeSpaces: unknown publicFamily "${String(pinnedFamily)}"`);
+    }
+    const pinEntry = pinnedFamily !== undefined && ENTRY_LAYER_FAMILIES.has(pinnedFamily) ? pinnedFamily : undefined;
+    const pinMain = pinnedFamily !== undefined && MAIN_LAYER_FAMILIES.has(pinnedFamily) ? pinnedFamily : undefined;
+    const pinnedFamilies: Record<string, PublicFamily<any>> = {
+      'entry-gallery': ENTRY_GALLERY_FAMILY, 'entry-column': ENTRY_COLUMN_FAMILY,
+      'daylight-gallery-5.4A': DAYLIGHT_GALLERY_FAMILY, 'dining-facade-row-5.5A': DINING_FACADE_ROW_FAMILY,
+      'dining-entry-column-5.5D': DINING_ENTRY_COLUMN_FAMILY,
+      'stacked': STACKED_FAMILY, 'side-by-side': SIDE_BY_SIDE_FAMILY, 'shallow-band': SHALLOW_BAND_FAMILY,
+    };
     if (living !== undefined && dining !== undefined) {
-      const galleryCells: PlacedSpec[] = [...publicUnplaced];
-      if (guestWc !== undefined && galleryCells.length >= 1) galleryCells.push(guestWc); // a gallery is a SEQUENCE of entry rooms, not one isolated cell
-      // A lone cell is only acceptable when it is NOT the wet entry room (an isolated guest-wc
-      // filling a whole strip is junk) — a balcony/family/guest room along the front is sound.
-      const galleryAcceptable = galleryCells.length >= 2 ||
-        (galleryCells.length === 1 && galleryCells[0].type !== 'guest-wc');
-      if (galleryAcceptable) {
-        // Entrance first along the row (exterior edge), then the rest in program order — stable.
-        galleryCells.sort((a, b) => (a.type === 'entrance' ? 0 : 1) - (b.type === 'entrance' ? 0 : 1));
-      const minW = (s: PlacedSpec) => Math.max(s.minWidth ?? 1.1, 1.1);
-      const minH = (s: PlacedSpec) => Math.max(s.minLength ?? 1.4, 1.4);
-      const totalMinW = galleryCells.reduce((a, s) => a + minW(s), 0);
-        const livingMinHBelow = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);
-        const diningMinHBelow = Math.max(dining.minLength ?? dining.minWidth ?? 2.2, 2.0);
-        const sideBySideBelow = publicRect.w >= Math.max(living.minWidth ?? 3.0, 3.0) + Math.max(dining.minWidth ?? 2.2, 2.2);
-        const neededBelow = sideBySideBelow ? Math.max(livingMinHBelow, diningMinHBelow) : livingMinHBelow + diningMinHBelow;
+      const kitchen0 = placed.find(p => p.type === 'kitchen');
+      const gctx = publicGalleryContext(footprint, publicRect, living, dining, publicUnplaced, guestWc,
+        kitchen0 ? kitchen0.rect : null, layout.corridors);
+      if (gctx) {
         let galleryPlaced = false;
         let galleryBottom = 0;
-        let galleryH = Math.min(2.3, Math.max(1.7, publicRect.h * 0.22));
-        if (publicRect.h - galleryH < neededBelow) galleryH = publicRect.h - neededBelow;
-        if (galleryH >= 1.5 && publicRect.h - galleryH >= neededBelow - 1e-6 && publicRect.w >= totalMinW - 1e-6) {
+        const adopt = (fam: PublicFamily<PublicGalleryContext>, p: PublicFamilyPlan) => {
+          fam.place(p, mkSpace, placed, explanation);
+          galleryBottom = p.bottom!;
+          galleryPlaced = true;
+        };
+        if (pinEntry !== undefined) {
+          // P3: the pinned entry-layer family, under its own legacy guards only: the row
+          // families need the gallery row to fit; the complete daylight layouts also keep
+          // their 5.4A preconditions (not the shallow-band assembly, ≥ 2 entry cells).
+          const fam = pinnedFamilies[pinEntry] as PublicFamily<PublicGalleryContext>;
+          const complete = COMPLETE_DAYLIGHT_FAMILIES.has(pinEntry);
+          const guardOk = pinEntry === 'entry-column'
+            || (publicGalleryRowFits(gctx) && (!complete || (!shallowBand && gctx.galleryCells.length >= 2)));
+          const p = guardOk ? fam.plan(gctx) : null;
+          if (p) adopt(fam, p);
+          if (complete) publicMainPlaced = true; // a complete layout owns living + dining — no substitute family
+          explanation.push(`P3 pinned public family ${pinEntry}: ${p ? 'placed' : 'not applicable (nothing substituted)'}`);
+        } else if (publicGalleryRowFits(gctx)) {
           // Phase 5.4A (opt-in): daylight-aware gallery — see PlacerOptions.galleryDaylightAware.
-          if (opts.galleryDaylightAware === true && !shallowBand && galleryCells.length >= 2) {
-            const livT = Math.max(living.minArea, living.targetArea);
-            const dinT = Math.max(dining.minArea, dining.targetArea);
-            const livMinW = Math.max(living.minWidth ?? 3.0, 3.0);
-            const dinMinW = Math.max(dining.minWidth ?? 2.2, 2.2);
-            const W = publicRect.w, H = publicRect.h;
-            const fpR = footprint.x + footprint.w, fpB = footprint.y + footprint.h;
-            const onFacade = Math.abs(publicRect.y - footprint.y) < 1e-6;
-            // Legacy prediction: dining is the east cell of the side-by-side row below the
-            // full-width gallery; its only possible exterior edges are east / band bottom.
-            const legacyLivingW = Math.max(livMinW, Math.min(W - dinMinW, W * livT / (livT + dinT)));
-            const legacyDiningExterior = Math.abs(publicRect.x + W - fpR) < 1e-6 ||
-              Math.abs(publicRect.y + H - fpB) < 1e-6;
-            if (sideBySideBelow && onFacade && !legacyDiningExterior) {
-              const L = Math.round(Math.max(legacyLivingW, totalMinW) * 100) / 100;
-              // Phase 5.5A (opt-in): dining on the street-façade row, living behind — see
-              // PlacerOptions.diningFacadeRow. Falls through to 5.4A when it does not fit.
-              if (opts.diningFacadeRow === true) {
-                const fr = diningFacadeRowLayout({
-                  W, H, L, galleryH,
-                  cells: galleryCells.map(s => ({ minW: minW(s), minH: minH(s), minArea: s.minArea, targetArea: s.targetArea })),
-                  livMinW, livMinH: livingMinHBelow, livMinArea: living.minArea,
-                  dinMinW, dinMinArea: dining.minArea,
-                  kitchen: (() => {
-                    const kp = placed.find(p => p.type === 'kitchen');
-                    return kp ? { x: kp.rect.x - publicRect.x, y: kp.rect.y - publicRect.y, w: kp.rect.w, h: kp.rect.h } : null;
-                  })(),
-                });
-                if (fr) {
-                  let gx = publicRect.x;
-                  galleryCells.forEach((s, i) => {
-                    placed.push(mkSpace(s.type, { x: gx, y: publicRect.y, w: fr.cellW[i], h: fr.rowD }, s.placedLabel, s.placedId, 'public'));
-                    gx = Math.round((gx + fr.cellW[i]) * 100) / 100;
-                  });
-                  placed.push(mkSpace('dining',
-                    { x: publicRect.x + fr.galleryW, y: publicRect.y, w: W - fr.galleryW, h: fr.rowD },
-                    dining.placedLabel, dining.placedId, 'public'));
-                  placed.push(mkSpace('living',
-                    { x: publicRect.x, y: publicRect.y + fr.rowD, w: W, h: fr.livingH },
-                    living.placedLabel, living.placedId, 'public'));
-                  galleryBottom = publicRect.y + fr.rowD;
-                  explanation.push(`Phase 5.5A dining façade row: ${galleryCells.map(c => c.type).join('+')} (w=${fr.galleryW.toFixed(2)} m) + dining ${fr.diningW.toFixed(2)}×${fr.rowD.toFixed(2)} m on the street façade; living ${W.toFixed(2)}×${fr.livingH.toFixed(2)} m behind`);
-                  galleryPlaced = true;
-                  publicMainPlaced = true;
-                }
-              }
-              if (!publicMainPlaced && L >= livMinW - 1e-6 && L >= totalMinW - 1e-6 && W - L >= dinMinW - 1e-6) {
-                const tg = galleryCells.map(s => Math.max(s.minArea, s.targetArea));
-                const sT = Math.max(tg.reduce((a, b) => a + b, 0), 1e-6);
-                const sur = Math.max(0, L - totalMinW);
-                const cw = galleryCells.map((s, i) => Math.round((minW(s) + sur * (tg[i] / sT)) * 100) / 100);
-                cw[cw.length - 1] = Math.round((L - cw.slice(0, -1).reduce((a, b) => a + b, 0)) * 100) / 100;
-                const cellsOk = galleryCells.every((s, i) => cw[i] >= minW(s) - 1e-6);
-                const sMinH = Math.max(...galleryCells.map((s, i) =>
-                  Math.max(s.minArea > 0 ? s.minArea / Math.max(cw[i], 0.5) : 0, minH(s))));
-                const sH = Math.round(Math.max(galleryH, sMinH) * 100) / 100;
-                const livH = Math.round((H - sH) * 100) / 100;
-                const fits = cellsOk && sH >= sMinH - 1e-6 &&
-                  galleryCells.every((s, i) => cw[i] * sH >= s.minArea - 1e-6) &&
-                  livH >= livingMinHBelow - 1e-6 && L * livH >= living.minArea - 1e-6 &&
-                  H >= diningMinHBelow - 1e-6 && (W - L) * H >= dining.minArea - 1e-6;
-                // Phase 5.5D (opt-in): dining entry column — see PlacerOptions.diningEntryColumn.
-                // Only where the 5.4A dining would exceed DINING_DAYLIGHT_MAX and the 5.5A
-                // façade row cannot be built (it returns null); otherwise 5.4A below.
-                if (fits && opts.diningEntryColumn === true) {
-                  const kp = placed.find(p => p.type === 'kitchen');
-                  const kLocal = kp ? { x: kp.rect.x - publicRect.x, y: kp.rect.y - publicRect.y, w: kp.rect.w, h: kp.rect.h } : null;
-                  const cells = galleryCells.map(s => ({ minW: minW(s), minH: minH(s), minArea: s.minArea, targetArea: s.targetArea }));
-                  const fr55 = diningFacadeRowLayout({
-                    W, H, L, galleryH, cells,
-                    livMinW, livMinH: livingMinHBelow, livMinArea: living.minArea,
-                    dinMinW, dinMinArea: dining.minArea, kitchen: kLocal,
-                  });
-                  if (fr55 === null) {
-                    const corr = layout.corridors.find(c => Math.abs(c.x - (publicRect.x + W)) < 0.005) ?? null;
-                    const ec = diningEntryColumnLayout({
-                      W, H, L, cells,
-                      livMinW, livMinH: livingMinHBelow, livMinArea: living.minArea, livTargetArea: livT,
-                      dinMinW, dinMinArea: dining.minArea, dinTargetArea: dinT,
-                      livingSideExterior: Math.abs(publicRect.x - footprint.x) < 0.005,
-                      kitchen: kLocal,
-                      corridor: corr ? { x: corr.x - publicRect.x, y: corr.y - publicRect.y, w: corr.w, h: corr.h } : null,
-                    });
-                    if (ec) {
-                      const gx0 = Math.round((publicRect.x + ec.mainW) * 100) / 100;
-                      let gy = publicRect.y;
-                      galleryCells.forEach((s, i) => {
-                        placed.push(mkSpace(s.type, { x: gx0, y: gy, w: ec.galleryW, h: ec.cellH[i] }, s.placedLabel, s.placedId, 'public'));
-                        gy = Math.round((gy + ec.cellH[i]) * 100) / 100;
-                      });
-                      placed.push(mkSpace('living',
-                        { x: publicRect.x, y: publicRect.y, w: ec.mainW, h: ec.livingH },
-                        living.placedLabel, living.placedId, 'public'));
-                      placed.push(mkSpace('dining',
-                        { x: publicRect.x, y: Math.round((publicRect.y + ec.livingH) * 100) / 100, w: ec.mainW, h: ec.diningH },
-                        dining.placedLabel, dining.placedId, 'public'));
-                      galleryBottom = publicRect.y + ec.livingH;
-                      explanation.push(`${DINING_ENTRY_COLUMN_PLACED}: ${galleryCells.map(c => c.type).join('+')} stacked in a ${ec.galleryW.toFixed(2)} m column against the corridor; living ${ec.mainW.toFixed(2)}×${ec.livingH.toFixed(2)} m at the street, dining ${ec.mainW.toFixed(2)}×${ec.diningH.toFixed(2)} m behind it on the kitchen`);
-                      galleryPlaced = true;
-                      publicMainPlaced = true;
-                    }
-                  }
-                }
-                if (fits && !publicMainPlaced) {
-                  let gx = publicRect.x;
-                  galleryCells.forEach((s, i) => {
-                    placed.push(mkSpace(s.type, { x: gx, y: publicRect.y, w: cw[i], h: sH }, s.placedLabel, s.placedId, 'public'));
-                    gx = Math.round((gx + cw[i]) * 100) / 100;
-                  });
-                  placed.push(mkSpace('living',
-                    { x: publicRect.x, y: publicRect.y + sH, w: L, h: livH },
-                    living.placedLabel, living.placedId, 'public'));
-                  placed.push(mkSpace('dining',
-                    { x: publicRect.x + L, y: publicRect.y, w: W - L, h: H },
-                    dining.placedLabel, dining.placedId, 'public'));
-                  galleryBottom = publicRect.y + sH;
-                  explanation.push(`Phase 5.4A daylight-aware entry gallery: ${galleryCells.map(c => c.type).join('+')} over the living column (w=${L.toFixed(2)} m, h=${sH.toFixed(2)} m); dining runs full depth to the street façade`);
-                  galleryPlaced = true;
-                  publicMainPlaced = true;
-                }
-              }
+          // (A pinned living/dining family excludes the complete daylight layouts.)
+          if (opts.galleryDaylightAware === true && !shallowBand && gctx.galleryCells.length >= 2 && pinMain === undefined) {
+            // Phase 5.5A (opt-in): dining on the street-façade row, living behind — see
+            // PlacerOptions.diningFacadeRow. Falls through to 5.4A when it does not fit.
+            if (opts.diningFacadeRow === true) {
+              const p = DINING_FACADE_ROW_FAMILY.plan(gctx);
+              if (p) { adopt(DINING_FACADE_ROW_FAMILY, p); publicMainPlaced = true; }
+            }
+            // Phase 5.5D (opt-in): dining entry column — see PlacerOptions.diningEntryColumn.
+            // Only where the 5.4A dining would exceed DINING_DAYLIGHT_MAX and the 5.5A
+            // façade row cannot be built (it returns null); otherwise 5.4A below.
+            if (!publicMainPlaced && opts.diningEntryColumn === true) {
+              const p = DINING_ENTRY_COLUMN_FAMILY.plan(gctx);
+              if (p) { adopt(DINING_ENTRY_COLUMN_FAMILY, p); publicMainPlaced = true; }
+            }
+            if (!publicMainPlaced) {
+              const p = DAYLIGHT_GALLERY_FAMILY.plan(gctx);
+              if (p) { adopt(DAYLIGHT_GALLERY_FAMILY, p); publicMainPlaced = true; }
             }
           }
-          let strip: Rect = { x: publicRect.x, y: publicRect.y, w: publicRect.w, h: galleryH };
-          // Proportional row layout: each cell ≥ its minWidth, surplus shared by target area.
-          const targets = galleryCells.map(s => Math.max(s.minArea, s.targetArea));
-          const sumT = Math.max(targets.reduce((a, b) => a + b, 0), 1e-6);
-          const surplus = Math.max(0, publicRect.w - totalMinW);
-          const ws = galleryCells.map((s, i) => {
-            const proportional = minW(s) + surplus * (targets[i] / sumT);
-            // A single-cell gallery is sized to its program target, never stretched to fill.
-            return galleryCells.length === 1
-              ? Math.min(proportional, Math.max(minW(s), targets[i] / Math.max(galleryH, 0.5)))
-              : proportional;
-          });
-          // Each cell must reach its program minArea at its solved width — grow the strip
-          // height for that (the layout contract rejects cells below minArea), else fall back.
-          const stripMinH = Math.max(...galleryCells.map((s, i) =>
-            Math.max(s.minArea > 0 ? s.minArea / Math.max(ws[i], 0.5) : 0, minH(s))));
-          let stripH = Math.max(strip.h, stripMinH);
-          if (publicRect.h - stripH < neededBelow - 1e-6) {
-            stripH = -1; // cannot host the row without crushing living/dining — let the column try
-          }
-          if (stripH > 0 && !publicMainPlaced) {
-          strip = { ...strip, h: stripH };
-          let cx = strip.x;
-          galleryCells.forEach((s, i) => {
-            const w = Math.min(ws[i], strip.x + strip.w - cx);
-            placed.push(mkSpace(s.type, { x: cx, y: strip.y, w, h: strip.h }, s.placedLabel, s.placedId, 'public'));
-            cx += w;
-          });
-          galleryBottom = strip.y + strip.h;
-          explanation.push(`Phase15 M3 entry gallery: ${galleryCells.map(c => c.type).join('+')} @ front strip h=${stripH.toFixed(2)} m`);
-          galleryPlaced = true;
+          if (!publicMainPlaced) {
+            const p = ENTRY_GALLERY_FAMILY.plan(gctx);
+            if (p) adopt(ENTRY_GALLERY_FAMILY, p);
           }
         } else {
-          // Tall-narrow band (urban frontage, vertical spine): stack the entry sequence
-          // VERTICALLY along the front — entrance at the street, then foyer, then WC —
-          // each cell full band width, heights from target area with minimum preserved.
-          const maxCellMinW = Math.max(...galleryCells.map(minW));
-          const colHs = galleryCells.map(s => Math.max(minH(s), Math.max(s.minArea, s.targetArea) / publicRect.w));
-          const colH = colHs.reduce((a, b) => a + b, 0);
-          const entCol = galleryCells.findIndex(s => s.type === 'entrance');
-          const foyCol = galleryCells.findIndex(s => s.type === 'foyer');
-          const leftIdx = galleryCells.map((_, i) => i).filter(i => i !== entCol && i !== foyCol);
-          const halfW = publicRect.w / 2;
-          const corrSplitW = () => halfW;
-          const tLayout = entCol >= 0 && foyCol >= 0 && leftIdx.length >= 1 &&
-            halfW >= Math.max(
-              minW(galleryCells[foyCol]),
-              ...leftIdx.map(i => minW(galleryCells[i])),
-              1.0) - 1e-6;
-          const tLeftHs = tLayout ? leftIdx.map(i => {
-            const s = galleryCells[i];
-            return Math.max(minH(s), Math.max(s.minArea, s.targetArea) / halfW);
-          }) : [];
-          const entH = tLayout ? colHs[entCol] : 0;
-          // The foyer column must reach its OWN program minimum at the split width —
-          // the stack grows to cover it; the last side cell absorbs the slack.
-          const foyMinH = tLayout
-            ? Math.max(minH(galleryCells[foyCol]),
-                Math.max(galleryCells[foyCol].minArea, 0) / Math.max(corrSplitW(), 0.5))
-            : 0;
-          const tColH = tLayout
-            ? entH + Math.max(tLeftHs.reduce((a, b) => a + b, 0), foyMinH)
-            : colH;
-          if (publicRect.w >= maxCellMinW - 1e-6 && publicRect.h - (tLayout ? tColH : colH) >= neededBelow - 1e-6) {
-            if (tLayout) {
-              // T-entry stack for narrow bands: entrance spans the front at full width; the
-              // foyer runs floor-to-living-edge on the street-far half and the remaining
-              // entry cells stack on the corridor-side half — so the foyer satisfies the
-              // entrance→foyer AND foyer→living graph adjacencies (perpendicular to each
-              // other — a plain row cannot), while WC/guest rooms keep direct corridor
-              // contact (never a through-route through another room). All splits round to
-              // cm so halves tile the band exactly (no 0.01 floating seams).
-              const bandX = publicRect.x;
-              const bandR = publicRect.x + publicRect.w;
-              const corr0 = layout.corridors[0];
-              const corrOnRight = corr0 ? corr0.x + corr0.w / 2 >= bandX + publicRect.w / 2 : true;
-              const splitX = Math.round((bandX + (bandR - bandX) / 2) * 100) / 100;
-              const foyerX = corrOnRight ? bandX : splitX;
-              const foyerW = corrOnRight ? splitX - bandX : bandR - splitX;
-              const sideX = corrOnRight ? splitX : bandX;
-              const sideW = corrOnRight ? bandR - splitX : splitX - bandX;
-              const entY = Math.round(publicRect.y * 100) / 100;
-              const entHr = Math.round(entH * 100) / 100;
-              placed.push(mkSpace('entrance',
-                { x: bandX, y: publicRect.y, w: publicRect.w, h: entHr },
-                galleryCells[entCol].placedLabel, galleryCells[entCol].placedId, 'public'));
-              const tColHr = Math.round(tColH * 100) / 100;
-              let ly = entY + entHr;
-              leftIdx.forEach((idx, j) => {
-                const s = galleryCells[idx];
-                const hh = j === leftIdx.length - 1
-                  ? Math.round((entY + tColHr - ly) * 100) / 100
-                  : Math.round(tLeftHs[j] * 100) / 100;
-                placed.push(mkSpace(s.type, { x: sideX, y: ly, w: sideW, h: hh }, s.placedLabel, s.placedId, 'public'));
-                ly = Math.round((ly + hh) * 100) / 100;
-              });
-              const foy = galleryCells[foyCol];
-              placed.push(mkSpace('foyer',
-                { x: foyerX, y: entY, w: foyerW, h: tColHr - entHr },
-                foy.placedLabel, foy.placedId, 'public'));
-              galleryBottom = entY + tColHr;
-              explanation.push(`Phase15 M3 entry column (T-stack): entrance front, foyer hall along living @ ${tColH.toFixed(2)} m`);
-            } else {
-              let cy2 = publicRect.y;
-              galleryCells.forEach((s, i) => {
-                placed.push(mkSpace(s.type, { x: publicRect.x, y: cy2, w: publicRect.w, h: colHs[i] }, s.placedLabel, s.placedId, 'public'));
-                cy2 += colHs[i];
-              });
-              galleryBottom = publicRect.y + colH;
-              explanation.push(`Phase15 M3 entry column (vertical sequence): ${galleryCells.map(c => c.type).join('+')} @ front stack h=${colH.toFixed(2)} m`);
-            }
-            galleryPlaced = true;
-          }
+          const p = ENTRY_COLUMN_FAMILY.plan(gctx);
+          if (p) adopt(ENTRY_COLUMN_FAMILY, p);
         }
         if (galleryPlaced) {
           bandCarvedByGallery = true;
@@ -2348,135 +2975,48 @@ function placeSpacesFacingSouth(
           const backY = galleryBottom;
           publicRect = { x: publicRect.x, y: backY, w: publicRect.w, h: Math.max(0.05, publicRect.y + publicRect.h - backY) };
         }
+      } else if (pinEntry !== undefined) {
+        explanation.push(`P3 pinned public family ${pinEntry}: not applicable — no acceptable entry gallery (nothing substituted)`);
+        if (COMPLETE_DAYLIGHT_FAMILIES.has(pinEntry)) publicMainPlaced = true;
       }
     }
 
     if (living && !publicMainPlaced) {
       if (dining) {
-        const totalSouthA = Math.max(living.minArea, living.targetArea) + Math.max(dining.minArea, dining.targetArea);
-        let livingW = publicRect.w * Math.max(living.minArea, living.targetArea) / totalSouthA;
-        const livingMinW = Math.max(living.minWidth ?? 3.0, 3.0);
-        const diningMinW = Math.max(dining.minWidth ?? 2.2, 2.2);
-        const livingMinH = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);
-        const diningMinH = Math.max(dining.minLength ?? dining.minWidth ?? 2.2, 2.0);
-        const publicMinH = Math.max(livingMinH, diningMinH);
-        const publicH = Math.max(publicRect.h, publicMinH);
-        const requiredMinW = livingMinW + diningMinW;
+        const mctx = publicMainContext(publicRect, living, dining, guestWc, publicUnplaced, (s, c) => mainPref(s, c));
+        const { livingMinW, diningMinW, livingMinH, diningMinH, publicH, requiredMinW } = mctx;
         // Phase 5.4C (opt-in): daylight-aware stacking — see PlacerOptions.stackPublicForDaylight.
+        // (Only where the stack can be the layout: legacy selection or a pinned stack.)
         let stackForDaylight = false;
-        if (opts.stackPublicForDaylight === true && !shallowBand && publicRect.w >= requiredMinW - 1e-6 &&
+        if (opts.stackPublicForDaylight === true && !shallowBand && (pinMain === undefined || pinMain === 'stacked') && publicRect.w >= requiredMinW - 1e-6 &&
             guestWc === undefined && publicUnplaced.length === 0 &&
             publicRect.h >= livingMinH + diningMinH - 1e-6) {
-          const legacyLivW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, livingW));
+          const legacyLivW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, mctx.livingW));
           const k = placed.find(p => p.type === 'kitchen');
           stackForDaylight = publicStackForDaylightApplies(publicRect, footprint, legacyLivW, publicH, k ? k.rect : null);
           if (stackForDaylight) explanation.push(`Phase 5.4C daylight-aware public stack: living front, dining behind — both on the band's exterior side edge (band ${publicRect.w.toFixed(2)}×${publicRect.h.toFixed(2)} m)`);
         }
+        mctx.stackForDaylight = stackForDaylight;
+        if (pinMain !== undefined) {
+          // P3: the pinned living/dining family paints the band with its own geometry.
+          const fam = pinnedFamilies[pinMain] as PublicFamily<PublicMainContext>;
+          const p = fam.plan(mctx);
+          if (p) fam.place(p, mkSpace, placed, explanation);
+          if (p && pinMain === 'shallow-band') { publicUnplaced.length = 0; guestWc = undefined; }
+          explanation.push(`P3 pinned public family ${pinMain}: ${p ? 'placed' : 'not applicable (nothing substituted)'}`);
+        } else
         // Phase 13.1: feasibility-first — if not enough width for side-by-side, stack vertically preserving min
         if (publicRect.w < requiredMinW - 1e-6 || stackForDaylight) {
-          // Not enough width side-by-side — check if we can stack vertically (tall publicRect)
-          if (publicRect.h >= livingMinH + diningMinH - 1e-6) {
-            // Phase 5.4C: pre-align the stacked rooms' x-extent to snap()'s 1 cm grid, keeping the
-            // right edge at or inside the band (the adjoining corridor edge is not snapped), so the
-            // final snap pass cannot push living/dining into the corridor. Legacy stack unchanged.
-            const stackX = stackForDaylight ? Math.round((publicRect.x + 1e-9) * 100) / 100 : publicRect.x;
-            const stackW = stackForDaylight
-              ? Math.floor((publicRect.x + publicRect.w - stackX) * 100 + 1e-9) / 100 : publicRect.w;
-            // Phase 15 M4: aim both main rooms at (preference-aware) area needs FIRST, then
-            // share any genuine surplus by target — instead of the fixed 0.55 split which
-            // left dining below 12 m² on tall narrow bands (12×18 family) and giant rooms
-            // elsewhere. Falls back to the legacy split whenever the needs cannot tile.
-            const livNeedH = mainPref(living, publicRect.w);
-            const dinNeedH = mainPref(dining, publicRect.w);
-            const stackNeeds = livNeedH + dinNeedH;
-            let livingH: number;
-            if (publicRect.h >= stackNeeds - 1e-6) {
-              const livT = Math.max(living.minArea, living.targetArea);
-              const dinT = Math.max(dining.minArea, dining.targetArea);
-              livingH = Math.round((livNeedH + (publicRect.h - stackNeeds) * (livT / (livT + dinT))) * 100) / 100;
-            } else {
-              livingH = Math.max(livingMinH, publicRect.h * 0.55);
-            }
-            // Round to 2 decimals and make next rect exactly fill publicRect to avoid 0.01 overlap with north kitchen pocket
-            livingH = Math.round(livingH * 100) / 100;
-            const diningY = Math.round((publicRect.y + livingH) * 100) / 100;
-            let diningH = Math.round((publicRect.y + publicRect.h - diningY) * 100) / 100;
-            if (diningH < diningMinH - 1e-6) { // ensure min
-              livingH = Math.round((publicRect.h - diningMinH) * 100) / 100;
-              const dy2 = Math.round((publicRect.y + livingH) * 100) / 100;
-              diningH = Math.round((publicRect.y + publicRect.h - dy2) * 100) / 100;
-              placed.push(mkSpace('living',
-                { x: stackX, y: publicRect.y, w: Math.max(stackW, livingMinW), h: livingH },
-                living.placedLabel, living.placedId, 'public'));
-              placed.push(mkSpace('dining',
-                { x: stackX, y: dy2, w: Math.max(stackW, diningMinW), h: diningH },
-                dining.placedLabel, dining.placedId, 'public'));
-            } else {
-              placed.push(mkSpace('living',
-                { x: stackX, y: publicRect.y, w: Math.max(stackW, livingMinW), h: livingH },
-                living.placedLabel, living.placedId, 'public'));
-              placed.push(mkSpace('dining',
-                { x: stackX, y: diningY, w: Math.max(stackW, diningMinW), h: diningH },
-                dining.placedLabel, dining.placedId, 'public'));
-            }
-          } else {
-            // Genuinely infeasible — preserve min width, allow overflow but never negative
-            livingW = livingMinW;
-            const eastX = publicRect.x + livingW;
-            const eastW = Math.max(diningMinW, publicRect.w - livingW);
-            placed.push(mkSpace('living',
-              { x: publicRect.x, y: publicRect.y, w: livingW, h: publicH },
-              living.placedLabel, living.placedId, 'public'));
-            placed.push(mkSpace('dining',
-              { x: eastX, y: publicRect.y, w: eastW, h: publicH },
-              dining.placedLabel, dining.placedId, 'public'));
-          }
+          STACKED_FAMILY.place(STACKED_FAMILY.plan(mctx)!, mkSpace, placed, explanation);
         } else if (shallowBand) {
           // P17-E: shallow public band (wide street-facing frame) — the band cannot host a
           // stacked entry sequence plus the living field, so the ENTIRE public program
-          // tiles side-by-side in one full-depth row along the street: entry rooms, living,
-          // dining, guest-wc. Reuses the existing min-aware binary splitter (same rules as
-          // every other row); no second placement system, no new HARD semantics. Deterministic.
-          const rowCells: PlacedSpec[] = [...publicUnplaced];
-          if (guestWc !== undefined) rowCells.push(guestWc);
-          rowCells.push(living, dining);
-          placed.push(...splitBinary(publicRect, rowCells, mkSpace, 'public', 'x'));
+          // tiles side-by-side in one full-depth row along the street. Deterministic.
+          SHALLOW_BAND_FAMILY.place(SHALLOW_BAND_FAMILY.plan(mctx)!, mkSpace, placed, explanation);
           publicUnplaced.length = 0;
           guestWc = undefined;
-          explanation.push(`P17-E shallow-band public row: ${rowCells.map(c => c.type).join(' + ')} tiled side-by-side (band depth ${publicRect.h.toFixed(2)} m).`);
         } else {
-          livingW = Math.max(livingMinW, Math.min(publicRect.w - diningMinW, livingW));
-          // Phase 15 M4: cap the shared row height at the cells' program-driven maximum
-          // (1.75×target, never below their own needs) — a huge band stops force-feeding
-          // the living field 100+ m². Any slack becomes intentional void UNDER the row
-          // (facade/contact edges stay tiled; band bottom keeps its adjacency by tiling
-          // up from it when the cap is not binding).
-          const rowH = publicH;
-          const rowY = publicRect.y;
-          placed.push(mkSpace('living',
-            { x: publicRect.x, y: rowY, w: livingW, h: rowH },
-            living.placedLabel, living.placedId, 'public'));
-          const eastX = publicRect.x + livingW;
-          const eastW = publicRect.w - livingW;
-          const DINING_MIN_W = diningMinW;
-          const GWC_MIN_W = 1.2;
-          const finalEastW = Math.max(0, eastW);
-          if (guestWc && finalEastW >= DINING_MIN_W + GWC_MIN_W && publicRect.h > 4.0) {
-            const gwcW = Math.min(1.6, Math.max(GWC_MIN_W, finalEastW * 0.30));
-            const gwcH = Math.min(2.2, Math.max(1.8, publicRect.h * 0.25));
-            const diningW = Math.max(DINING_MIN_W, finalEastW - gwcW);
-            placed.push(mkSpace('guest-wc',
-              { x: eastX + diningW, y: publicRect.y + publicRect.h - gwcH, w: gwcW, h: gwcH },
-              guestWc.placedLabel, guestWc.placedId, 'public'));
-            placed.push(mkSpace('dining',
-              { x: eastX, y: publicRect.y, w: diningW, h: rowH },
-              dining.placedLabel, dining.placedId, 'public'));
-          } else {
-            const finalDiningW = Math.max(DINING_MIN_W, finalEastW);
-            placed.push(mkSpace('dining',
-              { x: eastX, y: publicRect.y, w: finalDiningW, h: rowH },
-              dining.placedLabel, dining.placedId, 'public'));
-          }
+          SIDE_BY_SIDE_FAMILY.place(SIDE_BY_SIDE_FAMILY.plan(mctx)!, mkSpace, placed, explanation);
         }
       } else {
         const livingMinH = Math.max(living.minLength ?? living.minWidth ?? 3.0, 2.5);

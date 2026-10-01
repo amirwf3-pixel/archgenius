@@ -59,6 +59,16 @@ function occupiedRects(floor: Floor): Rect[] {
   return out;
 }
 
+/** Half of the thickest wall on the floor — the envelope's exterior-wall pad (m). */
+export function floorWallPad(floor: Floor): number {
+  let wallPad = 0;
+  for (const w of floor.walls ?? []) {
+    if (!w?.start || !w?.end) continue;
+    wallPad = Math.max(wallPad, (w.thickness ?? 0) / 2);
+  }
+  return wallPad;
+}
+
 /**
  * Bounding box of all placed geometry (including wall thickness so the
  * declared envelope honestly contains the built walls).
@@ -73,11 +83,7 @@ function occupiedBounds(floor: Floor): Rect | null {
     maxX = Math.max(maxX, r.x + r.w);
     maxY = Math.max(maxY, r.y + r.h);
   }
-  let wallPad = 0;
-  for (const w of floor.walls ?? []) {
-    if (!w?.start || !w?.end) continue;
-    wallPad = Math.max(wallPad, (w.thickness ?? 0) / 2);
-  }
+  const wallPad = floorWallPad(floor);
   return { x: minX - wallPad, y: minY - wallPad, w: maxX - minX + 2 * wallPad, h: maxY - minY + 2 * wallPad };
 }
 
@@ -86,17 +92,33 @@ function occupiedBounds(floor: Floor): Rect | null {
  * current footprint). Returns true when the footprint was compacted, false
  * when the original envelope was kept (no geometry, degenerate result, or the
  * containment invariant would break).
+ *
+ * P6 (optional `bound`, coordinated rectangle floors only): the built extent may not
+ * pass `bound` except by the exterior-wall half-thickness (`floorWallPad`) — the
+ * coordinated frame's residual strips stay outside the envelope. With a bound, EVERY
+ * occupied rect (spaces, stairs, parking, elevator shafts) must sit inside the
+ * compacted envelope, otherwise nothing changes and false is returned. Without a
+ * bound the behaviour is exactly the P17-C one.
  */
-export function applyFloorCompaction(floor: Floor): boolean {
+export function applyFloorCompaction(floor: Floor, bound?: Rect): boolean {
   const current = floor?.footprint;
   if (!current || !(current.w > 0) || !(current.h > 0)) return false;
   const occ = occupiedBounds(floor);
   if (!occ) return false; // nothing placed — keep the declared envelope
   // clip to the current footprint (never grow, never leave the buildable rect)
-  const x0 = Math.max(occ.x, current.x);
-  const y0 = Math.max(occ.y, current.y);
-  const x1 = Math.min(occ.x + occ.w, current.x + current.w);
-  const y1 = Math.min(occ.y + occ.h, current.y + current.h);
+  let x0 = Math.max(occ.x, current.x);
+  let y0 = Math.max(occ.y, current.y);
+  let x1 = Math.min(occ.x + occ.w, current.x + current.w);
+  let y1 = Math.min(occ.y + occ.h, current.y + current.h);
+  if (bound) {
+    // a bound edge applies only where it actually cuts (> 1e-6): an unclipped envelope
+    // keeps the P17-C coordinates bit for bit.
+    const pad = floorWallPad(floor);
+    if (bound.x - pad > x0 + 1e-6) x0 = bound.x - pad;
+    if (bound.y - pad > y0 + 1e-6) y0 = bound.y - pad;
+    if (bound.x + bound.w + pad < x1 - 1e-6) x1 = bound.x + bound.w + pad;
+    if (bound.y + bound.h + pad < y1 - 1e-6) y1 = bound.y + bound.h + pad;
+  }
   const w = x1 - x0;
   const h = y1 - y0;
   if (!(w > 0.01) || !(h > 0.01)) return false; // degenerate — fallback
@@ -106,6 +128,17 @@ export function applyFloorCompaction(floor: Floor): boolean {
   for (const s of floor.spaces ?? []) {
     if (!s?.rect || !(s.rect.w > 0) || !(s.rect.h > 0)) continue;
     if (!rectContains(compacted, s.rect)) return false; // unsafe — keep original
+  }
+  if (bound) {
+    // the part of every occupied rect inside the declared envelope (parking may sit in
+    // the setback, outside it) must stay inside the compacted envelope.
+    const all = [...occupiedRects(floor), ...(floor.elevators ?? []).map(e => e?.rect).filter((r): r is Rect => !!r && r.w > 0 && r.h > 0)];
+    for (const r of all) {
+      const cx0 = Math.max(r.x, current.x), cy0 = Math.max(r.y, current.y);
+      const cx1 = Math.min(r.x + r.w, current.x + current.w), cy1 = Math.min(r.y + r.h, current.y + current.h);
+      if (!(cx1 - cx0 > EPS) || !(cy1 - cy0 > EPS)) continue;
+      if (!rectContains(compacted, { x: cx0, y: cy0, w: cx1 - cx0, h: cy1 - cy0 })) return false;
+    }
   }
   floor.footprint = compacted;
   return true;

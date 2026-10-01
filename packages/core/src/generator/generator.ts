@@ -35,8 +35,13 @@ import { placeOpenings, programmeDoorRequirements } from './openings.js';
 import { computeMetrics } from '../optimizer/metrics.js';
 import { validateLayout } from '../validation/validator.js';
 import { ROOM_BAD_PROPORTION_RATIO } from '../validation/architectural-qa.js';
-import { placeSpaces, CORRIDOR_W as PLACER_CORRIDOR_W, room001Thresholds, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, UPPER_FLOOR_FRONT_PRIVATE_APPLIED, STACKED_PAIR_MIN_AREA_APPLIED, type PlacedSpec } from '../layout/placer.js';
+import { placeSpaces, CORRIDOR_W as PLACER_CORRIDOR_W, room001Thresholds, MAIN_ROOM_DIMENSION_APPLIED, DINING_ENTRY_COLUMN_PLACED, UPPER_FLOOR_FRONT_PRIVATE_APPLIED, STACKED_PAIR_MIN_AREA_APPLIED, strategyConfig, type PlacedSpec } from '../layout/placer.js';
 import { rectPartitions, contactConnected, contactLen } from '../layout/regions.js';
+import {
+  COORDINATED_CORE_APPLIED, COORDINATED_RECT_APPLIED, COORDINATED_RESIDUAL_APPLIED, COORDINATED_RESIDUAL_RETRY, COORDINATED_TARGET_RETRY, COORDINATED_VERTICAL_RETRY, coordinatedRectEligible, frameEnvelopeBound,
+  placeCoordinatedFloor, placeCoordinatedRect, planCoordinatedCore, residualEnvelopeOverlap, residualIntrusions, residualRects,
+  type CoordinatedCorePlan, type FrameResidual,
+} from '../layout/coordinated-rect.js';
 import { solveRow, solveCol, type BandCellDemand } from '../layout/topology.js';
 import { sortCandidates } from '../layout/ranking.js';
 import { DEFAULT_RESIDENTIAL_CONSTRAINTS } from '../layout/constraints.js';
@@ -59,7 +64,7 @@ import {
   isOrthogonal,
 } from '../geometry/polygon-ops.js';
 import { createRectangleRoomPolygon, roomPolygonToBoundingRect } from '../geometry/room-polygon.js';
-import { applyFloorCompaction } from '../layout/compaction.js';
+import { applyFloorCompaction, floorWallPad } from '../layout/compaction.js';
 import { placeSpacesLShape, lAwareParkingEnvelope, L_WING_LINK_ADDED, L_ENTRY_FOYER_ALIGNED, L_ROOM_QUALITY_MAX_AREA } from './l-shape.js';
 
 export const ALL_STRATEGIES: CandidateStrategy[] = [
@@ -241,6 +246,29 @@ export interface GenerateLayoutsOptions {
    * geometry; the 5.4A–5.5D guards are untouched.
    */
   stairConnectorHardReduction?: boolean;
+  /**
+   * P4 opt-in (default OFF): coordinated rectangle planner prototype. On single-floor
+   * rectangle sites without a stair / elevator core, the floor is also laid out through
+   * the P1 BuildingFrame (band depths from the programme) with the P2 public family the
+   * frame was sized for, pinned into the unchanged placer (P3). The result is adopted per
+   * strategy ONLY through adoptCoordinatedRectVariant (valid, no HARD code increases, no
+   * programme space lost, no room > 60 m², living / dining no further from their targets,
+   * no overlap / outside-buildable room); otherwise the legacy candidate is kept unchanged.
+   *
+   * P5: on 2+ floor rectangle sites the same option coordinates every floor from ONE
+   * pre-placement plan (planCoordinatedCore): the frame's corridor line, stair cell and
+   * elevator cell — with the stair / elevator CoreAnchors built from them before the
+   * floor loop — are pinned on every floor; alignHallToAnchor only validates. Any floor
+   * that cannot fit the plan discards the variant; otherwise it is adopted only through
+   * adoptCoordinatedCoreVariant (the P4 guard plus stair / elevator continuity).
+   *
+   * P6: the frame's residual rear / side cuts stay intentional open space on P4 and P5
+   * floors — a room / core / parking rect in them, or a residual left inside the compacted
+   * envelope (applyFloorCompaction bounded at the frame edge + exterior-wall pad), discards
+   * the variant; a yard (addYard) treats the frame as building mass, so it lands against
+   * it (in the residual when deep enough), never inside it.
+   */
+  coordinatedRectPlanner?: boolean;
 }
 
 export function generateLayouts(
@@ -269,6 +297,7 @@ export function generateLayouts(
   const lShapeUpperCoreCirculation = options.lShapeUpperCoreCirculation === true;
   const lShapeRoomQualitySelection = options.lShapeRoomQualitySelection === true;
   const stairConnectorHardReduction = options.stairConnectorHardReduction === true;
+  const coordinatedRectPlanner = options.coordinatedRectPlanner === true;
   validateInput(input);
   const packs = composePacks(input);
   const bfp = computeBuildableArea(input);
@@ -319,6 +348,8 @@ export function generateLayouts(
   let spineMode = false;
   // L-shape perpendicular parking retry mode (only ever true inside its guarded post-pass).
   let lParkingRetryMode = false;
+  // P4 coordinated-planner mode (only ever set inside its guarded pass below).
+  let coordinatedMode: CoordinatedMode | null = null;
   const buildCandidate = (strategy: CandidateStrategy, lShapeAdj: boolean, galleryDaylight = false, stairConnector = false, publicStack = false, stairGapBridge = false, roomConnectors = false, facadeRow = false, stairPocket = false, mainDim = false, entryColumn = false, frontPrivate = false, elevatorBridge = false, wingLink = false, entryFoyer = false, pairMinArea = false, shaftNotch = false, upperCoreCirc = false): LayoutCandidate => {
     const explanations: string[] = [];
     explanations.push(`Site shape ${input.site.shape}, siteArea ${buildableGeom.siteArea.toFixed(1)} m², buildableArea ${buildableGeom.buildableArea.toFixed(1)} m², buildableRects ${buildableGeom.buildableRects.length}, setbacks N=${bfp.setbacks.north} S=${bfp.setbacks.south} E=${bfp.setbacks.east} W=${bfp.setbacks.west} — ${buildableGeom.appliedSetbacks.map(s => `${s.direction}:${s.source}`).join(', ')}`);
@@ -326,13 +357,18 @@ export function generateLayouts(
     // Phase15 M7: building-level vertical-core anchors (stair/elevator halls).
     // Level 0 establishes them; upper floors must reuse them for coherence.
     const coreAnchors = new Map<'stair-hall' | 'elevator-hall', CoreAnchor>();
+    // P5 (opt-in): the coordinated plan's CoreAnchors exist BEFORE the floor loop; every
+    // floor (level 0 included) must land on them.
+    if (coordinatedMode?.plan && coordinatedMode.anchors) {
+      for (const a of coordinatedMode.anchors) coreAnchors.set(a.hallType, { ...a, rect: { ...a.rect } });
+    }
     for (let level = 0; level < numFloors; level++) {
-      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea, shaftNotch, upperCoreCirc, lShapeRoomQualitySelection, parkingCutoutMode, spineMode, lParkingRetryMode));
+      floors.push(buildFloorSiteAware(input, buildableGeom, bfp, level, numFloors === 1, strategy, explanations, allocations[level], coreAnchors, programmeDoorCompletion, preferDiningKitchenAdjacency, lShapeAdj, galleryDaylight, stairConnector, publicStack, stairGapBridge, roomConnectors, facadeRow, stairPocket, mainDim, entryColumn, frontPrivate, elevatorBridge, wingLink, entryFoyer, pairMinArea, shaftNotch, upperCoreCirc, lShapeRoomQualitySelection, parkingCutoutMode, spineMode, lParkingRetryMode, coordinatedMode));
     }
     // Task 154: yard — placed once ALL floors exist (it must be open-air), as an
     // exterior ground-floor space (no walls, no doors — like parking). Absent the
     // flag nothing here runs, so hasYard=false output is byte-identical.
-    if (input.building.hasYard === true && floors.length > 0) addYard(input, buildableGeom, floors, explanations);
+    if (input.building.hasYard === true && floors.length > 0) addYard(input, buildableGeom, floors, explanations, coordinatedMode?.residual ?? null);
 
     explanations.push(`Constraint graph: ${DEFAULT_RESIDENTIAL_CONSTRAINTS.length} relationships loaded. Phase 11 canonical polygon rooms, parametric constraints, locking, editing foundation.`);
     const meta: LayoutMetadata = { strategy, seed, generatedAt: Date.now(), regulationPacks: packs.map(p => ({ id: p.id, edition: p.edition })) };
@@ -553,7 +589,140 @@ export function generateLayouts(
       withUpperCore = adoptLShapeUpperCoreCirculationVariant(withShaftNotch,
         buildCandidate(strategy, lAdjUsed, galleryUsed, adopted.connector, withStack !== withConnector, adopted.bridge, adopted.rooms, facadeUsed, adopted.pocket, withMainDim !== withPocket, entryUsed, frontUsed, withElevatorBridge !== withMainDim, withWingLink !== withElevatorBridge, withEntryFoyer !== withWingLink, withPairMinArea !== withEntryFoyer, withShaftNotch !== withPairMinArea, true));
     }
-    candidates.push(withUpperCore);
+    // P4 (opt-in): last — the coordinated rectangle planner variant, on single-floor
+    // rectangle sites without a stair / elevator core. The frame-selected family first,
+    // then the placer's own family inside the frame zones; each adopted ONLY through
+    // adoptCoordinatedRectVariant against the candidate it would replace.
+    let withCoordinated = withUpperCore;
+    if (coordinatedRectPlanner && input.site.shape === 'rectangle' && numFloors === 1
+      && coordinatedRectEligible(programForFloor(input.building, 0, true, allocations[0]) as PlacedSpec[], true)) {
+      // P8: the side-strip-free retry runs only after a residual-intrusion rejection.
+      // P9: the target-depth retry runs only after a G10-worse guard rejection.
+      let residualRejected = false;
+      let deviationRejected = false;
+      for (const { family, noSideResidual, targetPublicDepth } of COORDINATED_ATTEMPTS) {
+        if (targetPublicDepth && !deviationRejected) break;
+        if (noSideResidual && !residualRejected) continue;
+        const mode: CoordinatedMode = {
+          family, failed: null,
+          ...(noSideResidual ? { noSideResidual: true } : {}),
+          ...(targetPublicDepth ? { targetPublicDepth: true } : {}),
+        };
+        coordinatedMode = mode;
+        let v: LayoutCandidate;
+        try { v = buildCandidate(strategy, false); } finally { coordinatedMode = null; }
+        // P6: a room / core / parking rect in the frame residual (or a residual left inside
+        // the envelope) discards the variant — the legacy candidate stands unchanged.
+        if (mode.failed !== null) { if (mode.residualIntrusion === true) residualRejected = true; continue; }
+        const adopted = adoptCoordinatedRectVariant(withUpperCore, v);
+        if (adopted === v) {
+          if (noSideResidual) v.explanations.push(retryNote(family));
+          if (targetPublicDepth) v.explanations.push(targetRetryNote(family));
+          withCoordinated = v; break;
+        }
+        if (coordinatedDeviationWorse(withUpperCore, v)) deviationRejected = true;
+      }
+      // P10: after every attempt above was rejected on a vertical-spine frame — ONE rebuild
+      // with the frame cut to its target-sized length (placer family: the vertical public
+      // column keeps the placer's own family), through the same P6 checks and guard.
+      if (withCoordinated === withUpperCore && strategyConfig(strategy).spine === 'vertical') {
+        const mode: CoordinatedMode = { family: 'placer', failed: null, verticalTargetLength: true };
+        coordinatedMode = mode;
+        let v: LayoutCandidate;
+        try { v = buildCandidate(strategy, false); } finally { coordinatedMode = null; }
+        if (mode.failed === null && adoptCoordinatedRectVariant(withUpperCore, v) === v) {
+          v.explanations.push(verticalRetryNote);
+          withCoordinated = v;
+        }
+      }
+    }
+    // P5 (opt-in): 2+ floor rectangle sites — one pre-placement core / corridor plan and
+    // its CoreAnchors, built before the floor loop and shared by every floor. A floor that
+    // cannot fit the plan marks the build failed (variant discarded); otherwise adopted
+    // ONLY through adoptCoordinatedCoreVariant against the candidate it would replace.
+    if (coordinatedRectPlanner && input.site.shape === 'rectangle' && numFloors >= 2 && buildableGeom.buildableRects.length === 1) {
+      const floorSpecs = allocations.map((al, l) => programForFloor(input.building, l, false, al)
+        .map((sp, k) => ({ ...sp, placedId: `${sp.type}-${l}-${k}`, placedLabel: sp.type }) as PlacedSpec));
+      const slice = coordinatedSlice(input, buildableGeom, floorSpecs);
+      const plan = slice ? planCoordinatedCore({
+        slice, access: input.site.accessSide, strategy, floorSpecs, upperFloorFrontPrivate,
+      }) : null;
+      const anchors = plan ? coordinatedCoreAnchors(plan) : null;
+      if (plan && anchors) {
+        // P8: the side-strip-free retry re-plans the core once (same inputs, no side strip)
+        // and runs only after a residual-intrusion rejection.
+        // P9: the target-depth retry re-plans the core once (same inputs, target-sized band
+        // depths) and runs only after a G10-worse guard rejection.
+        let residualRejected = false;
+        let deviationRejected = false;
+        let retry: { plan: CoordinatedCorePlan; anchors: CoreAnchor[] } | null | undefined;
+        let targetRetry: { plan: CoordinatedCorePlan; anchors: CoreAnchor[] } | null | undefined;
+        for (const { family, noSideResidual, targetPublicDepth } of COORDINATED_ATTEMPTS) {
+          if (targetPublicDepth && !deviationRejected) break;
+          if (noSideResidual && !residualRejected) continue;
+          if (noSideResidual && retry === undefined) {
+            const p = planCoordinatedCore({
+              slice: slice!, access: input.site.accessSide, strategy, floorSpecs, upperFloorFrontPrivate, noSideResidual: true,
+            });
+            const a = p ? coordinatedCoreAnchors(p) : null;
+            retry = p && a ? { plan: p, anchors: a } : null;
+          }
+          if (targetPublicDepth && targetRetry === undefined) {
+            const p = planCoordinatedCore({
+              slice: slice!, access: input.site.accessSide, strategy, floorSpecs, upperFloorFrontPrivate, targetPublicDepth: true,
+            });
+            const a = p ? coordinatedCoreAnchors(p) : null;
+            targetRetry = p && a ? { plan: p, anchors: a } : null;
+          }
+          const base = noSideResidual ? retry : targetPublicDepth ? targetRetry : { plan, anchors };
+          if (!base) continue;
+          const famPlan: CoordinatedCorePlan = family === 'frame' ? base.plan : { ...base.plan, floorFamilies: base.plan.floorFamilies.map(() => undefined) };
+          const mode: CoordinatedMode = {
+            family, plan: famPlan, anchors: base.anchors, failed: null,
+            ...(noSideResidual ? { noSideResidual: true } : {}),
+            ...(targetPublicDepth ? { targetPublicDepth: true } : {}),
+          };
+          coordinatedMode = mode;
+          let v: LayoutCandidate;
+          try {
+            v = buildCandidate(strategy, false, false, false, false, false, false, false, false, false, false, upperFloorFrontPrivate);
+          } finally { coordinatedMode = null; }
+          if (mode.failed !== null) { if (mode.residualIntrusion === true) residualRejected = true; continue; }
+          const adopted = adoptCoordinatedCoreVariant(withCoordinated, v);
+          if (adopted === v) {
+            if (noSideResidual) v.explanations.push(retryNote(family));
+            if (targetPublicDepth) v.explanations.push(targetRetryNote(family));
+            withCoordinated = v; break;
+          }
+          if (coordinatedDeviationWorse(withCoordinated, v)) deviationRejected = true;
+        }
+        // P10: after every attempt above was rejected on a vertical-spine frame — the core is
+        // re-planned ONCE on the frame cut to its target-sized length and built once (placer
+        // family), through the same P6 checks and guard.
+        if (withCoordinated === withUpperCore && plan.frame.spine === 'vertical') {
+          const p = planCoordinatedCore({
+            slice: slice!, access: input.site.accessSide, strategy, floorSpecs, upperFloorFrontPrivate, verticalTargetLength: true,
+          });
+          const a = p ? coordinatedCoreAnchors(p) : null;
+          if (p && a) {
+            const mode: CoordinatedMode = {
+              family: 'placer', plan: { ...p, floorFamilies: p.floorFamilies.map(() => undefined) }, anchors: a, failed: null,
+              verticalTargetLength: true,
+            };
+            coordinatedMode = mode;
+            let v: LayoutCandidate;
+            try {
+              v = buildCandidate(strategy, false, false, false, false, false, false, false, false, false, false, upperFloorFrontPrivate);
+            } finally { coordinatedMode = null; }
+            if (mode.failed === null && adoptCoordinatedCoreVariant(withCoordinated, v) === v) {
+              v.explanations.push(verticalRetryNote);
+              withCoordinated = v;
+            }
+          }
+        }
+      }
+    }
+    candidates.push(withCoordinated);
   }
 
   // Guarded parking-cutout fallback: ONLY when no candidate of this run is valid on a
@@ -1405,6 +1574,202 @@ function overlapPairs(c: LayoutCandidate): Set<string> {
     }
   }
   return out;
+}
+
+/** P4: coordinated-planner build mode (see GenerateLayoutsOptions.coordinatedRectPlanner). */
+interface CoordinatedMode {
+  family: 'frame' | 'placer';
+  /** P5: the building's coordinated core plan (multi-floor); absent for the P4 single-floor path. */
+  plan?: CoordinatedCorePlan;
+  /** P5: CoreAnchors built from the plan before the floor loop. */
+  anchors?: CoreAnchor[];
+  /** P5: first reason a floor could not fit the plan (the variant is then discarded). P6: also P4. */
+  failed?: string | null;
+  /** P6: the coordinated frame and its residual strips (set by the floor builder when placed). */
+  residual?: FrameResidual | null;
+  /** P8: this build is the bounded retry — the frame is derived without its side residual strip. */
+  noSideResidual?: boolean;
+  /** P8: set when the build was discarded FIRST by the P6 residual-intrusion check. */
+  residualIntrusion?: boolean;
+  /** P9: this build is the bounded target-depth retry — target-sized band depths. */
+  targetPublicDepth?: boolean;
+  /** P10: this build is the bounded vertical retry — the vertical frame cut to its target length. */
+  verticalTargetLength?: boolean;
+}
+
+const retryNote = (family: string) => `${COORDINATED_RESIDUAL_RETRY} the ${family} family was rebuilt once without the frame's side residual strip after a P6 residual-intrusion rejection and adopted through the unchanged guard.`;
+const verticalRetryNote = `${COORDINATED_VERTICAL_RETRY} the vertical-spine frame was cut once to its target-sized column length (the rest left as rear residual) after every coordinated attempt was rejected, and adopted through the unchanged guard.`;
+const targetRetryNote = (family: string) => `${COORDINATED_TARGET_RETRY} the ${family} family was rebuilt once with target-sized band depths after its living / dining target deviation compared worse than legacy, and adopted through the unchanged guard.`;
+
+/**
+ * P8: the coordinated attempt order — the two families, then (only after a P6
+ * residual-intrusion rejection) ONE retry pass of the same families with the frame's
+ * side residual strip disabled (the existing full-width frame path).
+ * P9: then (only after a guard rejection whose living / dining target deviation compared
+ * worse than legacy) ONE retry pass of the families with target-sized band depths.
+ */
+const COORDINATED_ATTEMPTS: readonly { family: 'frame' | 'placer'; noSideResidual: boolean; targetPublicDepth: boolean }[] = [
+  { family: 'frame', noSideResidual: false, targetPublicDepth: false },
+  { family: 'placer', noSideResidual: false, targetPublicDepth: false },
+  { family: 'frame', noSideResidual: true, targetPublicDepth: false },
+  { family: 'placer', noSideResidual: true, targetPublicDepth: false },
+  { family: 'frame', noSideResidual: false, targetPublicDepth: true },
+  { family: 'placer', noSideResidual: false, targetPublicDepth: true },
+];
+
+/**
+ * P9 retry trigger: the G10 comparison of coordinatedGuardPasses (living / dining target
+ * deviation of the variant above the legacy candidate's, same epsilon) — true for a
+ * rejected variant whose deviation compared worse. Pure.
+ */
+function coordinatedDeviationWorse(base: LayoutCandidate, variant: LayoutCandidate): boolean {
+  return mainRoomTargetDeviation(variant) > mainRoomTargetDeviation(base) + 1e-6;
+}
+
+/**
+ * P5: the slice every floor of a coordinated building places into — the buildable rect,
+ * or the P16-A parking-band remainder under the same reservation rule the floor builder
+ * applies (floor builder re-checks equality; a mismatch fails the coordinated build).
+ * Null when floors would slice differently or the remainder is not one rectangle.
+ */
+function coordinatedSlice(input: ProjectInput, geom: ReturnType<typeof computeBuildableGeometry>, floorSpecs: PlacedSpec[][]): Rect | null {
+  const n = input.building.parkingSpaces ?? 0;
+  const slices = floorSpecs.map((specs): Rect | null => {
+    if (!(n > 0)) return geom.buildableRect;
+    const reserve = reserveParkingBand(geom.siteBoundingRect, geom.buildableRects, input.site.accessSide,
+      (input.site.parkingLayout ?? 'auto') as 'perpendicular' | 'parallel' | 'auto', n);
+    if (!reserve) return geom.buildableRect;
+    const remainingArea = reserve.rects.reduce((a, r) => a + r.w * r.h, 0);
+    const minDemand = specs.reduce((a, sp) => a + ((sp as any).minArea ?? 6), 0);
+    if (minDemand > 0.72 * remainingArea) return geom.buildableRect;
+    return reserve.rects.length === 1 ? { ...reserve.rects[0] } : null;
+  });
+  const s0 = slices[0];
+  if (!s0 || slices.some(r => !r || r.x !== s0.x || r.y !== s0.y || r.w !== s0.w || r.h !== s0.h)) return null;
+  return s0;
+}
+
+/**
+ * P5: the building's CoreAnchors from the coordinated plan, before any floor is placed —
+ * the stair solved on its cell from the corridor side (the unchanged solver), the
+ * elevator cell landing on the corridor. Null when the stair does not solve or the shaft
+ * does not fit its landing side.
+ */
+function coordinatedCoreAnchors(plan: CoordinatedCorePlan): CoreAnchor[] | null {
+  const out: CoreAnchor[] = [];
+  if (plan.stair) {
+    const cfg = { ...DEFAULT_STAIR_CONFIG, floorHeight: DEFAULT_FLOOR_HEIGHT };
+    const sol = solveStair(plan.stair.rect, cfg, plan.stair.side, 'core-main', 0);
+    if (!sol.ok || !sol.stair) return null;
+    out.push(makeCoreAnchor('stair-hall', plan.stair.rect, plan.stair.side, sol.stair, 0));
+  }
+  if (plan.elevator) {
+    if (!cellFitsShaft(plan.elevator.rect, plan.elevator.side)) return null;
+    out.push(makeCoreAnchor('elevator-hall', plan.elevator.rect, plan.elevator.side, null, 0));
+  }
+  return out;
+}
+
+/** P4: room-size ceiling of the coordinated planner (the Task 161 rejection bound). */
+const COORDINATED_MAX_ROOM_AREA = 60;
+const COORDINATED_NON_ROOM: ReadonlySet<string> = new Set(['corridor', 'parking', 'yard']);
+
+/** P4: relative deviation of living / dining from their programme target areas (sum). */
+function mainRoomTargetDeviation(c: LayoutCandidate): number {
+  let d = 0;
+  for (const fl of c.floors) for (const s of fl.spaces) {
+    if ((s.type === 'living' || s.type === 'dining') && typeof s.targetArea === 'number' && s.targetArea > 0) {
+      d += Math.abs(s.area - s.targetArea) / s.targetArea;
+    }
+  }
+  return d;
+}
+
+/** P4 / P5 shared adoption conditions (see adoptCoordinatedRectVariant); null = reject. */
+function coordinatedGuardPasses(base: LayoutCandidate, variant: LayoutCandidate, marker: string): { bd: number; vd: number; hb: number; hv: number } | null {
+  if (!variant.explanations.some(e => e.startsWith(marker))) return null;
+  if (!variant.valid) return null;
+  if (variant.floors.length !== base.floors.length) return null;
+  const count = (c: LayoutCandidate, pick: (f: Finding) => boolean) => {
+    const m = new Map<string, number>();
+    for (const f of c.findings) if (pick(f)) m.set(`${f.severity}:${f.code}`, (m.get(`${f.severity}:${f.code}`) ?? 0) + 1);
+    return m;
+  };
+  const pick = (f: Finding) => f.severity === 'hard' || WATCHED_FINDING.test(f.code);
+  const b = count(base, pick);
+  for (const [k, n] of count(variant, pick)) if (n > (b.get(k) ?? 0)) return null;
+  const types = (c: LayoutCandidate) => {
+    const m = new Map<string, number>();
+    for (const fl of c.floors) for (const s of fl.spaces) if (s.type !== 'corridor') m.set(`${fl.level}:${s.type}`, (m.get(`${fl.level}:${s.type}`) ?? 0) + 1);
+    return m;
+  };
+  const vt = types(variant);
+  for (const [k, n] of types(base)) if ((vt.get(k) ?? 0) < n) return null;
+  const E = 1e-6;
+  const rects = ((variant as any).buildableRects ?? []) as Rect[];
+  for (const fl of variant.floors) for (const s of fl.spaces) {
+    if (!s.rect) continue;
+    if (rects.length > 0 && s.type !== 'parking' && s.type !== 'yard' && !insideBuildable(s.rect, rects)) return null;
+    if (COORDINATED_NON_ROOM.has(s.type)) continue;
+    if (s.area > COORDINATED_MAX_ROOM_AREA + E) return null;
+    if (typeof s.minWidth === 'number' && Math.min(s.rect.w, s.rect.h) < s.minWidth - 0.05 - E) return null;
+    if (typeof s.minArea === 'number' && s.area < s.minArea - 0.1 - E) return null;
+  }
+  if (overlapPairs(variant).size > 0) return null;
+  const bd = mainRoomTargetDeviation(base), vd = mainRoomTargetDeviation(variant);
+  if (vd > bd + E) return null;
+  const hard = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard').length;
+  if (!(vd < bd - E || hard(variant) < hard(base))) return null;
+  return { bd, vd, hb: hard(base), hv: hard(variant) };
+}
+
+/**
+ * P4 guard: adopt the coordinated rectangle planner variant only when the floor really
+ * went through the frame and, against the candidate it would replace:
+ *  1. the variant is valid;
+ *  2. no HARD code increases (so no circulation / access / daylight HARD either), and no
+ *     circulation / access / daylight finding of any severity increases;
+ *  3. no programme space is lost: every non-corridor space type keeps at least its count;
+ *  4. no room exceeds 60 m²;
+ *  5. living / dining are no further from their programme targets, and the variant is a
+ *     strict improvement there or in total HARD;
+ *  6. no overlapping pair, every space inside the buildable area and every room at its
+ *     programme minimum width / area.
+ * Otherwise the legacy candidate is returned unchanged. Pure, deterministic.
+ */
+export function adoptCoordinatedRectVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  const g = coordinatedGuardPasses(base, variant, COORDINATED_RECT_APPLIED);
+  if (!g) return base;
+  const { bd, vd } = g;
+  const hard = (c: LayoutCandidate) => c.findings.filter(f => f.severity === 'hard').length;
+  variant.explanations.push(`P4: coordinated rectangle planner variant adopted (valid; HARD ${hard(base)}→${hard(variant)}; living / dining target deviation ${bd.toFixed(3)}→${vd.toFixed(3)}; no HARD or circulation / access / daylight finding added, no programme space lost, no room above ${COORDINATED_MAX_ROOM_AREA} m², no overlap or outside-buildable room).`);
+  return variant;
+}
+
+/**
+ * P5 guard: adopt the coordinated multi-floor core variant only when every P4 condition
+ * holds (valid; no HARD code / circulation / access / daylight finding increases; no
+ * programme space lost; no room > 60 m²; living / dining no further from their targets,
+ * with a strict gain there or in total HARD; no overlap or outside-buildable space) and the
+ * vertical core is continuous: every floor keeps at least the base's stair halls, solved
+ * stairs, elevator halls and elevators; every solved stair is valid; the stair halls and
+ * elevator halls sit on ONE rect each across all floors. Otherwise the base is returned.
+ */
+export function adoptCoordinatedCoreVariant(base: LayoutCandidate, variant: LayoutCandidate): LayoutCandidate {
+  const g = coordinatedGuardPasses(base, variant, COORDINATED_CORE_APPLIED);
+  if (!g) return base;
+  for (const bf of base.floors) {
+    const vf = variant.floors.find(f => f.level === bf.level);
+    if (!vf) return base;
+    if (vf.stairs.length < bf.stairs.length || vf.elevators.length < bf.elevators.length) return base;
+    if (vf.stairs.some(st => st.valid === false)) return base;
+  }
+  for (const t of ['stair-hall', 'elevator-hall'] as const) {
+    const rs = variant.floors.flatMap(f => f.spaces.filter(s => s.type === t).map(s => s.rect));
+    if (rs.some(r => r.x !== rs[0].x || r.y !== rs[0].y || r.w !== rs[0].w || r.h !== rs[0].h)) return base;
+  }
+  variant.explanations.push(`P5: coordinated multi-floor core variant adopted (valid; HARD ${g.hb}→${g.hv}; living / dining target deviation ${g.bd.toFixed(3)}→${g.vd.toFixed(3)}; one stair / elevator cell on every floor; no HARD or circulation / access / daylight finding added, no programme space lost, no room above ${COORDINATED_MAX_ROOM_AREA} m², no overlap or outside-buildable room).`);
+  return variant;
 }
 
 /**
@@ -2732,6 +3097,7 @@ function buildFloorSiteAware(
   parkingCutout = false,
   spineFallback = false,
   lShapeParkingPerpendicular = false,
+  coordinatedMode: CoordinatedMode | null = null,
 ): Floor {
   let spaceCounter = 0;
   const nextId = (type: string) => `${type}-${level}-${(spaceCounter++).toString(36).padStart(3, '0')}`;
@@ -2907,6 +3273,13 @@ function buildFloorSiteAware(
   let placedRooms: Space[] = [];
   let corridors: Space[] = [];
   let placeExpl: string[] = [];
+  // P5: result of the coordinated multi-floor placement on this floor (null = not placed).
+  let coordinatedPlaced: { spaces: Space[]; corridors: Space[]; explanation: string[]; residual: FrameResidual } | null = null;
+  // P6: the coordinated frame residual of this floor (null = not a coordinated placement).
+  let coordinatedResidual: FrameResidual | null = null;
+  const coordinatedFail = (why: string) => {
+    if (coordinatedMode && coordinatedMode.failed === null) coordinatedMode.failed = why;
+  };
   // True when the floor was laid out by the multi-rect / L-wing planners, which
   // cannot carry the fixed shaft cell (see the elevator stage below).
   let multiRectPlan = false;
@@ -2937,9 +3310,27 @@ function buildFloorSiteAware(
       ...(upperFloorFrontPrivate && level > 0 && input.site.shape === 'rectangle' ? { upperFloorFrontPrivate: true } : {}),
       ...(stackedPairMinArea ? { stackedPairMinArea: true } : {}),
     };
-    const result = Object.keys(placerOpts).length > 0
+    // P4 (opt-in, guarded by the caller): the coordinated rectangle planner; null (no
+    // frame) or not eligible → the unchanged placement below.
+    const multi = coordinatedMode?.plan ?? null;
+    if (multi) {
+      coordinatedPlaced = input.site.shape === 'rectangle' && buildableRects.length === 1
+        ? placeCoordinatedFloor(multi, level, sliceRect, placedSpecs, strategy, access, mkSpace, placerOpts)
+        : null;
+      if (!coordinatedPlaced) coordinatedFail(`level ${level} cannot use the coordinated frame (slice / zone mismatch)`);
+    }
+    const coordinated = multi ? coordinatedPlaced : coordinatedMode && input.site.shape === 'rectangle' && buildableRects.length === 1
+      && coordinatedRectEligible(placedSpecs, isOnlyFloor)
+      ? placeCoordinatedRect({ slice: sliceRect, specs: placedSpecs, strategy, access, family: coordinatedMode.family, mainRoomMinDimension,
+        ...(coordinatedMode.noSideResidual === true ? { noSideResidual: true } : {}),
+        ...(coordinatedMode.targetPublicDepth === true ? { targetPublicDepth: true } : {}),
+        ...(coordinatedMode.verticalTargetLength === true ? { verticalTargetLength: true } : {}) },
+        mkSpace, placerOpts)
+      : null;
+    if (coordinated && coordinatedMode) { coordinatedResidual = coordinated.residual; coordinatedMode.residual = coordinated.residual; }
+    const result = coordinated ?? (Object.keys(placerOpts).length > 0
       ? placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace, placerOpts)
-      : placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace);
+      : placeSpaces(sliceRect, placedSpecs, strategy, access, mkSpace));
     placedRooms = result.spaces;
     corridors = result.corridors;
     placeExpl = result.explanation;
@@ -3001,6 +3392,7 @@ function buildFloorSiteAware(
     placeExpl = result.explanation;
   }
   explanations.push(...placeExpl);
+  if (coordinatedMode?.plan && !coordinatedPlaced) coordinatedFail(`level ${level} was not laid out by the coordinated rectangle placement`);
 
   const spaces: Space[] = [];
   let entrancePlaced = placedRooms.some(r => r.type === 'entrance');
@@ -3142,6 +3534,21 @@ function buildFloorSiteAware(
   ): Space | null => {
     const anchor = coreAnchors.get(hallType);
     let hall = getHall();
+    // P5 (opt-in): the core was fixed before the floor loop — validate only (every
+    // floor, level 0 included): the hall must sit on the anchor (cm noise is re-pinned
+    // verbatim); a missing or displaced hall fails the coordinated build. No relocation,
+    // no new core.
+    if (coordinatedMode?.plan && anchor) {
+      const required = hallType === 'stair-hall' ? needStairForFloor(input, level) : (!!input.building.hasElevator && !isOnlyFloor);
+      if (!required) return hall;
+      if (!hall || !sameRect(hall.rect, anchor.rect)) {
+        coordinatedFail(`level ${level} ${hallType} is not on the coordinated core cell`);
+        return hall;
+      }
+      if (hall.rect.x !== anchor.rect.x || hall.rect.y !== anchor.rect.y || hall.rect.w !== anchor.rect.w || hall.rect.h !== anchor.rect.h) rePinHall(hall, anchor.rect);
+      explanations.push(`Level ${level}: ${COORDINATED_CORE_APPLIED} ${hallType} validated on the pre-placement core cell.`);
+      return hall;
+    }
     if (!anchor || level <= anchor.originLevel) return hall;
     const other = finalSpaces.filter(s => s.type !== hallType);
     const insp = inspectAnchorPlacement(anchor, hall, other);
@@ -3393,7 +3800,7 @@ function buildFloorSiteAware(
     const anchor = coreAnchors.get('stair-hall');
     let stair: Stair | null = null;
     let chosenSide: HallSide | null = null;
-    if (anchor && anchor.stairType && level > anchor.originLevel && sameRect(stairSpace.rect, anchor.rect)) {
+    if (anchor && anchor.stairType && (level > anchor.originLevel || !!coordinatedMode?.plan) && sameRect(stairSpace.rect, anchor.rect)) {
       // Coherent core: re-solve on the anchor's inputs (same hall rect, same
       // entry side, same config) — determinism makes the result identical to
       // the origin floor's stair: same type, flight split and well footprint.
@@ -3406,6 +3813,7 @@ function buildFloorSiteAware(
         explanations.push(`Level ${level}: anchor re-solve failed although the origin floor solved — configuration drift, trying orientation search.`);
       }
     }
+    if (!stair && coordinatedMode?.plan) coordinatedFail(`level ${level} stair does not re-solve on the coordinated core cell`);
     if (!stair) {
       // The elevator shaft is not walkable circulation: it must never make a
       // stair entry side look "circulation-adjacent". Without a shaft this is
@@ -3432,6 +3840,8 @@ function buildFloorSiteAware(
     }
   }
 
+  if (coordinatedMode?.plan && needStairForFloor(input, level) && stairs.length === 0) coordinatedFail(`level ${level} has no solved stair`);
+
   // ---------- Elevator shaft record (explicit geometry) ----------
   const elevators: Elevator[] = [];
   if (elevatorRequested) {
@@ -3444,6 +3854,7 @@ function buildFloorSiteAware(
       let side: ElevatorDoorSide | null = null;
       if (anchor && cellFitsShaft(hall.rect, anchor.corridorSide)) side = anchor.corridorSide;
       else if (landing) side = landing.side;
+      if (coordinatedMode?.plan && anchor && side !== anchor.corridorSide) coordinatedFail(`level ${level} elevator does not land on the coordinated side`);
       if (side) {
         elevators.push(buildElevator({ hall, doorSide: side, level }));
       } else {
@@ -3514,9 +3925,37 @@ function buildFloorSiteAware(
   // shrink is unsafe. Site/buildable authority and per-floor cores unchanged.
   {
     const before = floor.footprint;
-    if (applyFloorCompaction(floor)) {
+    // P6 (coordinated floors only): the frame residual is intentional open space — no
+    // placed rect may enter it, and the compaction may not pass the frame edge beside it
+    // except by the exterior-wall half-thickness. Either violation discards the variant.
+    let bound: Rect | undefined;
+    if (coordinatedResidual) {
+      const occupied: Rect[] = [
+        ...floor.spaces.map(s => s.rect),
+        ...floor.stairs.map(st => st.footprint),
+        ...floor.elevators.map(e => e.rect),
+        ...((floor.parkingStalls ?? []) as any[]).map(p => p.rect as Rect).filter(Boolean),
+        ...(floor.parkingArea?.aisleRect ? [floor.parkingArea.aisleRect as Rect] : []),
+      ];
+      const intr = residualIntrusions(coordinatedResidual, occupied);
+      if (intr.length > 0) {
+        // P8: marks the build as rejected FIRST by this check (the retry trigger).
+        if (coordinatedMode && coordinatedMode.failed === null) coordinatedMode.residualIntrusion = true;
+        coordinatedFail(`level ${level}: ${intr.length} placed rect(s) enter the coordinated frame residual`);
+      }
+      bound = frameEnvelopeBound(floor.footprint, coordinatedResidual) ?? undefined;
+    }
+    if (applyFloorCompaction(floor, bound)) {
       const a = floor.footprint;
       explanations.push(`Envelope compacted to placed geometry: ${a.w.toFixed(2)}x${a.h.toFixed(2)} m (was ${before.w.toFixed(2)}x${before.h.toFixed(2)} m) — P17-C.`);
+    }
+    if (coordinatedResidual) {
+      const strips = residualRects(coordinatedResidual);
+      const open = residualEnvelopeOverlap(floor.footprint, coordinatedResidual, floorWallPad(floor));
+      if (strips.length > 0 && open > 0) coordinatedFail(`level ${level}: ${open.toFixed(2)} m² of the coordinated frame residual is left inside the envelope`);
+      const d = (r: Rect | null) => (r ? `${r.w.toFixed(2)}×${r.h.toFixed(2)} m` : 'none');
+      explanations.push(`${COORDINATED_RESIDUAL_APPLIED} level ${level} rear ${d(coordinatedResidual.rear)}, side ${d(coordinatedResidual.side)}` +
+        `${strips.length > 0 ? ' kept as open space outside the compacted envelope' : ''}.`);
     }
   }
   return floor;
@@ -4099,7 +4538,7 @@ function needStairForFloor(input: ProjectInput, level: number): boolean {
 }
 
 /** Task 154: place the requested yard on the ground floor (see generator/yard.ts). */
-function addYard(input: ProjectInput, geom: ReturnType<typeof computeBuildableGeometry>, floors: Floor[], explanations: string[]): void {
+function addYard(input: ProjectInput, geom: ReturnType<typeof computeBuildableGeometry>, floors: Floor[], explanations: string[], coordinated: FrameResidual | null = null): void {
   const g = floors[0];
   const prog = getTypicalArea('yard');
   const parkingRects: Rect[] = [
@@ -4111,7 +4550,9 @@ function addYard(input: ProjectInput, geom: ReturnType<typeof computeBuildableGe
     buildableBoundary: geom.buildableBoundary,
     access: input.site.accessSide,
     groundRects: g.spaces.map(s => s.rect),
-    allFloorRects: floors.flatMap(f => f.spaces.map(s => s.rect)),
+    // P6: on a coordinated building the frame is the building mass — the yard lands
+    // against it (in its residual when deep enough), never inside it. Null → unchanged.
+    allFloorRects: coordinated ? [...floors.flatMap(f => f.spaces.map(s => s.rect)), { ...coordinated.frame }] : floors.flatMap(f => f.spaces.map(s => s.rect)),
     groundBlockers: [...g.spaces.map(s => s.rect), ...((g.parkingStalls ?? []) as any[]).map(s => s.rect as Rect).filter(Boolean)],
     parkingRects,
     targetArea: prog.target,
@@ -4120,6 +4561,10 @@ function addYard(input: ProjectInput, geom: ReturnType<typeof computeBuildableGe
   explanations.push(res.explanation);
   if (!res.rect) return;
   const r = res.rect;
+  if (coordinated) {
+    const inRes = residualRects(coordinated).some(q => residualIntrusions({ frame: coordinated.frame, rear: q, side: null }, [r]).length > 0);
+    explanations.push(`${COORDINATED_RESIDUAL_APPLIED} yard ${r.w.toFixed(2)}×${r.h.toFixed(2)} m ${inRes ? 'in the frame residual' : 'beside the frame'} (outside the coordinated frame).`);
+  }
   const poly = createRectangleRoomPolygon(r);
   g.spaces.push({
     id: 'yard-0-000', type: 'yard', label: labelFor('yard'),
