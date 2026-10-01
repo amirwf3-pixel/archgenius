@@ -33,7 +33,7 @@ Phase 10.1 — SITE-AWARE HARDENING: rectangle, L-shape, orthogonal polygon (V1 
 │  ┌─────▼──────────────┐ ┌──────────┐ ┌────────────┐ ┌──────────────┐
 │  │ Site/Buildable     │ │ Validator│ │ Optimizer  │ │ DXF Writer   │
 │  │ buildable.ts       │ │ SITE_*   │ │ (determin- │ │ R12 AC1009   │
-│  │ canonical:         │ │ HARD all │ │  istic)    │ │ INSUNITS=4   │
+│  │ canonical:         │ │ HARD all │ │  istic)    │ │ mm coords    │
 │  │ siteBoundary,      │ │ rooms,   │ │            │ │ per-floor    │
 │  │ buildableBoundary, │ │ corridors│ │            │ │ canonical    │
 │  │ buildableRects     │ │ walls,   │ │            │ │ A-SITE/      │
@@ -61,7 +61,7 @@ archgenius/
 │   ├── generator/generator.ts — site geometry → buildable → site-aware placement: buildableRects canonical, buildableRect compatibility, handle empty rects as explicit decomposition failure with SITE_GEOM_INVALID HARD, placeSpacesAcrossRects sorts by area desc then y, repairSpacesToBuildable findPositionForRect step 0.5m rectInsidePolygon, snapCorridorsToRoomsSiteAware
 │   ├── generator/parking.ts — placeParkingSiteAware: siteBoundary canonical, buildableBoundary canonical, buildableRects canonical, geometric fit perpendicular/parallel deterministic attempts[]
 │   ├── dxf/layers.ts — A-SITE color3 DASHED, A-SETBACK color2 DASHED, A-BLDG-OUT color1
-│   ├── dxf/writer.ts — Phase10.1 fixed: for EVERY floor, A-FLOOR-n-A-SITE = actual siteBoundary shifted, A-FLOOR-n-A-SETBACK = actual buildableBoundary shifted, A-FLOOR-n-A-BLDG-OUT = actual buildableBoundary shifted (not bounding rect), generic floor-0 layers backward compat canonical polygon, includeGenericLayers flag, AC1009 R12 INSUNITS=4 deterministic ordering, parseable polylines
+│   ├── dxf/writer.ts — Phase10.1 fixed: for EVERY floor, A-FLOOR-n-A-SITE = actual siteBoundary shifted, A-FLOOR-n-A-SETBACK = actual buildableBoundary shifted, A-FLOOR-n-A-BLDG-OUT = actual buildableBoundary shifted (not bounding rect), generic floor-0 layers backward compat canonical polygon, includeGenericLayers flag, AC1009 R12 (mm coordinates; R12 has no INSUNITS) deterministic ordering, parseable polylines
 │   ├── documentation/builder.ts — Phase10.1 area semantics: siteArea actual siteAreaValue, buildableArea actual buildableAreaValue, buildingFootprint actual buildableBoundary polygon area (not bounding), grossFloorArea sum actual per floor, floorMeta area actual via buildableBoundary shoelace, residual uses actual, reconciliation actual
 │   ├── documentation/model.ts — schema v5, SOFTWARE_VERSION 0.10.0-phase10 (still phase10 version, but docs say 10.1 hardening), SiteMetadata actual areas, FloorMetadata area actual
 │   └── phase101.test.ts — 28 tests Phase10.1 hardening
@@ -102,7 +102,7 @@ User selects candidate
 
 ## Geometric conventions
 
-- Internal meters, DXF mm INSUNITS=4, EPS 1e-6m
+- Internal meters, DXF millimetre coordinates (R12 has no INSUNITS header variable), EPS 1e-6m
 - Polygon-ops Phase10.1:
   - polygonSignedArea, polygonArea, polygonOrientation, polygonBoundingRect, hasDuplicateConsecutiveVertices, hasZeroLengthEdges, segIntersect, hasSelfIntersection, isOrthogonal, pointOnSegment, pointOnPolygonBoundary, pointInPolygon, rectInsidePolygon (corners+center+edge midpoints), insetOrthogonalPolygon (outward direction north/south/east/west, shift inward, reconstruct vertices, validates duplicate/zero/self-intersection/containment), decomposeOrthogonalPolygonToRects: returns Rect[]|null, 4 verts → 1 rect bounding, 6 verts L-shape via concave vertex + missing corner → 2 rects area sum = polygon area, 8-vert via vertical scanline: xs unique sorted, slabs, midX, collect y intersections of horizontal edges crossing midX, sort y dedup, check even count else null, pair intervals inside via pointInPolygon mid, create rects, validate rectInsidePolygon + area sum ≈ polygon area else null, mergeRectsDeterministic horizontal then vertical, sort by area desc then y then x deterministic, bounded xs≤8 slabs≤7 intervals≤4 rects≤12 no explosion, null on failure not bounding rect
   - createLShapePolygon W/L/nW/nL/corner ne/nw/se/sw or long forms, origin, CCW

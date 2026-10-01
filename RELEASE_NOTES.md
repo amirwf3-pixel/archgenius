@@ -1,7 +1,16 @@
 ## Unreleased — Tasks 145–162 (post-Phase 18)
 
-Local, unpushed commits on the working branch (remote head is still `86b5121`). Each item lists
-its commit; items without a commit produced no code change.
+Post-v1.1.0 work, pushed to the working branch (verified at `41bff3e`: core 1928 / web 218 tests,
+typecheck, build and GitHub Actions CI pass). Historical per-item notes below may still mention the
+commit or test counts of the time.
+
+### V1 productization and portfolio (`41bff3e` and after)
+
+- Web form sends the declared `setbackNorth/South/East/West` site fields, so the
+  `DEF-SETBACK-001` "Applied setbacks" finding reports the user's setbacks (geometry and DXF
+  unchanged); the plan-canvas caption reads "floor N of total" (1-based).
+- English portfolio overview [docs/PORTFOLIO.md](docs/PORTFOLIO.md) with a UI screenshot; README
+  facts refreshed (V1 rectangle-only scope, DXF units, test/CI status, demo output).
 
 ### Coordinated rectangle planner (`coordinatedRectPlanner`, opt-in, default OFF) — P1–P10 complete
 
