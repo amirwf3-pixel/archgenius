@@ -116,12 +116,14 @@ export function buildProjectInput(form: FormState): ProjectInput {
     accessSide: form.accessSide,
     streetWidth: Number(form.streetWidth),
     northRotationDeg: 0,
-    setbacks: {
-      north: Number(form.setbackNorth),
-      south: Number(form.setbackSouth),
-      east: Number(form.setbackEast),
-      west: Number(form.setbackWest),
-    },
+    // The declared SiteInput fields. The engine's buildable geometry also accepts a
+    // legacy nested `setbacks` object, but the regulation report (DEF-SETBACK-001
+    // "Applied setbacks …") reads only these fields, so the nested form made it
+    // report the default setbacks instead of the user's values.
+    setbackNorth: Number(form.setbackNorth),
+    setbackSouth: Number(form.setbackSouth),
+    setbackEast: Number(form.setbackEast),
+    setbackWest: Number(form.setbackWest),
     jurisdiction: form.jurisdiction || undefined,
     city: form.city || undefined,
     parkingLayout: form.parkingLayout,

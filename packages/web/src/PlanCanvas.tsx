@@ -527,7 +527,8 @@ export function PlanCanvas({ candidate, floorIndex = 0, selectedSpaceId, onSelec
     const nx = tx(b.minX) + 12, ny = ty(b.maxY) + 18;
     ctx.beginPath(); ctx.moveTo(nx, ny - 10); ctx.lineTo(nx - 4, ny + 2); ctx.lineTo(nx + 4, ny + 2); ctx.closePath(); ctx.fill();
     ctx.fillText(t('canvasNorth'), nx - 12, ny + 18);
-    ctx.fillText(tf('canvasFloor', { current: fi, last: candidate.floors.length - 1, count: floor.spaces.length }), tx(b.minX), ty(b.minY) - 8);
+    // 1-based "floor N of total", consistent with the floor picker and the canvas aria-label.
+    ctx.fillText(tf('canvasFloor', { current: faNum(fi + 1), total: faNum(candidate.floors.length), count: faNum(floor.spaces.length) }), tx(b.minX), ty(b.minY) - 8);
 
     const barLen = 5;
     const bx = tx(b.maxX) - barLen * effScale - 20;

@@ -217,7 +217,7 @@ const fa = {
   // Canvas
   canvasEmpty: 'هنوز پلانی تولید نشده است. پارامترها را وارد و «تولید پلان» را بزنید.',
   canvasStair: 'راه‌پله',
-  canvasFloor: 'طبقهٔ {current} از {last} — {count} فضا — برای انتخاب فضا کلیک کنید',
+  canvasFloor: 'طبقهٔ {current} از {total} — {count} فضا — برای انتخاب فضا کلیک کنید',
   canvasNorth: 'شمال',
   canvasDimCaption: 'ابعاد «{room}» — {count} ضلع (متر)',
   canvasAriaLabel: 'نمای پلان طبقهٔ {floor} — کلیک: انتخاب فضا، درگ: جابه‌جایی نما، اسکرول: بزرگ‌نمایی',

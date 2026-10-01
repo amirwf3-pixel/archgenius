@@ -80,9 +80,9 @@ const bool = (v: unknown, fallback: boolean): boolean =>
 /**
  * Map a stored/imported `Project` back onto the form.
  *
- * NOTE: `SiteInput` declares flat `setbackNorth?` fields while the engine reads
- * the nested `site.setbacks` object at runtime (App.tsx builds it that way).
- * Both shapes are accepted here so projects saved by either path restore.
+ * NOTE: `SiteInput` declares flat `setbackNorth?` fields (App.tsx builds that
+ * shape); projects saved by older versions carry a nested `site.setbacks`
+ * object instead. Both shapes are accepted here so either kind restores.
  * Anything missing keeps the caller-supplied `base` value.
  */
 export function formFromProject(project: Project, base: FormState): FormState {

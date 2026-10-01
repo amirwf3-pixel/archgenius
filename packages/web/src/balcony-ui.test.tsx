@@ -46,7 +46,7 @@ describe('Task 153: form → core input binding', () => {
       name: 'ویلای نمونه',
       site: {
         shape: 'rectangle', width: 18, length: 28, accessSide: 'south', streetWidth: 8, northRotationDeg: 0,
-        setbacks: { north: 2, south: 3, east: 2, west: 2 },
+        setbackNorth: 2, setbackSouth: 3, setbackEast: 2, setbackWest: 2,
         jurisdiction: 'Tehran-Municipality-Default', city: 'Tehran', parkingLayout: 'auto',
       },
       building: {
